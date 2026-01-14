@@ -1,0 +1,233 @@
+import { useEffect, useState } from 'react';
+import { Plus, Search, AlertCircle, Filter } from 'lucide-react';
+import MainLayout from '@/components/layout/MainLayout';
+import FolderSidebar from '@/components/mind/FolderSidebar';
+import ContentList from '@/components/mind/ContentList';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { useToast } from '@/hooks/use-toast';
+import {
+  getContentItems,
+  getFolders,
+  getFailedContentCount,
+  getTotalWordCount,
+  createContentItem,
+  deleteContentItem,
+  createFolder,
+} from '@/db/api';
+import type { ContentItem, Folder } from '@/types/types';
+
+const MindPage = () => {
+  const [loading, setLoading] = useState(true);
+  const [contentItems, setContentItems] = useState<ContentItem[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [failedCount, setFailedCount] = useState(0);
+  const [totalWords, setTotalWords] = useState(0);
+  const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const { toast } = useToast();
+
+  useEffect(() => {
+    fetchData();
+  }, [selectedFolder]);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [items, foldersList, failed, words] = await Promise.all([
+        getContentItems(selectedFolder || undefined),
+        getFolders(),
+        getFailedContentCount(),
+        getTotalWordCount(),
+      ]);
+
+      setContentItems(items);
+      setFolders(foldersList);
+      setFailedCount(failed);
+      setTotalWords(words);
+    } catch (error) {
+      console.error('Error fetching content data:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load content. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteContentItem(id);
+      toast({
+        title: 'Success',
+        description: 'Content deleted successfully.',
+      });
+      fetchData();
+    } catch (error) {
+      console.error('Error deleting content:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete content.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return;
+
+    try {
+      await createFolder(newFolderName);
+      setNewFolderName('');
+      toast({
+        title: 'Success',
+        description: 'Folder created successfully.',
+      });
+      fetchData();
+    } catch (error) {
+      console.error('Error creating folder:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to create folder.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const filteredItems = contentItems.filter((item) =>
+    item.title.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  return (
+    <MainLayout>
+      <div className="container mx-auto p-4 xl:p-8">
+        <div className="flex flex-col xl:flex-row gap-6">
+          {/* Sidebar */}
+          <aside className="w-full xl:w-auto">
+            <Dialog>
+              <DialogTrigger asChild>
+                <div className="cursor-pointer">
+                  <FolderSidebar
+                    folders={folders}
+                    selectedFolder={selectedFolder}
+                    onSelectFolder={setSelectedFolder}
+                    onCreateFolder={() => {}}
+                  />
+                </div>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Create New Folder</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4 pt-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="folderName">Folder Name</Label>
+                    <Input
+                      id="folderName"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      placeholder="Enter folder name"
+                    />
+                  </div>
+                  <Button onClick={handleCreateFolder} className="w-full">
+                    Create Folder
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </aside>
+
+          {/* Main Content */}
+          <div className="flex-1 space-y-6">
+            {/* Header */}
+            <div className="space-y-4">
+              <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+                <div>
+                  <h1 className="text-2xl font-bold">
+                    Content{' '}
+                    <span className="text-primary">{totalWords.toLocaleString()} words</span>
+                  </h1>
+                </div>
+                <Dialog open={isUploadDialogOpen} onOpenChange={setIsUploadDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button>
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Content
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Upload Content</DialogTitle>
+                    </DialogHeader>
+                    <div className="py-8 text-center text-muted-foreground">
+                      <p>Content upload functionality will be implemented here.</p>
+                      <p className="text-sm mt-2">
+                        Support for videos, PDFs, documents, and feeds.
+                      </p>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+
+              {/* Filters and Search */}
+              <div className="flex flex-col xl:flex-row gap-4">
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm">
+                    All Content
+                  </Button>
+                  {failedCount > 0 && (
+                    <Badge variant="destructive" className="gap-1">
+                      <AlertCircle className="h-3 w-3" />
+                      {failedCount} Failed Documents
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex-1 flex gap-2">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      type="search"
+                      placeholder="Search..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-9"
+                    />
+                  </div>
+                  <Button variant="outline" size="icon">
+                    <Filter className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Content List */}
+            {loading ? (
+              <div className="space-y-4">
+                <Skeleton className="h-[400px] bg-muted" />
+              </div>
+            ) : (
+              <>
+                <ContentList items={filteredItems} onDelete={handleDelete} />
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span>
+                    Showing {filteredItems.length} of {contentItems.length}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </MainLayout>
+  );
+};
+
+export default MindPage;
