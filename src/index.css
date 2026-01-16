@@ -130,8 +130,21 @@ All colors MUST be HSL.
     animation: slow-glow 8s ease-in-out infinite;
   }
 
+  .animate-voice-bar {
+    animation: voice-bar 1s ease-in-out infinite;
+  }
+
+  .animate-spin-slow {
+    animation: spin 3s linear infinite;
+  }
+
   @keyframes slow-glow {
     0%, 100% { opacity: 0.5; transform: scale(1); }
     50% { opacity: 0.8; transform: scale(1.1); }
+  }
+
+  @keyframes voice-bar {
+    0%, 100% { height: 10%; opacity: 0.5; }
+    50% { height: 100%; opacity: 1; }
   }
 }

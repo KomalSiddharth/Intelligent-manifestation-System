@@ -35,7 +35,6 @@ const ExperienceSettingsView = ({ profileId }: ExperienceSettingsViewProps) => {
     const loadProfile = async () => {
         try {
             const profile = await getMindProfile(profileId);
-            // Try experience_settings first, then fallback to response_settings for legacy data
             const settings = profile?.experience_settings || profile?.response_settings || {};
 
             setInitialMessage(settings.initialMessage || "Hey Platinum Magician, this is Mitesh AI, how can i help you?");
@@ -100,103 +99,77 @@ const ExperienceSettingsView = ({ profileId }: ExperienceSettingsViewProps) => {
                     <Info className="w-4 h-4 text-muted-foreground" />
                 </div>
 
-                <div className="space-y-8">
+                <div className="space-y-6">
                     <div className="space-y-2">
-                        <Label>Initial Message</Label>
-                        <p className="text-sm text-muted-foreground">
-                            This message will be used as your clone's first message in new conversations with users
-                        </p>
-                        <div className="relative">
-                            <Textarea
-                                value={initialMessage}
-                                onChange={(e) => setInitialMessage(e.target.value)}
-                                className="min-h-[100px] resize-none"
-                                maxLength={400}
-                            />
-                            <span className={cn("absolute bottom-2 right-2 text-xs", initialMessage.length > 400 ? "text-red-500" : "text-muted-foreground")}>
-                                {initialMessage.length}/400
-                            </span>
+                        <div className="flex items-center gap-2">
+                            <Quote className="w-4 h-4 text-orange-500" />
+                            <Label>Initial Message</Label>
                         </div>
+                        <Textarea
+                            value={initialMessage}
+                            onChange={(e) => setInitialMessage(e.target.value)}
+                            className="min-h-[80px] resize-none"
+                            placeholder="The first message users see when they start a conversation..."
+                        />
+                        <p className="text-xs text-muted-foreground">This is the first message users will see when they open the chat.</p>
                     </div>
 
                     <div className="space-y-2">
-                        <Label>Message on No Answer</Label>
-                        <p className="text-sm text-muted-foreground">
-                            Your clone's response when it does not have enough data to answer the user's query.
-                        </p>
-                        <div className="relative">
-                            <Textarea
-                                value={noAnswerMessage}
-                                onChange={(e) => setNoAnswerMessage(e.target.value)}
-                                className="min-h-[120px] resize-none"
-                                maxLength={400}
-                            />
-                            <span className={cn("absolute bottom-2 right-2 text-xs", noAnswerMessage.length > 400 ? "text-red-500" : "text-muted-foreground")}>
-                                {noAnswerMessage.length}/400
-                            </span>
+                        <div className="flex items-center gap-2">
+                            <Quote className="w-4 h-4 text-orange-500" />
+                            <Label>No Answer Message</Label>
                         </div>
+                        <Textarea
+                            value={noAnswerMessage}
+                            onChange={(e) => setNoAnswerMessage(e.target.value)}
+                            className="min-h-[100px] resize-none"
+                            placeholder="The message shown when your clone doesn't have an answer..."
+                        />
+                        <p className="text-xs text-muted-foreground">Displayed when your clone can't find a relevant answer in the knowledge base.</p>
                     </div>
                 </div>
             </div>
 
             <div className="space-y-6">
-                <h3 className="text-lg font-medium">Experience</h3>
-
-                <div className="border rounded-lg p-6 space-y-2">
-                    <h4 className="font-medium">Messages before email capture</h4>
-                    <p className="text-sm text-muted-foreground">
-                        Set the number of messages before users are required to log in or provide their email
-                    </p>
-                    <button className="text-sm text-orange-500 hover:underline flex items-center gap-1">
-                        Configure message limit →
-                    </button>
+                <div className="flex items-center gap-2">
+                    <h3 className="text-lg font-medium">User Experience</h3>
+                    <Info className="w-4 h-4 text-muted-foreground" />
                 </div>
 
-                <div className="border rounded-lg divide-y">
-                    <div className="p-4 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                            <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground">
-                                <Quote className="w-4 h-4" />
-                            </div>
-                            <div className="space-y-0.5">
-                                <Label className="text-base">Show Citations</Label>
-                                <p className="text-sm text-muted-foreground">Permits users to view sources</p>
-                            </div>
+                <div className="space-y-4">
+                    <div className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="space-y-0.5">
+                            <Label className="text-base">Show Citations</Label>
+                            <p className="text-sm text-muted-foreground">Display source references in responses</p>
                         </div>
                         <Switch checked={showCitations} onCheckedChange={setShowCitations} className="data-[state=checked]:bg-orange-500" />
                     </div>
 
-                    <div className="p-4 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                            <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground">
-                                <Image className="w-4 h-4" />
-                            </div>
+                    <div className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="flex items-center gap-2">
+                            <Image className="w-5 h-5 text-orange-500" />
                             <div className="space-y-0.5">
                                 <Label className="text-base">Enable File Sending</Label>
-                                <p className="text-sm text-muted-foreground">Allow users to send images or files to your clone</p>
+                                <p className="text-sm text-muted-foreground">Allow users to upload files and images</p>
                             </div>
                         </div>
                         <Switch checked={enableFileSending} onCheckedChange={setEnableFileSending} className="data-[state=checked]:bg-orange-500" />
                     </div>
 
-                    <div className="p-4 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                            <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground">
-                                <Phone className="w-4 h-4" />
-                            </div>
+                    <div className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="flex items-center gap-2">
+                            <Phone className="w-5 h-5 text-orange-500" />
                             <div className="space-y-0.5">
                                 <Label className="text-base">Enable Voice Calling</Label>
-                                <p className="text-sm text-muted-foreground">Allows users to call your clone. A voice must be uploaded.</p>
+                                <p className="text-sm text-muted-foreground">Allow users to voice call your clone</p>
                             </div>
                         </div>
                         <Switch checked={enableVoiceCalling} onCheckedChange={setEnableVoiceCalling} className="data-[state=checked]:bg-orange-500" />
                     </div>
 
-                    <div className="p-4 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                            <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground">
-                                <Video className="w-4 h-4" />
-                            </div>
+                    <div className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="flex items-center gap-2">
+                            <Video className="w-5 h-5 text-orange-500" />
                             <div className="space-y-0.5">
                                 <Label className="text-base">Enable Video Calling</Label>
                                 <p className="text-sm text-muted-foreground">Allows users to video call your clone. A video avatar must be setup.</p>

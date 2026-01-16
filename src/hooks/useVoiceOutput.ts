@@ -16,12 +16,12 @@ export const useVoiceOutput = (options: UseVoiceOutputOptions = {}) => {
         setIsSupported(voiceService.isSupported());
     }, []);
 
-    const speak = async (text: string) => {
-        if (!isSupported || !isEnabled) return;
+    const speak = async (text: string, profileId?: string, force: boolean = false) => {
+        if (!isSupported || (!isEnabled && !force)) return;
 
         try {
             setIsSpeaking(true);
-            await voiceService.speak(text);
+            await voiceService.speak(text, profileId);
         } catch (error) {
             console.error('Voice output error:', error);
         } finally {

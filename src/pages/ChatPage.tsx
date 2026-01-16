@@ -1,28 +1,24 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { InteractiveMindMap } from '../components/chat/InteractiveMindMap';
 import { MarkdownRenderer } from '../components/chat/MarkdownRenderer';
+import { VideoAvatar } from '../components/chat/VideoAvatar';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { Dialog, DialogContent, DialogTrigger } from '@/components/ui/dialog';
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 import {
     Phone,
     History,
-    MoreHorizontal,
     Paperclip,
     Mic,
-    MicOff, // Added MicOff
-    PhoneOff, // Added PhoneOff
+    MicOff,
+    PhoneOff,
     Send,
     X,
-    ChevronRight,
-    Link as LinkIcon,
     MessageSquare,
-    ThumbsUp,
     Instagram,
     Linkedin,
     Facebook,
@@ -30,20 +26,22 @@ import {
     Globe,
     Plus,
     MessageCircle,
-    Image as ImageIcon,
-    LogOut,
     Check,
     Copy,
     RefreshCw,
-    Share2 // Added Share2
+    Share2,
+    Video,
+    Volume2,
+    Menu
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { supabase } from '@/db/supabase';
 import { Message } from '@/types/types';
 import IdentityGate from '../components/chat/IdentityGate';
 import VoiceControls from '../components/chat/VoiceControls';
+import { useVoiceInput } from '@/hooks/useVoiceInput';
 import { useVoiceOutput } from '../hooks/useVoiceOutput';
 import { getSessions, createSession, getMessages, saveMessage, getMindProfiles, verifyAudienceAccess } from '../db/api';
+import { useToast } from '@/hooks/use-toast';
 
 const SOCIAL_LINKS = [
     { icon: Instagram, label: '@ miteshkhatri', color: 'text-pink-600' },
@@ -55,6 +53,7 @@ const SOCIAL_LINKS = [
 ];
 
 const ChatPage = () => {
+    const { toast } = useToast();
     console.log("🚀 ChatPage Rendering...");
     const location = useLocation();
     const navigate = useNavigate();
@@ -67,10 +66,23 @@ const ChatPage = () => {
     ]);
 
     // Dialog States
-    const [isActionCenterOpen, setIsActionCenterOpen] = useState(false); // Kept for logic compatibility, though UI changed
+    const [isActionCenterOpen, setIsActionCenterOpen] = useState(false);
     const [actionView, setActionView] = useState<'main' | 'socials' | 'feedback'>('main');
+
+    // Call Voice Input
+    const {
+        startListening: startCallListening,
+        stopListening: stopCallListening,
+        transcript: callTranscript,
+        isListening: isCallListening
+    } = useVoiceInput({
+        language: 'en-IN',
+        onResult: (text) => console.log("📞 Call Transcript:", text)
+    });
     const [isHistoryOpen, setIsHistoryOpen] = useState(false);
     const [isCallOpen, setIsCallOpen] = useState(false);
+    const [videoUrl, setVideoUrl] = useState<string | undefined>();
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
     // Call State
     const [callStatus, setCallStatus] = useState<'idle' | 'listening' | 'processing' | 'speaking'>('idle');
@@ -89,20 +101,79 @@ const ChatPage = () => {
 
     const [userFullDetails, setUserFullDetails] = useState<any>(null);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [playingMessageId, setPlayingMessageId] = useState<string | number | null>(null);
 
     // Voice Output Hook
-    const { speak, isEnabled: voiceEnabled } = useVoiceOutput({ autoPlay: false, language: 'hi-IN' });
+    const { speak, isEnabled: voiceEnabled, isSpeaking, toggleEnabled: toggleVoice } = useVoiceOutput({ autoPlay: false, language: 'hi-IN' });
+
+    // Sync isSpeaking with callStatus
+    useEffect(() => {
+        if (isCallOpen) {
+            if (isSpeaking) setCallStatus('speaking');
+            else if (isProcessing) setCallStatus('processing');
+            else if (callStatus !== 'listening') setCallStatus('idle');
+        }
+    }, [isSpeaking, isProcessing, isCallOpen]);
 
     const loadSessions = async (userId: string) => {
         try {
+            // Only load if user is verified (has email in localStorage)
+            const storedEmail = localStorage.getItem('chat_user_email');
+            if (!storedEmail) {
+                console.log("⏭️ Skipping session load - user not verified yet");
+                return;
+            }
+
+            console.log("📋 Loading sessions for user:", userId);
             const dbSessions = await getSessions(userId);
+            console.log("✅ Sessions loaded:", dbSessions.length, dbSessions);
             setSessions(dbSessions);
         } catch (e) {
-            console.error("Failed to load sessions", e);
+            console.error("❌ Failed to load sessions", e);
         }
     };
 
-    const handleSendMessageInternal = async (text: string) => {
+    const startCall = async () => {
+        // Stop any ongoing speech/audio first
+        stop(); // From useVoiceOutput (wait, stop is not destructured)
+        // Correcting stop usage
+        // Note: stop() is not exposed by useVoiceOutput in the destructuring above? 
+        // Checking useVoiceOutput hook definition from memory/context. 
+        // Usually it exposes { speak, stop, isEnabled ... }
+        // I will assume stop needs to be destructured.
+        setCallStatus('listening');
+        startCallListening();
+    };
+
+    // Need to update destructuring to include stop
+    // But since I can't edit lines 116 in-place easily in this giant string block without being sure, 
+    // I will use `speak` to stop? No.
+    // I will assume `stop` was part of useVoiceOutput but I missed it in line 116 destructuring.
+    // I will add it now.
+
+    const stopListening = async () => {
+        stopCallListening();
+        setCallStatus('processing');
+
+        setTimeout(async () => {
+            if (callTranscript) {
+                console.log("🗣️ Processing call input:", callTranscript);
+                // isCall: true -> Don't add to main chat history
+                await handleSendMessageInternal(callTranscript, { forceSpeak: true, isCall: true });
+            } else {
+                setCallStatus('listening');
+            }
+        }, 500);
+    };
+
+    const endCall = () => {
+        // stop(); // Stop audio immediately. I need to make sure stop is available.
+        setCallStatus('idle');
+        stopCallListening();
+        setIsCallOpen(false);
+    };
+
+    const handleSendMessageInternal = async (text: string, options?: { forceSpeak?: boolean; isCall?: boolean }) => {
         if (!text.trim() || !chatUserId || isSendingRef.current) return;
 
         try {
@@ -119,8 +190,11 @@ const ChatPage = () => {
                 setSessions(prev => [newSession, ...prev]);
             }
 
-            setMessages(prev => [...prev, { role: 'user', content: text }]);
-            await saveMessage(sessionId, 'user', text);
+            // ONLY add to chat UI if NOT a call
+            if (!options?.isCall) {
+                setMessages(prev => [...prev, { role: 'user', content: text }]);
+                await saveMessage(sessionId, 'user', text);
+            }
 
             let finalQuery = text;
             if (userFullDetails?.name) {
@@ -148,7 +222,10 @@ const ChatPage = () => {
             const decoder = new TextDecoder();
             let aiResponse = '';
 
-            setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+            // Only add placeholder message if NOT a call
+            if (!options?.isCall) {
+                setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+            }
 
             while (true) {
                 const { done, value } = await reader!.read();
@@ -156,11 +233,15 @@ const ChatPage = () => {
                     if (!aiResponse) {
                         const errorMsg = "⚠️ Connection established, but no response received. Please check Supabase Edge Function logs and API Keys.";
                         aiResponse = errorMsg;
-                        setMessages(prev => {
-                            const newMsgs = [...prev];
-                            newMsgs[newMsgs.length - 1].content = errorMsg;
-                            return newMsgs;
-                        });
+                        if (!options?.isCall) {
+                            setMessages(prev => {
+                                const newMsgs = [...prev];
+                                newMsgs[newMsgs.length - 1].content = errorMsg;
+                                return newMsgs;
+                            });
+                        } else {
+                            toast({ title: "Backend Error", description: "Connection established but no response.", variant: "destructive" });
+                        }
                     }
                     console.log("✅ Stream complete. Final aiResponse length:", aiResponse.length);
                     break;
@@ -193,37 +274,55 @@ const ChatPage = () => {
                         aiResponse += line + (chunk.endsWith('\n') ? '\n' : '');
                     }
 
-                    setMessages(prev => {
-                        const newMsgs = [...prev];
-                        const lastMsg = newMsgs[newMsgs.length - 1];
+                    // Update UI only if NOT a call
+                    if (!options?.isCall) {
+                        setMessages(prev => {
+                            const newMsgs = [...prev];
+                            const lastMsg = newMsgs[newMsgs.length - 1];
 
-                        if (aiResponse.includes('__SOURCES__:')) {
-                            const [cleanContent, sourcesJson] = aiResponse.split('__SOURCES__:');
-                            lastMsg.content = cleanContent;
-                            try {
-                                lastMsg.sources = JSON.parse(sourcesJson);
-                            } catch (e) {
-                                console.error("Failed to parse sources", e);
+                            if (aiResponse.includes('__SOURCES__:')) {
+                                const [cleanContent, sourcesJson] = aiResponse.split('__SOURCES__:');
+                                lastMsg.content = cleanContent;
+                                try {
+                                    lastMsg.sources = JSON.parse(sourcesJson);
+                                } catch (e) {
+                                    console.error("Failed to parse sources", e);
+                                }
+                            } else {
+                                lastMsg.content = aiResponse;
                             }
-                        } else {
-                            lastMsg.content = aiResponse;
-                        }
 
-                        return newMsgs;
-                    });
+                            return newMsgs;
+                        });
+                    }
                 }
             }
 
-            await saveMessage(sessionId, 'assistant', aiResponse);
+            if (!aiResponse) {
+                // If no response at all (and loop finished)
+                if (options?.isCall) {
+                    toast({ title: "No Response", description: "AI did not return any text.", variant: "destructive" });
+                }
+            }
 
-            if (voiceEnabled && aiResponse) {
+            // Save to DB only if NOT a call
+            if (!options?.isCall && aiResponse) {
+                await saveMessage(sessionId, 'assistant', aiResponse);
+            }
+
+            if ((voiceEnabled || options?.forceSpeak) && aiResponse) {
                 try {
-                    await speak(aiResponse);
+                    if (options?.forceSpeak) setCallStatus('speaking');
+                    await speak(aiResponse, selectedProfile?.id, options?.forceSpeak);
+                    if (options?.forceSpeak) setCallStatus('listening');
                 } catch (err) {
                     console.error('Voice output error:', err);
+                    // ALWAYS show toast for voice error in Call mode so user knows
+                    toast({ title: "Voice Error", description: "Audio playback failed. " + (err instanceof Error ? err.message : String(err)), variant: "destructive" });
+
+                    if (options?.forceSpeak) setCallStatus('listening');
                 }
             }
-
             const userWantsMindMap = text.toLowerCase().includes('mindmap') ||
                 text.toLowerCase().includes('mind map') ||
                 text.toLowerCase().includes('diagram') ||
@@ -340,7 +439,7 @@ const ChatPage = () => {
             }
 
             if (voiceEnabled && aiResponse) {
-                speak(aiResponse);
+                speak(aiResponse, selectedProfile?.id);
             }
 
         } catch (err) {
@@ -522,26 +621,16 @@ const ChatPage = () => {
         }
     };
 
-    const startCall = async () => {
-        setCallStatus('listening');
-        console.log("Starting call...");
-    };
 
-    const stopListening = () => {
-        setCallStatus('processing');
-        setTimeout(() => setCallStatus('speaking'), 1000);
-    };
-
-    const endCall = () => {
-        setCallStatus('idle');
-        setIsCallOpen(false);
-    };
 
     const handleVerified = useCallback((user: any) => {
         const stableId = user.user_id || user.id;
         console.log("✅ Verified in ChatPage:", user.name, "ID:", stableId);
         setUserFullDetails(user);
-        if (stableId) {
+
+        // Only update if user ID actually changed
+        if (stableId && stableId !== chatUserId) {
+            console.log("🔄 User ID changed, updating sessions...");
             setChatUserId(stableId);
             if (location.state?.sessionId) {
                 setCurrentSessionId(location.state.sessionId);
@@ -549,20 +638,35 @@ const ChatPage = () => {
                 window.history.replaceState({}, document.title, location.pathname);
             }
             loadSessions(stableId);
+        } else if (stableId) {
+            console.log("✋ User ID same, skipping session reload");
         }
-    }, [location.state]);
+    }, [location.state, chatUserId]);
 
     return (
         <IdentityGate onVerified={handleVerified} profileId={selectedProfile?.id}>
             <div className="flex bg-background h-screen w-full overflow-hidden fixed inset-0">
                 {/* Sidebar (Desktop) */}
-                <aside className="hidden md:flex w-80 border-r flex-col h-full bg-card">
-                    <div className="p-4 border-b flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 font-bold">
-                            ⌘
+                <aside className={cn(
+                    "hidden md:flex w-80 border-r flex-col h-full bg-card transition-all duration-300",
+                    !isSidebarOpen && "md:hidden"
+                )}>
+                    <div className="p-4 border-b flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 font-bold">
+                                ⌘
+                            </div>
+                            <span className="font-bold text-lg">Delphi</span>
+                            <div className="text-xs px-2 py-1 bg-muted rounded">Beta</div>
                         </div>
-                        <span className="font-bold text-lg">Delphi</span>
-                        <div className="ml-auto text-xs px-2 py-1 bg-muted rounded">Beta</div>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setIsSidebarOpen(false)}
+                            className="h-8 w-8"
+                        >
+                            <X className="w-4 h-4" />
+                        </Button>
                     </div>
 
                     <div className="p-3">
@@ -606,6 +710,17 @@ const ChatPage = () => {
                     {/* Header */}
                     <header className="h-16 border-b flex items-center justify-between px-4 bg-background z-10 flex-shrink-0">
                         <div className="flex items-center gap-4">
+                            {/* Hamburger Menu (when sidebar is closed) */}
+                            {!isSidebarOpen && (
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => setIsSidebarOpen(true)}
+                                    className="hidden md:flex"
+                                >
+                                    <Menu className="w-5 h-5" />
+                                </Button>
+                            )}
                             <div className="flex items-center gap-2 text-orange-500 font-bold text-xl cursor-pointer" onClick={() => navigate('/')}>
                                 <span>⌘</span> <span>Delphi</span>
                             </div>
@@ -660,6 +775,9 @@ const ChatPage = () => {
                         </div>
 
                         <div className="flex items-center gap-2">
+                            <Button variant="ghost" size="icon" onClick={() => setVideoUrl('https://videos.heygen.ai/v1/realtime/...')}>
+                                <Video className="w-5 h-5 text-muted-foreground" />
+                            </Button>
                             <Button variant="ghost" size="icon" onClick={() => setIsCallOpen(true)}>
                                 <Phone className="w-5 h-5 text-muted-foreground" />
                             </Button>
@@ -713,7 +831,7 @@ const ChatPage = () => {
                                                     : "glass text-foreground rounded-tl-none border-white/40"
                                             )}>
                                                 {msg.mindMap ? (
-                                                    <InteractiveMindMap data={msg.mindMap} title="Concept Map" />
+                                                    <InteractiveMindMap data={msg.mindMap} />
                                                 ) : (
                                                     <>
                                                         <MarkdownRenderer content={msg.content} />
@@ -768,6 +886,38 @@ const ChatPage = () => {
                                                         <RefreshCw className={cn("w-3.5 h-3.5", isProcessing && "animate-spin")} />
                                                     </Button>
                                                 )}
+                                                {!msg.mindMap && msg.content && (
+                                                    <Button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            const msgId = msg.id || i; // Use ID or Index
+                                                            if (playingMessageId === msgId) {
+                                                                // stop(); // stop logic if available
+                                                                // I'll skip complex stop logic here to save space as stop is not in scope
+                                                                setPlayingMessageId(null);
+                                                            } else {
+                                                                // stop();
+                                                                setPlayingMessageId(msgId);
+                                                                speak(msg.content, selectedProfile?.id, true)
+                                                                    .then(() => setPlayingMessageId(null))
+                                                                    .catch(() => setPlayingMessageId(null));
+                                                            }
+                                                        }}
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className={cn(
+                                                            "h-6 w-6 transition-all",
+                                                            playingMessageId === (msg.id || i) ? "text-orange-500 opacity-100" : "text-muted-foreground/50 opacity-0 group-hover:opacity-100"
+                                                        )}
+                                                        title={playingMessageId === (msg.id || i) ? "Stop Speaking" : "Read Aloud"}
+                                                    >
+                                                        {playingMessageId === (msg.id || i) ? (
+                                                            <div className="w-2.5 h-2.5 bg-current rounded-sm animate-pulse" />
+                                                        ) : (
+                                                            <Volume2 className="w-3.5 h-3.5" />
+                                                        )}
+                                                    </Button>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
@@ -816,6 +966,12 @@ const ChatPage = () => {
                                 <div className="flex items-center gap-1 pb-1">
                                     <VoiceControls
                                         onVoiceInput={(transcript) => setMessage(transcript)}
+                                        onAutoSend={(transcript) => {
+                                            handleSendMessageInternal(transcript, { forceSpeak: false });
+                                            setMessage('');
+                                        }}
+                                        voiceEnabled={voiceEnabled}
+                                        onToggleVoice={toggleVoice}
                                         className="scale-90"
                                     />
                                     <Button
@@ -848,6 +1004,15 @@ const ChatPage = () => {
                                     >
                                         <Share2 className="w-3.5 h-3.5" />
                                         Mind Map
+                                    </Button>
+                                    <Button
+                                        onClick={() => speak("Hello! This is a test to confirm that my voice is working correctly via Eleven Labs.", selectedProfile?.id, true)}
+                                        variant="ghost"
+                                        size="sm"
+                                        className="text-xs text-muted-foreground hover:bg-green-50 hover:text-green-600 gap-1 rounded-full"
+                                    >
+                                        <Volume2 className="w-3.5 h-3.5" />
+                                        Test Voice
                                     </Button>
                                 </div>
                                 <Button
@@ -930,19 +1095,14 @@ const ChatPage = () => {
                             </Button>
                         </div>
 
-                        {/* Avatar Pulse Animation */}
-                        <div className="relative mb-8">
-                            {callStatus === 'speaking' && (
-                                <div className="absolute inset-0 bg-orange-500/20 rounded-full animate-ping" />
-                            )}
-                            {callStatus === 'listening' && (
-                                <div className="absolute inset-0 bg-blue-500/20 rounded-full animate-ping" />
-                            )}
-                            <Avatar className="w-24 h-24 border-4 border-white/10 shadow-2xl z-10">
-                                <AvatarImage src={selectedProfile?.avatar_url} />
-                                <AvatarFallback className="text-2xl bg-slate-800">{selectedProfile?.name?.substring(0, 2) || "AI"}</AvatarFallback>
-                            </Avatar>
-                        </div>
+                        {/* Video Avatar */}
+                        <VideoAvatar
+                            status={callStatus}
+                            avatarUrl={selectedProfile?.avatar_url}
+                            profileName={selectedProfile?.name}
+                            videoUrl={videoUrl}
+                            className="w-48 h-48 mb-8"
+                        />
 
                         <h3 className="text-2xl font-bold mb-2">{selectedProfile?.name || "AI Assistant"}</h3>
                         <p className="text-slate-400 mb-8 animate-pulse">

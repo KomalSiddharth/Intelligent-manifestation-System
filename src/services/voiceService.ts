@@ -3,6 +3,8 @@
  * Supports browser native TTS (dummy voice) and Eleven Labs (future)
  */
 
+import { supabase } from '../db/supabase';
+
 interface VoiceConfig {
     elevenLabsApiKey?: string;
     elevenLabsVoiceId?: string;
@@ -13,6 +15,8 @@ class VoiceService {
     private config: VoiceConfig;
     private synthesis: SpeechSynthesis | null = null;
 
+    private currentAudio: HTMLAudioElement | null = null;
+
     constructor(config: VoiceConfig = {}) {
         this.config = config;
         if (typeof window !== 'undefined') {
@@ -20,15 +24,20 @@ class VoiceService {
         }
     }
 
-    /**
-     * Convert text to speech using available voice provider
-     */
-    async speak(text: string): Promise<void> {
-        // If Eleven Labs is configured, use it (future implementation)
-        if (this.config.elevenLabsApiKey && this.config.elevenLabsVoiceId) {
-            return this.speakWithElevenLabs(text);
+    async speak(text: string, profileId?: string): Promise<void> {
+        // If Eleven Labs Voice ID is configured (env or profile), use backend proxy
+        console.log("🎤 VoiceService: Checking config...", {
+            envVoiceId: this.config.elevenLabsVoiceId,
+            profileId,
+            hasEnv: !!this.config.elevenLabsVoiceId
+        });
+
+        if (this.config.elevenLabsVoiceId || profileId) {
+            console.log("🎤 VoiceService: Using ElevenLabs Backend");
+            return this.speakWithElevenLabs(text, profileId);
         }
 
+        console.log("🎤 VoiceService: Fallback to Browser TTS (No Voice ID found)");
         // Fallback to browser native TTS
         return this.speakWithBrowserTTS(text);
     }
@@ -75,24 +84,31 @@ class VoiceService {
     /**
      * Eleven Labs Text-to-Speech (cloned voice) - Now proxied through Supabase for security
      */
-    private async speakWithElevenLabs(text: string): Promise<void> {
-        if (!this.config.elevenLabsVoiceId) {
-            throw new Error('Eleven Labs voice ID not configured');
-        }
-
+    private async speakWithElevenLabs(text: string, profileId?: string): Promise<void> {
         try {
+            // Stop any previous audio before starting new one
+            this.stop();
+
             console.log("Calling voice-engine backend for TTS...");
+            const session = await supabase.auth.getSession();
+            const token = session.data.session?.access_token;
+
+            if (!token) {
+                console.warn("No active session for TTS");
+            }
+
             const response = await fetch(
                 `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/voice-engine?mode=tts`,
                 {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+                        'Authorization': `Bearer ${token || import.meta.env.VITE_SUPABASE_ANON_KEY}`
                     },
                     body: JSON.stringify({
                         text,
                         voiceId: this.config.elevenLabsVoiceId,
+                        profileId,
                     }),
                 }
             );
@@ -106,13 +122,21 @@ class VoiceService {
             const audioUrl = URL.createObjectURL(audioBlob);
             const audio = new Audio(audioUrl);
 
+            this.currentAudio = audio;
+
             return new Promise((resolve, reject) => {
                 audio.onended = () => {
                     URL.revokeObjectURL(audioUrl);
+                    if (this.currentAudio === audio) {
+                        this.currentAudio = null;
+                    }
                     resolve();
                 };
                 audio.onerror = (e) => {
                     console.error("Audio playback error:", e);
+                    if (this.currentAudio === audio) {
+                        this.currentAudio = null;
+                    }
                     reject(e);
                 };
                 audio.play().catch(reject);
@@ -128,8 +152,16 @@ class VoiceService {
      * Stop any ongoing speech
      */
     stop(): void {
+        // Stop Browser TTS
         if (this.synthesis) {
             this.synthesis.cancel();
+        }
+
+        // Stop ElevenLabs Audio
+        if (this.currentAudio) {
+            this.currentAudio.pause();
+            this.currentAudio.currentTime = 0; // Reset
+            this.currentAudio = null;
         }
     }
 

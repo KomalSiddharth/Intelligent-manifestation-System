@@ -36,25 +36,44 @@ serve(async (req) => {
 
         console.log(`🚀 [BACKFILL] Starting batch process for ${batchSize} sources...`);
 
-        // 1. Get unmapped source IDs via RPC
-        const { data: rawSourceIds, error: rpcError } = await supabaseClient
-            .rpc('get_unmapped_sources', { p_limit: batchSize });
+        // 1. Get unmapped source IDs DIRECTLY (checking last_graph_sync)
+        // This prevents infinite loops where a file yields 0 nodes and keeps getting retried.
+        const { data: rawSources, error: fetchError } = await supabaseClient
+            .from('knowledge_sources')
+            .select('id')
+            .is('last_graph_sync', null)
+            .limit(batchSize);
 
-        if (rpcError) {
-            console.error("❌ [BACKFILL] RPC Error:", rpcError);
-            throw rpcError;
+        if (fetchError) {
+            console.error("❌ [BACKFILL] Database Error:", fetchError);
+            throw fetchError;
         }
 
-        // Extract IDs if returned as objects (depends on RPC return type handling)
-        const sourceIds = Array.isArray(rawSourceIds)
-            ? rawSourceIds.map((item: any) => typeof item === 'object' ? item.id : item)
-            : [];
+        const sourceIds = rawSources?.map(s => s.id) || [];
 
         if (sourceIds.length === 0) {
-            console.log("✅ [BACKFILL] All sources are already mapped to the graph.");
+            console.log("✅ [BACKFILL] No pending sources found.");
+
+            // Get global stats to show user why it finished
+            const { count: totalSources } = await supabaseClient.from('knowledge_sources').select('*', { count: 'exact', head: true });
+            const { count: syncedSources } = await supabaseClient.from('knowledge_sources').select('*', { count: 'exact', head: true }).not('last_graph_sync', 'is', null);
+            const { count: mappedSources } = await supabaseClient.from('node_source_map').select('source_id', { count: 'exact', head: true });
+
             return new Response(JSON.stringify({
                 success: true,
-                message: "No unmapped sources found. Your Knowledge Graph is fully up to date."
+                message: "Process Complete. No unmapped sources found.",
+                stats: {
+                    nodesCreated: 0,
+                    edgesCreated: 0,
+                    debug_title: "COMPLETE",
+                    debug_source_id: "ALL_DONE",
+                    debug_scout: `Total: ${totalSources} | Synced: ${syncedSources} | With Nodes: ${mappedSources}`,
+                    global_stats: {
+                        total: totalSources,
+                        synced: syncedSources,
+                        with_nodes: mappedSources
+                    }
+                }
             }), { headers: corsHeaders });
         }
 

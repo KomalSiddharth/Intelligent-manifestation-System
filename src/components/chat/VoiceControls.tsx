@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Mic, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -7,15 +8,30 @@ import { useVoiceOutput } from '@/hooks/useVoiceOutput';
 interface VoiceControlsProps {
     onVoiceInput?: (transcript: string) => void;
     onVoiceResponse?: (text: string) => void;
+    onAutoSend?: (transcript: string) => void; // Callback to trigger send with text
+    voiceEnabled: boolean; // Managed by parent
+    onToggleVoice: () => void; // Managed by parent
     className?: string;
 }
 
-const VoiceControls = ({ onVoiceInput, className }: VoiceControlsProps) => {
+const VoiceControls = ({ onVoiceInput, onAutoSend, voiceEnabled, onToggleVoice, className }: VoiceControlsProps) => {
+    const transcriptRef = useRef(""); // Track transcript for atomic access in onEnd
+
     const { isListening, toggleListening, isSupported: inputSupported } = useVoiceInput({
-        language: 'hi-IN',
+        language: 'en-IN',
         onResult: (transcript) => {
+            transcriptRef.current = transcript; // Update ref
             if (onVoiceInput) {
                 onVoiceInput(transcript);
+            }
+        },
+        onEnd: () => {
+            if (onAutoSend) {
+                const finalTranscript = transcriptRef.current;
+                if (finalTranscript.trim()) {
+                    console.log("🎤 Mic released, auto-sending:", finalTranscript);
+                    (onAutoSend as (text: string) => void)(finalTranscript);
+                }
             }
         },
         onError: (error) => {
@@ -23,12 +39,9 @@ const VoiceControls = ({ onVoiceInput, className }: VoiceControlsProps) => {
         },
     });
 
-    const { isEnabled, toggleEnabled, isSupported: outputSupported } = useVoiceOutput({
-        autoPlay: false,
-        language: 'hi-IN',
-    });
+    const isOutputSupported = true; // Assume supported or pass from parent if critical
 
-    if (!inputSupported && !outputSupported) {
+    if (!inputSupported && !isOutputSupported) {
         return null;
     }
 
@@ -51,21 +64,19 @@ const VoiceControls = ({ onVoiceInput, className }: VoiceControlsProps) => {
             )}
 
             {/* Voice Output (Speaker) */}
-            {outputSupported && (
-                <Button
-                    variant={isEnabled ? "default" : "ghost"}
-                    size="icon"
-                    onClick={toggleEnabled}
-                    className="rounded-full"
-                    title={isEnabled ? "Disable voice responses" : "Enable voice responses"}
-                >
-                    {isEnabled ? (
-                        <Volume2 className="h-4 w-4" />
-                    ) : (
-                        <VolumeX className="h-4 w-4" />
-                    )}
-                </Button>
-            )}
+            <Button
+                variant={voiceEnabled ? "default" : "ghost"}
+                size="icon"
+                onClick={onToggleVoice}
+                className="rounded-full"
+                title={voiceEnabled ? "Disable voice responses" : "Enable voice responses"}
+            >
+                {voiceEnabled ? (
+                    <Volume2 className="h-4 w-4" />
+                ) : (
+                    <VolumeX className="h-4 w-4" />
+                )}
+            </Button>
         </div>
     );
 };
