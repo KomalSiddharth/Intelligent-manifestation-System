@@ -41,10 +41,10 @@ export const VideoAvatar: React.FC<VideoAvatarProps> = ({
             <div className="relative w-full h-full rounded-full overflow-hidden border-4 border-white/20 shadow-2xl bg-muted flex items-center justify-center">
                 {/* Fallback Avatar Image (Visible when idle or no video) */}
                 {(status === 'idle' || (!videoUrl && !stream)) && (
-                    <Avatar className="w-full h-full scale-110">
-                        <AvatarImage src={avatarUrl} className="object-cover" />
+                    <Avatar className="w-full h-full">
+                        <AvatarImage src={avatarUrl || "/avatar_mk.png"} className="object-contain p-2" />
                         <AvatarFallback className="text-4xl">
-                            {profileName?.substring(0, 2).toUpperCase() || "AI"}
+                            {profileName?.substring(0, 2).toUpperCase() || "MK"}
                         </AvatarFallback>
                     </Avatar>
                 )}
@@ -55,10 +55,7 @@ export const VideoAvatar: React.FC<VideoAvatarProps> = ({
                         ref={videoRef}
                         autoPlay
                         playsInline
-                        className={cn(
-                            "w-full h-full object-cover transition-opacity duration-500",
-                            status === 'speaking' ? "opacity-100" : "opacity-0 invisible"
-                        )}
+                        className="w-full h-full object-cover"
                     />
                 )}
 

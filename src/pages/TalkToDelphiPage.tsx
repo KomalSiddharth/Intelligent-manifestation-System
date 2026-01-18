@@ -87,7 +87,10 @@ const TalkToDelphiPage = () => {
                             <MessageCircle className="w-4 h-4" />
                             Chat
                         </Button>
-                        <Button className="bg-orange-500 hover:bg-orange-600 text-white rounded-full px-8 gap-2">
+                        <Button
+                            className="bg-orange-500 hover:bg-orange-600 text-white rounded-full px-8 gap-2"
+                            onClick={() => navigate('/chat', { state: { autoStartCall: true } })}
+                        >
                             <Phone className="w-4 h-4" />
                             Call
                         </Button>

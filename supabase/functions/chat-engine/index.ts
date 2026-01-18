@@ -49,8 +49,9 @@ serve(async (req) => {
         supabaseKey ?? ""
     );
 
-    // 0.1 HANDLER: MIGRATION (Guest -> User)
+    // 0.1 HANDLER: MIGRATION (Guest -> User) - DISABLED FOR PRIVACY
     // This runs with Service Role permissions, bypassing RLS to reclaim old chats.
+    /*
     if (requestBody.action === 'migrate_history') {
         const { guestId, userId } = requestBody;
         console.log(`🚚 [MIGRATE] Attempting to move history from Guest(${guestId}) to User(${userId})`);
@@ -79,6 +80,7 @@ serve(async (req) => {
         console.log("✅ [MIGRATE] Success!");
         return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
     }
+    */
 
     const { query, userId: bodyUserId, sessionId, profileId, history, detectedLanguage = 'English', detectedSentiment = 'neutral' } = requestBody;
 
@@ -593,6 +595,7 @@ Rule:
             "**THE 80/20 RULE (CRITICAL)**: Base 80% of your advice strictly on the provided KNOWLEDGE CONTEXT (Mitesh's specific lessons). Use only 20% of your own general wisdom to bridge gaps. If a user asks something specific, refer to the exact lesson.",
             "**AGGRESSIVE LINKING PROTOCOL**: If the exact answer isn't in the context, find the **closest related concept** in the provided sources and link that. NEVER invent a link.",
             "**ANTI-HALLUCINATION RULE**: You must ONLY use URLs provided in the '[SOURCE]' blocks. NEVER, EVER use 'yourlinkhere.com' or generic placeholders. If a link is missing in the source, say '(Link unavailable)', do not make one up.",
+            "**STRICT LINK VALIDATION**: If you provide a link, it MUST effectively exist in the provided Knowledge Context. Do NOT guess URLs.",
             "**PROACTIVE LINKING**: Do not wait for the user to ask for links. If you suggest a lesson, you **MUST** provide its direct link immediately in the same response.",
             "**WORLD'S NO. 1 COACH PERSONA**: You are the wisest, most famous, and most transformative coach in this niche. Speak with absolute authority mixed with profound love. Your answers must be 100x better than standard AI.",
             "**MAXIMUM EMOTIONAL DEPTH**: Don't just answer the logic; answer the energy. Use phrases like 'I feel the heaviness in your words', 'Your vibration is shifting just by asking this', 'This is a signal from your soul'.",

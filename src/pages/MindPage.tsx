@@ -12,6 +12,7 @@ import SpeakingStyleView from '@/components/mind/sections/SpeakingStyleView';
 import ResponseSettingsView from '@/components/mind/sections/ResponseSettingsView';
 import SuggestedQuestionsView from '@/components/mind/sections/SuggestedQuestionsView';
 import ExperienceSettingsView from '@/components/mind/sections/ExperienceSettingsView';
+import VoiceSettingsView from '@/components/mind/sections/VoiceSettingsView';
 import CloneQualityView from '@/components/mind/sections/CloneQualityView';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -98,12 +99,6 @@ const MindPage = () => {
 
   const initProfiles = async () => {
     try {
-      let userId = localStorage.getItem('chat_user_id');
-      if (!userId) {
-        userId = crypto.randomUUID();
-        localStorage.setItem('chat_user_id', userId);
-      }
-
       const dbProfiles = await getMindProfiles();
       console.log('🔍 Initialization - Found profiles:', dbProfiles.length);
 
@@ -113,20 +108,28 @@ const MindPage = () => {
         const primary = dbProfiles.find(p => p.is_primary) || dbProfiles[0];
         setSelectedProfileId(primary.id);
 
-        // If we have multiple but none marked primary, or first one isn't primary when it should be
+        // Ensure at least one is marked primary in DB if none are
         if (!dbProfiles.some(p => p.is_primary)) {
-          console.log('⚠️ No primary profile found, setting', primary.name, 'as primary');
+          console.log('⚠️ No primary profile found, marking', primary.name, 'as primary');
           await updateMindProfile({ is_primary: true }, primary.id);
+          // Update local state too
+          setProfiles(prev => prev.map(p => p.id === primary.id ? { ...p, is_primary: true } : p));
         }
       } else {
-        console.log('➕ No profiles found, creating MiteshAI primary profile...');
-        // Auto-create primary profile if none exists
-        const newProfile = await createMindProfile('MiteshAI');
-        // Immediately mark as primary in state and DB
-        const primaryProfile = { ...newProfile, is_primary: true };
-        setProfiles([primaryProfile]);
-        setSelectedProfileId(primaryProfile.id);
-        await updateMindProfile({ is_primary: true }, primaryProfile.id);
+        console.log('➕ No profiles found for user. Auto-creation disabled to prevent duplicates.');
+        // Disable auto-creation for now to prevent redundant rows
+        // const newProfile = await createMindProfile('MiteshAI');
+        // await updateMindProfile({ is_primary: true }, newProfile.id);
+        // const primaryProfile = { ...newProfile, is_primary: true };
+        // setProfiles([primaryProfile]);
+        // setSelectedProfileId(primaryProfile.id);
+
+        // Just toast warning
+        toast({
+          title: "Profile Not Found",
+          description: "Could not find your master profile. Please check database permissions or user linking.",
+          variant: "destructive"
+        });
       }
     } catch (e) {
       console.error("Init profiles error:", e);
@@ -194,7 +197,7 @@ const MindPage = () => {
     try {
       setLoading(true);
       const [items, foldersList, failed, words] = await Promise.all([
-        getContentItems(selectedFolder || undefined, selectedProfileId || undefined),
+        getContentItems(selectedFolder || undefined, selectedProfileId === 'all' ? undefined : (selectedProfileId || undefined)),
         getFolders(),
         getFailedContentCount(selectedProfileId || undefined),
         getTotalWordCount(selectedProfileId || undefined),
@@ -588,15 +591,20 @@ const MindPage = () => {
     // Render other sections
     return (
       <div className="flex-1 overflow-auto bg-background">
-        {activeSection === 'profile' && <ProfileView profileId={selectedProfileId!} onDelete={handleDeleteProfile} />}
-        {activeSection === 'biography' && <BiographyView profileId={selectedProfileId!} />}
-        {activeSection === 'social-links' && <SocialLinksView profileId={selectedProfileId!} />}
-        {activeSection === 'purpose' && <PurposeInstructionsView profileId={selectedProfileId!} />}
-        {activeSection === 'speaking-style' && <SpeakingStyleView profileId={selectedProfileId!} />}
-        {activeSection === 'response-settings' && <ResponseSettingsView profileId={selectedProfileId!} />}
-        {activeSection === 'suggested-questions' && <SuggestedQuestionsView profileId={selectedProfileId!} />}
-        {activeSection === 'experience-settings' && <ExperienceSettingsView profileId={selectedProfileId!} />}
-        {activeSection === 'clone-quality' && <CloneQualityView profileId={selectedProfileId!} />}
+        {activeTab === 'voice' && <VoiceSettingsView profileId={selectedProfileId!} />}
+        {activeTab !== 'voice' && (
+          <>
+            {activeSection === 'profile' && <ProfileView profileId={selectedProfileId!} onDelete={handleDeleteProfile} />}
+            {activeSection === 'biography' && <BiographyView profileId={selectedProfileId!} />}
+            {activeSection === 'social-links' && <SocialLinksView profileId={selectedProfileId!} />}
+            {activeSection === 'purpose' && <PurposeInstructionsView profileId={selectedProfileId!} />}
+            {activeSection === 'speaking-style' && <SpeakingStyleView profileId={selectedProfileId!} />}
+            {activeSection === 'response-settings' && <ResponseSettingsView profileId={selectedProfileId!} />}
+            {activeSection === 'suggested-questions' && <SuggestedQuestionsView profileId={selectedProfileId!} />}
+            {activeSection === 'experience-settings' && <ExperienceSettingsView profileId={selectedProfileId!} />}
+            {activeSection === 'clone-quality' && <CloneQualityView profileId={selectedProfileId!} />}
+          </>
+        )}
       </div>
     );
   };

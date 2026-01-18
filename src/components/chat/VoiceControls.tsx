@@ -4,6 +4,7 @@ import { Mic, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useVoiceInput } from '@/hooks/useVoiceInput';
 import { useVoiceOutput } from '@/hooks/useVoiceOutput';
+import { voiceService } from '@/services/voiceService';
 
 interface VoiceControlsProps {
     onVoiceInput?: (transcript: string) => void;
@@ -39,6 +40,14 @@ const VoiceControls = ({ onVoiceInput, onAutoSend, voiceEnabled, onToggleVoice, 
         },
     });
 
+    const handleToggleListening = () => {
+        // Stop any active AI speech when user wants to talk
+        if (!isListening) {
+            voiceService.stop();
+        }
+        toggleListening();
+    };
+
     const isOutputSupported = true; // Assume supported or pass from parent if critical
 
     if (!inputSupported && !isOutputSupported) {
@@ -52,7 +61,7 @@ const VoiceControls = ({ onVoiceInput, onAutoSend, voiceEnabled, onToggleVoice, 
                 <Button
                     variant={isListening ? "default" : "ghost"}
                     size="icon"
-                    onClick={toggleListening}
+                    onClick={handleToggleListening}
                     className={cn(
                         "rounded-full transition-all",
                         isListening && "bg-red-500 hover:bg-red-600 animate-pulse"

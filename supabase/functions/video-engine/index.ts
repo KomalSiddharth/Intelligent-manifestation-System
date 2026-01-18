@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -11,14 +12,46 @@ serve(async (req) => {
     }
 
     try {
-        const { text, avatarId, profileId } = await req.json();
-
-        if (!text) throw new Error("Text is required for video generation");
+        const url = new URL(req.url);
+        const mode = url.searchParams.get('mode'); // 'generate' (default) or 'token'
 
         const supabaseClient = createClient(
             Deno.env.get("SUPABASE_URL") ?? "",
             Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
         );
+
+        // --- MODE: ACCESS TOKEN FOR STREAMING ---
+        if (mode === 'token') {
+            const apiKey = Deno.env.get("HEYGEN_API_KEY");
+            if (!apiKey) throw new Error("HeyGen API Key missing");
+
+            const tokenResponse = await fetch("https://api.heygen.com/v1/streaming.create_token", {
+                method: "POST",
+                headers: {
+                    "X-Api-Key": apiKey,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({})
+            });
+
+            if (!tokenResponse.ok) {
+                const err = await tokenResponse.text();
+                throw new Error(`Failed to generate token: ${err}`);
+            }
+
+            const data = await tokenResponse.json();
+            return new Response(JSON.stringify({
+                ...data,
+                defaultAvatarId: Deno.env.get("HEYGEN_AVATAR_ID")
+            }), { // data.data.token
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+        }
+
+        // --- MODE: VIDEO GENERATION (Default) ---
+        const { text, avatarId, profileId } = await req.json();
+        if (!text) throw new Error("Text is required for video generation");
+
 
         // 1. Fetch Profile for Credentials
         let dynamicApiKey = Deno.env.get("HEYGEN_API_KEY");

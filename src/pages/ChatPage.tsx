@@ -32,15 +32,18 @@ import {
     Share2,
     Video,
     Volume2,
-    Menu
+    Menu,
+    LogOut
 } from 'lucide-react';
+import { supabase } from '../db/supabase';
 import { cn } from '@/lib/utils';
 import { Message } from '@/types/types';
 import IdentityGate from '../components/chat/IdentityGate';
 import VoiceControls from '../components/chat/VoiceControls';
 import { useVoiceInput } from '@/hooks/useVoiceInput';
 import { useVoiceOutput } from '../hooks/useVoiceOutput';
-import { getSessions, createSession, getMessages, saveMessage, getMindProfiles, verifyAudienceAccess } from '../db/api';
+import { voiceService } from '../services/voiceService';
+import { getSessions, createSession, getMessages, saveMessage, getMindProfiles, verifyAudienceAccess, upsertAudienceUser } from '../db/api';
 import { useToast } from '@/hooks/use-toast';
 
 const SOCIAL_LINKS = [
@@ -90,6 +93,7 @@ const ChatPage = () => {
     const audioChunksRef = useRef<Blob[]>([]);
     const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
     const isSendingRef = useRef(false);
+    const abortControllerRef = useRef<AbortController | null>(null);
 
     // Identity & Session State
     const [chatUserId, setChatUserId] = useState<string>('');
@@ -104,7 +108,7 @@ const ChatPage = () => {
     const [playingMessageId, setPlayingMessageId] = useState<string | number | null>(null);
 
     // Voice Output Hook
-    const { speak, isEnabled: voiceEnabled, isSpeaking, toggleEnabled: toggleVoice } = useVoiceOutput({ autoPlay: false, language: 'hi-IN' });
+    const { speak, stop, isEnabled: voiceEnabled, isSpeaking, toggleEnabled: toggleVoice } = useVoiceOutput({ autoPlay: false, language: 'hi-IN' });
 
     // Sync isSpeaking with callStatus
     useEffect(() => {
@@ -135,7 +139,7 @@ const ChatPage = () => {
 
     const startCall = async () => {
         // Stop any ongoing speech/audio first
-        stop(); // From useVoiceOutput (wait, stop is not destructured)
+        voiceService.stop();
         // Correcting stop usage
         // Note: stop() is not exposed by useVoiceOutput in the destructuring above? 
         // Checking useVoiceOutput hook definition from memory/context. 
@@ -174,9 +178,31 @@ const ChatPage = () => {
     };
 
     const handleSendMessageInternal = async (text: string, options?: { forceSpeak?: boolean; isCall?: boolean }) => {
-        if (!text.trim() || !chatUserId || isSendingRef.current) return;
+        // Validation with Call Status Reset
+        if (!text.trim() || !chatUserId || isSendingRef.current) {
+            console.warn("⚠️ Send aborted:", { hasText: !!text.trim(), hasUser: !!chatUserId, isSending: isSendingRef.current });
+            if (options?.isCall) {
+                // Return to listening if we aborted a valid call request (e.g. empty text)
+                // Or idle if critical missing data
+                setCallStatus(chatUserId ? 'listening' : 'idle');
+                if (!chatUserId) toast({ title: "Error", description: "User ID missing. Try refreshing.", variant: "destructive" });
+            }
+            return;
+        }
 
         try {
+            // 1. ABORT PREVIOUS REQUEST
+            if (abortControllerRef.current) {
+                console.log("🛑 Interrupt detected: Aborting previous request...");
+                abortControllerRef.current.abort();
+                voiceService.stop();
+            }
+
+            // 2. CREATE NEW CONTROLLER
+            const controller = new AbortController();
+            abortControllerRef.current = controller;
+            const signal = controller.signal;
+
             isSendingRef.current = true;
             setIsProcessing(true);
 
@@ -188,13 +214,24 @@ const ChatPage = () => {
                 setCurrentSessionId(sessionId);
                 activeSessionIdRef.current = sessionId;
                 setSessions(prev => [newSession, ...prev]);
+
+                // SYNC AUDIENCE USER (Critical for Admin View)
+                try {
+                    const email = localStorage.getItem('chat_user_email');
+                    await upsertAudienceUser({
+                        id: chatUserId,
+                        email: email || undefined,
+                        name: userFullDetails?.name || email?.split('@')[0] || 'Unknown User',
+                        profile_id: selectedProfile?.id
+                    });
+                } catch (err) {
+                    console.error("Failed to sync audience user:", err);
+                }
             }
 
-            // ONLY add to chat UI if NOT a call
-            if (!options?.isCall) {
-                setMessages(prev => [...prev, { role: 'user', content: text }]);
-                await saveMessage(sessionId, 'user', text);
-            }
+            // ALWAYS add to chat UI and DB
+            setMessages(prev => [...prev, { role: 'user', content: text }]);
+            await saveMessage(sessionId, 'user', text);
 
             let finalQuery = text;
             if (userFullDetails?.name) {
@@ -213,7 +250,8 @@ const ChatPage = () => {
                     userId: chatUserId,
                     sessionId: sessionId,
                     profileId: selectedProfile?.id
-                })
+                }),
+                signal: signal
             });
 
             if (!response.ok) throw new Error("Backend Error");
@@ -222,60 +260,59 @@ const ChatPage = () => {
             const decoder = new TextDecoder();
             let aiResponse = '';
 
-            // Only add placeholder message if NOT a call
-            if (!options?.isCall) {
-                setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-            }
+            // ALWAYS add placeholder message
+            setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+            const assistantMessageIndex = messages.length + 1; // Anticipate next index
 
-            while (true) {
-                const { done, value } = await reader!.read();
-                if (done) {
-                    if (!aiResponse) {
-                        const errorMsg = "⚠️ Connection established, but no response received. Please check Supabase Edge Function logs and API Keys.";
-                        aiResponse = errorMsg;
-                        if (!options?.isCall) {
-                            setMessages(prev => {
-                                const newMsgs = [...prev];
-                                newMsgs[newMsgs.length - 1].content = errorMsg;
-                                return newMsgs;
-                            });
-                        } else {
-                            toast({ title: "Backend Error", description: "Connection established but no response.", variant: "destructive" });
-                        }
-                    }
-                    console.log("✅ Stream complete. Final aiResponse length:", aiResponse.length);
-                    break;
-                }
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n');
-
-                for (const line of lines) {
-                    if (!line) continue;
-
-                    if (line.startsWith('data: ')) {
-                        const dataContent = line.slice(6).trim();
-                        if (dataContent === '[DONE]') break;
-
-                        try {
-                            const parsed = JSON.parse(dataContent);
-                            if (typeof parsed === 'string') {
-                                aiResponse += parsed;
-                            } else if (parsed?.choices?.[0]?.delta?.content) {
-                                aiResponse += parsed.choices[0].delta.content;
-                            } else if (parsed?.text) {
-                                aiResponse += parsed.text;
-                            } else if (parsed?.content) {
-                                aiResponse += parsed.content;
+            try {
+                while (true) {
+                    const { done, value } = await reader!.read();
+                    if (done) {
+                        if (!aiResponse) {
+                            const errorMsg = "⚠️ Connection established, but no response received. Please check Supabase Edge Function logs and API Keys.";
+                            aiResponse = errorMsg;
+                            if (!options?.isCall) {
+                                setMessages(prev => {
+                                    const newMsgs = [...prev];
+                                    newMsgs[newMsgs.length - 1].content = errorMsg;
+                                    return newMsgs;
+                                });
+                            } else {
+                                toast({ title: "Backend Error", description: "Connection established but no response.", variant: "destructive" });
                             }
-                        } catch (e) {
-                            aiResponse += dataContent;
                         }
-                    } else {
-                        aiResponse += line + (chunk.endsWith('\n') ? '\n' : '');
+                        console.log("✅ Stream complete. Final aiResponse length:", aiResponse.length);
+                        break;
                     }
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
 
-                    // Update UI only if NOT a call
-                    if (!options?.isCall) {
+                    for (const line of lines) {
+                        if (!line) continue;
+
+                        if (line.startsWith('data: ')) {
+                            const dataContent = line.slice(6).trim();
+                            if (dataContent === '[DONE]') break;
+
+                            try {
+                                const parsed = JSON.parse(dataContent);
+                                if (typeof parsed === 'string') {
+                                    aiResponse += parsed;
+                                } else if (parsed?.choices?.[0]?.delta?.content) {
+                                    aiResponse += parsed.choices[0].delta.content;
+                                } else if (parsed?.text) {
+                                    aiResponse += parsed.text;
+                                } else if (parsed?.content) {
+                                    aiResponse += parsed.content;
+                                }
+                            } catch (e) {
+                                aiResponse += dataContent;
+                            }
+                        } else {
+                            aiResponse += line + (chunk.endsWith('\n') ? '\n' : '');
+                        }
+
+                        // Update UI for ALL messages
                         setMessages(prev => {
                             const newMsgs = [...prev];
                             const lastMsg = newMsgs[newMsgs.length - 1];
@@ -296,6 +333,22 @@ const ChatPage = () => {
                         });
                     }
                 }
+            } catch (err: any) {
+                if (err.name === 'AbortError') {
+                    console.log("✨ Stream aborted successfully.");
+                    // Clean up UI if we were interrupted mid-sentence
+                    // Clean up UI if we were interrupted mid-sentence
+                    setMessages(prev => {
+                        const newMsgs = [...prev];
+                        const lastMsg = newMsgs[newMsgs.length - 1];
+                        if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.content) {
+                            return prev.slice(0, -1); // Remove empty assistant bubble
+                        }
+                        return newMsgs;
+                    });
+                    return; // EXIT EVERYTHING FOR THIS OLD REQUEST
+                }
+                throw err;
             }
 
             if (!aiResponse) {
@@ -305,10 +358,20 @@ const ChatPage = () => {
                 }
             }
 
-            // Save to DB only if NOT a call
-            if (!options?.isCall && aiResponse) {
+            // Save to DB for ALL messages if response exists
+            if (aiResponse) {
                 await saveMessage(sessionId, 'assistant', aiResponse);
             }
+
+            // Clear ref if this request finished normally
+            if (abortControllerRef.current === controller) {
+                abortControllerRef.current = null;
+            }
+
+            // Reset processing flags BEFORE audio playback starts
+            // This prevents the "hang" where user can't send a new message while AI is still speaking
+            setIsProcessing(false);
+            isSendingRef.current = false;
 
             if ((voiceEnabled || options?.forceSpeak) && aiResponse) {
                 try {
@@ -333,9 +396,17 @@ const ChatPage = () => {
             }
 
         } catch (error: any) {
-            console.error('Error:', error);
-            setMessages(prev => [...prev, { role: 'assistant', content: "Error: " + error.message }]);
-        } finally {
+            console.error('Error in handleSendMessage:', error);
+            const errorMsg = "Error: " + (error.message || "Unknown error");
+
+            if (options?.isCall) {
+                toast({ title: "Error", description: errorMsg, variant: "destructive" });
+                // Reset to listening so user can try again
+                setCallStatus('listening');
+            } else {
+                setMessages(prev => [...prev, { role: 'assistant', content: errorMsg }]);
+            }
+            // Reset flags on error too
             setIsProcessing(false);
             isSendingRef.current = false;
         }
@@ -504,6 +575,16 @@ const ChatPage = () => {
             const initialMsg = location.state.initialMessage;
             setMessages(prev => [...prev, { role: 'user', content: initialMsg }]);
             handleSendMessageInternal(initialMsg);
+            window.history.replaceState({}, document.title);
+        }
+
+        if (location.state?.autoStartCall) {
+            // Auto-start voice call
+            setIsCallOpen(true);
+            // Small timeout to allow Dialog to mount before starting audio
+            setTimeout(() => {
+                startCall();
+            }, 500);
             window.history.replaceState({}, document.title);
         }
     }, [location.state]);
@@ -703,6 +784,22 @@ const ChatPage = () => {
                                 ))}
                             </div>
                         )}
+                    </div>
+
+                    <div className="p-4 border-t mt-auto">
+                        <Button
+                            variant="ghost"
+                            className="w-full justify-start gap-2 text-red-500 hover:text-red-600 hover:bg-red-50"
+                            onClick={async () => {
+                                await supabase.auth.signOut();
+                                localStorage.removeItem('chat_user_id');
+                                localStorage.removeItem('chat_user_email');
+                                window.location.reload();
+                            }}
+                        >
+                            <LogOut className="w-4 h-4" />
+                            Sign Out
+                        </Button>
                     </div>
                 </aside>
 
@@ -1087,58 +1184,65 @@ const ChatPage = () => {
 
             {/* Call Overlay */}
             <Dialog open={isCallOpen} onOpenChange={setIsCallOpen}>
-                <DialogContent className="sm:max-w-md bg-gradient-to-b from-slate-900 to-slate-950 border-slate-800 text-white p-0 overflow-hidden">
-                    <div className="flex flex-col items-center justify-center p-8 h-[400px] relative">
-                        <div className="absolute top-4 right-4 z-10">
-                            <Button variant="ghost" size="icon" onClick={endCall} className="text-white/50 hover:text-white hover:bg-white/10 rounded-full">
-                                <X className="w-5 h-5" />
-                            </Button>
-                        </div>
-
+                <DialogContent className="sm:max-w-5xl h-[80vh] bg-gradient-to-b from-slate-900 to-slate-950 border-slate-800 text-white p-0 overflow-hidden">
+                    <div className="flex flex-col items-center justify-center p-8 h-full relative">
                         {/* Video Avatar */}
                         <VideoAvatar
                             status={callStatus}
                             avatarUrl={selectedProfile?.avatar_url}
                             profileName={selectedProfile?.name}
                             videoUrl={videoUrl}
-                            className="w-48 h-48 mb-8"
+                            className="w-64 h-64 mb-8"
                         />
 
-                        <h3 className="text-2xl font-bold mb-2">{selectedProfile?.name || "AI Assistant"}</h3>
-                        <p className="text-slate-400 mb-8 animate-pulse">
+                        <h3 className="text-3xl font-bold mb-2">{selectedProfile?.name || "AI Assistant"}</h3>
+                        <p className="text-slate-400 mb-12 animate-pulse text-lg">
                             {callStatus === 'listening' ? "Listening..." :
                                 callStatus === 'speaking' ? "Speaking..." :
                                     callStatus === 'processing' ? "Thinking..." : "Ready"}
                         </p>
 
-                        <div className="flex gap-6">
+                        <div className="flex gap-8">
                             <Button
                                 size="lg"
                                 variant="outline"
                                 className={cn(
-                                    "rounded-full w-14 h-14 p-0 border-slate-700 bg-slate-800/50 hover:bg-slate-700 hover:text-white",
-                                    callStatus === 'listening' && "bg-slate-700 text-white"
+                                    "rounded-full w-20 h-20 p-0 border-slate-700 bg-slate-800/50 hover:bg-slate-700 hover:text-white transition-all duration-300",
+                                    callStatus === 'listening' && "bg-red-500/20 border-red-500 text-red-500 hover:bg-red-500/30"
                                 )}
-                                onClick={callStatus === 'listening' ? stopListening : startCall}
+                                onClick={() => {
+                                    if (callStatus === 'listening') {
+                                        // User clicked to STOP listening (mute) -> Trigger Processing
+                                        stopListening();
+                                    } else {
+                                        // User clicked to START listening (Interrupt)
+                                        // 1. Stop any current AI speech
+                                        voiceService.stop();
+                                        startCall();
+                                    }
+                                }}
                             >
-                                {callStatus === 'listening' ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+                                {callStatus === 'listening' ? <Mic className="w-8 h-8" /> : <MicOff className="w-8 h-8" />}
                             </Button>
                             <Button
                                 size="lg"
                                 variant="destructive"
-                                className="rounded-full w-14 h-14 p-0 bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/20"
-                                onClick={endCall}
+                                className="rounded-full w-20 h-20 p-0 bg-red-600 hover:bg-red-700 shadow-xl shadow-red-600/20"
+                                onClick={() => {
+                                    voiceService.stop();
+                                    endCall();
+                                }}
                             >
-                                <PhoneOff className="w-6 h-6" />
+                                <PhoneOff className="w-8 h-8" />
                             </Button>
                         </div>
-
-                        {/* Hidden Audio Player */}
-                        <audio ref={audioPlayerRef} className="hidden" />
                     </div>
+
+                    {/* Hidden Audio Player */}
+                    <audio ref={audioPlayerRef} className="hidden" />
                 </DialogContent>
             </Dialog>
-        </IdentityGate>
+        </IdentityGate >
     );
 };
 

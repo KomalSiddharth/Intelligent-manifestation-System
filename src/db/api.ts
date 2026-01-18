@@ -21,62 +21,45 @@ export interface UserIntegration {
   metadata?: any;
 }
 
-// Mind Profile API
 export const getMindProfiles = async () => {
-  const { data: { user } } = await supabase.auth.getUser();
-  const storedId = localStorage.getItem('chat_user_id');
-  const ids = [user?.id, storedId].filter(Boolean);
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    // STRICT ISOLATION: Only listen to verified user if logged in.
+    // If user is null, fallback to storedId (Guest Mode).
+    const storedId = localStorage.getItem('chat_user_id');
+    const userId = user?.id || storedId;
 
-  if (ids.length === 0) return [];
+    const { data, error } = await supabase.rpc('get_admin_profiles');
+    if (error) throw error;
+    return (data || []).filter((p: any) => !userId || p.user_id === userId || p.is_primary);
+  } catch (err) {
+    console.error("Error fetching profiles via RPC:", err);
+    // Fallback with proper filtering
+    const { data: { user } } = await supabase.auth.getUser();
+    const storedId = localStorage.getItem('chat_user_id');
+    const userId = user?.id || storedId;
 
-  const { data, error } = await supabase
-    .from('mind_profile')
-    .select('*')
-    .in('user_id', ids)
-    .order('is_primary', { ascending: false })
-    .order('updated_at', { ascending: false });
+    let query = supabase.from('mind_profile').select('*');
+    if (userId) query = query.eq('user_id', userId);
 
-  if (error) {
-    console.error("Error fetching profiles:", error);
-    throw error;
+    const { data } = await query.order('is_primary', { ascending: false });
+    return data || [];
   }
-  return data || [];
 };
 
 export const getMindProfile = async (profileId?: string) => {
-  const { data: { user } } = await supabase.auth.getUser();
-  const storedId = localStorage.getItem('chat_user_id');
-
-  // Try Auth ID first, then Guest ID
-  const ids = [user?.id, storedId].filter(Boolean);
-  if (ids.length === 0 && !profileId) return null;
-
-  let query = supabase.from('mind_profile').select('*');
-
-  if (profileId) {
-    query = query.eq('id', profileId);
-  } else {
-    // Order by: 1) Primary first, 2) Most recent update
-    query = query
-      .in('user_id', ids)
-      .order('is_primary', { ascending: false })
-      .order('updated_at', { ascending: false, nullsFirst: false });
+  try {
+    const { data, error } = await supabase.rpc('get_admin_profile', { p_profile_id: profileId || null });
+    if (error) throw error;
+    return data;
+  } catch (err) {
+    console.error("Error fetching profile via RPC:", err);
+    // Fallback
+    let query = supabase.from('mind_profile').select('*');
+    if (profileId) query = query.eq('id', profileId);
+    const { data } = await query.limit(1).maybeSingle();
+    return data;
   }
-
-  const { data, error } = await query.limit(1).maybeSingle();
-
-  if (error) {
-    console.error("Error fetching profile:", error);
-    throw error;
-  }
-
-  if (data) {
-    console.log('✅ Loaded profile:', data.id, 'Purpose:', data.purpose ? 'YES' : 'NO');
-  } else {
-    console.log('⚠️ No profile found for ids:', ids);
-  }
-
-  return data;
 };
 
 export const ensureUserFact = async (userId: string, type: string, fact: string, profileId?: string): Promise<void> => {
@@ -307,106 +290,25 @@ export const moveContentToFolder = async (id: string, folderId: string | null): 
   }
 };
 export const getContentItems = async (folderId?: string, profileId?: string): Promise<ContentItem[]> => {
-  const { data: { user } } = await supabase.auth.getUser();
-  const storedId = localStorage.getItem('chat_user_id');
-  const userIds = [user?.id, storedId].filter(Boolean);
-
-  // Determine if the current profile is the primary one
-  let isPrimary = false;
-  if (profileId) {
-    const { data: profile } = await supabase
-      .from('mind_profile')
-      .select('is_primary')
-      .eq('id', profileId)
-      .maybeSingle();
-    isPrimary = profile?.is_primary || false;
-  }
-
-  // 1. Query knowledge_sources with pagination to bypass 1000 limit
-  let allKS: any[] = [];
-  let pageKS = 0;
-  let hasMoreKS = true;
-
-  while (hasMoreKS && allKS.length < 5000) {
-    let queryKS = supabase
-      .from('knowledge_sources')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .range(pageKS * 1000, (pageKS + 1) * 1000 - 1);
-
-    if (folderId) queryKS = queryKS.eq('folder_id', folderId);
-    if (profileId) {
-      if (isPrimary && userIds.length > 0) {
-        queryKS = queryKS.in('user_id', userIds);
-      } else {
-        queryKS = queryKS.eq('profile_id', profileId);
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-data', {
+      body: {
+        action: 'get_content',
+        folderId: folderId || null,
+        profileId: profileId === 'all' ? null : (profileId || null)
       }
-    } else if (userIds.length > 0) {
-      queryKS = queryKS.in('user_id', userIds);
-    }
-
-    const { data, error } = await queryKS;
-    if (error) {
-      console.error("Error fetching KS page:", error);
-      break;
-    }
-    if (data && data.length > 0) {
-      allKS.push(...data);
-      if (data.length < 1000) hasMoreKS = false;
-      else pageKS++;
-    } else {
-      hasMoreKS = false;
-    }
-  }
-
-  // 2. Query content_items (Sample data)
-  const { data: dataCI, error: errorCI } = await supabase
-    .from('content_items')
-    .select('*')
-    .eq('profile_id', profileId || '')
-    .limit(1000);
-
-  if (errorCI) console.error("Error fetching content_items:", errorCI);
-
-  const finalItems: ContentItem[] = [];
-
-  // Map knowledge_sources
-  allKS.forEach((item: any) => {
-    finalItems.push({
-      id: item.id,
-      title: item.title,
-      type: item.source_type,
-      source_type: item.source_type,
-      word_count: item.word_count || 0,
-      file_url: item.source_url,
-      folder_id: item.folder_id,
-      status: 'active',
-      uploaded_at: item.created_at,
-      metadata: {},
-      isOwnContent: true
     });
-  });
 
-  // Map content_items
-  if (dataCI) {
-    dataCI.forEach((item: any) => {
-      finalItems.push({
-        id: item.id,
-        title: item.title,
-        type: item.source_type,
-        source_type: item.source_type,
-        word_count: item.word_count || 0,
-        file_url: item.file_url,
-        folder_id: item.folder_id,
-        status: item.status || 'active',
-        uploaded_at: item.uploaded_at,
-        metadata: item.metadata || {},
-        isOwnContent: true
-      });
-    });
+    if (error) throw error;
+
+    return (data.data || []).map((item: any) => ({
+      ...item,
+      uploaded_at: item.uploaded_at || item.created_at,
+    }));
+  } catch (err) {
+    console.error("Error fetching content via Edge Function:", err);
+    return [];
   }
-
-  return finalItems;
 };
 
 export const deleteContentItem = async (id: string): Promise<void> => {
@@ -429,35 +331,13 @@ export const deleteContentItem = async (id: string): Promise<void> => {
 };
 
 export const getFailedContentCount = async (profileId?: string): Promise<number> => {
-  const { data: { user } } = await supabase.auth.getUser();
-  const storedId = localStorage.getItem('chat_user_id');
-  const userIds = [user?.id, storedId].filter(Boolean);
-
-  if (userIds.length === 0) return 0;
-
-  let isPrimary = false;
-  if (profileId) {
-    const { data: profile } = await supabase
-      .from('mind_profile')
-      .select('is_primary')
-      .eq('id', profileId)
-      .maybeSingle();
-    isPrimary = profile?.is_primary || false;
-  }
-
   let query = supabase
     .from('knowledge_sources')
     .select('id', { count: 'exact', head: true })
     .eq('word_count', 0);
 
-  if (profileId) {
-    if (isPrimary) {
-      query = query.in('user_id', userIds);
-    } else {
-      query = query.eq('profile_id', profileId);
-    }
-  } else {
-    query = query.in('user_id', userIds);
+  if (profileId && profileId !== 'all') {
+    query = query.eq('profile_id', profileId);
   }
 
   const { count, error } = await query;
@@ -466,16 +346,20 @@ export const getFailedContentCount = async (profileId?: string): Promise<number>
 };
 
 export const getTotalWordCount = async (profileId?: string): Promise<number> => {
-  const { data, error } = await supabase.rpc('get_total_knowledge_stats', {
-    p_profile_id: profileId || null
-  });
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-data', {
+      body: {
+        action: 'get_stats',
+        profileId: (profileId === 'all' ? null : profileId) || null
+      }
+    });
 
-  if (error) {
-    console.error("Error fetching totals via RPC:", error);
+    if (error) throw error;
+    return data?.totalWords || 0;
+  } catch (err) {
+    console.error("Error fetching total word count via Edge Function:", err);
     return 0;
   }
-
-  return data?.[0]?.total_words || 0;
 };
 
 // Ingestion API
@@ -614,73 +498,42 @@ export const trackSocialSource = async (url: string, platform: string, profileId
 
 // Audience Users API
 export const getAudienceUsers = async (status?: string, _profileId?: string): Promise<AudienceUser[]> => {
-  console.log(`[DB] Fetching audience: status=${status}, profileId=${_profileId}`);
-
-  const allData: AudienceUser[] = [];
-  const pageSize = 1000;
-  let page = 0;
-  let hasMore = true;
-
   try {
-    while (hasMore && allData.length < 50000) { // Safety cap
-      let query = supabase
-        .from('audience_users')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .range(page * pageSize, (page + 1) * pageSize - 1);
-
-      // 1. Strict Profile Filtering
-      if (_profileId) {
-        query = query.eq('profile_id', _profileId);
+    const { data, error } = await supabase.functions.invoke('admin-data', {
+      body: {
+        action: 'get_audience',
+        status: status === 'all' ? null : (status || null),
+        profileId: _profileId === 'all' ? null : (_profileId || null),
+        limit: 5000 // Set high limit for now
       }
+    });
 
-      // 2. Status Logic (User Requirements)
-      if (status && status !== 'all') {
-        if (status === 'active') {
-          query = query.gt('message_count', 0).neq('status', 'revoked');
-        } else if (status === 'invited') {
-          query = query.eq('message_count', 0).neq('status', 'revoked');
-        } else if (status === 'revoked') {
-          query = query.eq('status', 'revoked');
-        }
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      if (data && data.length > 0) {
-        allData.push(...(data as AudienceUser[]));
-        if (data.length < pageSize) {
-          hasMore = false;
-        } else {
-          page++;
-        }
-      } else {
-        hasMore = false;
-      }
-    }
+    if (error) throw error;
+    return (data.data as AudienceUser[]) || [];
   } catch (err) {
-    console.error("Error fetching audience:", err);
-    throw err;
+    console.error("Error fetching audience via Edge Function:", err);
+    return [];
   }
-
-  return allData;
 };
 
 
 export const getTotalUserCount = async (profileId?: string): Promise<number> => {
-  let query = supabase
-    .from('audience_users')
-    .select('*', { count: 'exact', head: true });
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-data', {
+      body: {
+        action: 'get_stats',
+        profileId: (profileId === 'all' ? null : profileId) || null
+      }
+    });
 
-  if (profileId) {
-    query = query.eq('profile_id', profileId);
+    if (error) throw error;
+    return data?.userCount || 0;
+  } catch (err) {
+    console.error("Error fetching total user count via Edge Function:", err);
+    // Silent fallback to standard head query if Edge Function fails
+    const { count } = await supabase.from('audience_users').select('id', { count: 'exact', head: true });
+    return count || 0;
   }
-
-  const { count, error } = await query;
-
-  if (error) throw error;
-  return count || 0;
 };
 
 export const createAudienceUser = async (user: Partial<AudienceUser>, profileId?: string): Promise<AudienceUser> => {
@@ -743,6 +596,38 @@ export const deleteAudienceUsers = async (ids: string[]): Promise<void> => {
   if (error) throw error;
 };
 
+
+
+export const upsertAudienceUser = async (user: { id: string; email?: string; name?: string; profile_id?: string }) => {
+  // Check if user exists first to preserve existing data like tags/status
+  const { data: existing } = await supabase
+    .from('audience_users')
+    .select('*')
+    .eq('user_id', user.id)
+    .single();
+
+  const updates = {
+    user_id: user.id,
+    email: user.email || existing?.email,
+    name: user.name || existing?.name || 'Unknown',
+    last_active: new Date().toISOString(),
+    profile_id: user.profile_id || existing?.profile_id,
+    // Only set default status if new
+    status: existing?.status || 'active'
+  };
+
+  const { data, error } = await supabase
+    .from('audience_users')
+    .upsert(updates, { onConflict: 'user_id' })
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error syncing audience user:", error);
+  }
+  return data;
+};
+
 export const deleteAllAudienceUsers = async (profileId?: string, forceAll: boolean = false): Promise<void> => {
   let query = supabase
     .from('audience_users')
@@ -771,7 +656,8 @@ export const verifyAudienceAccess = async (email: string, profileId?: string): P
     .ilike('email', email);
 
   if (profileId) {
-    query = query.eq('profile_id', profileId);
+    // Allow if user belongs to this profile OR is a global user (profile_id is null)
+    query = query.or(`profile_id.eq.${profileId},profile_id.is.null`);
   }
 
   const { data, error } = await query.maybeSingle();

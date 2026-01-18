@@ -96,8 +96,8 @@ const AccessPage = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const usersData = await getAudienceUsers(statusFilter, selectedProfileId);
-      console.log(`[ACCESS] Fetched ${usersData.length} users for filter: ${statusFilter}`);
+      const usersData = await getAudienceUsers(statusFilter, selectedProfileId === 'all' ? undefined : selectedProfileId);
+      console.log(`[ACCESS] Fetched ${usersData.length} users for filter: ${statusFilter}, Profile: ${selectedProfileId}`);
       setUsers(usersData);
     } catch (error) {
       console.error('Error fetching users:', error);
@@ -211,6 +211,7 @@ const AccessPage = () => {
                       <SelectValue placeholder="Select Clone" />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="all">All Clones</SelectItem>
                       {profiles.map(profile => (
                         <SelectItem key={profile.id} value={profile.id}>
                           {profile.name}
