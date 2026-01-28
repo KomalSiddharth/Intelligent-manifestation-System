@@ -7,18 +7,20 @@ import { Info, Pin } from 'lucide-react';
 import { getMindProfile, updateMindProfile } from '@/db/api';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import { MindProfile } from '@/types/types';
 
 interface ResponseSettingsViewProps {
     profileId: string;
+    initialData?: MindProfile;
 }
 
-const ResponseSettingsView = ({ profileId }: ResponseSettingsViewProps) => {
+const ResponseSettingsView = ({ profileId, initialData }: ResponseSettingsViewProps) => {
     const { toast } = useToast();
-    const [language, setLanguage] = useState("en-US");
-    const [responseLength, setResponseLength] = useState("explanatory");
-    const [creativity, setCreativity] = useState("adaptive");
-    const [dynamicQuestions, setDynamicQuestions] = useState(true);
-    const [recencyBias, setRecencyBias] = useState(true);
+    const [language, setLanguage] = useState(initialData?.response_settings?.language || "en-US");
+    const [responseLength, setResponseLength] = useState(initialData?.response_settings?.responseLength || "explanatory");
+    const [creativity, setCreativity] = useState(initialData?.response_settings?.creativity || "adaptive");
+    const [dynamicQuestions, setDynamicQuestions] = useState(initialData?.response_settings?.dynamicQuestions ?? true);
+    const [recencyBias, setRecencyBias] = useState(initialData?.response_settings?.recencyBias ?? true);
     const [isLoading, setIsLoading] = useState(false);
 
     useEffect(() => {

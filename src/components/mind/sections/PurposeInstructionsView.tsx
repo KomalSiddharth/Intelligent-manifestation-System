@@ -15,15 +15,17 @@ import {
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { getMindProfile, updateMindProfile } from '@/db/api';
+import { MindProfile } from '@/types/types';
 
 interface PurposeInstructionsViewProps {
     profileId: string;
+    initialData?: MindProfile;
 }
 
-const PurposeInstructionsView = ({ profileId }: PurposeInstructionsViewProps) => {
+const PurposeInstructionsView = ({ profileId, initialData }: PurposeInstructionsViewProps) => {
     const { toast } = useToast();
-    const [purpose, setPurpose] = useState("");
-    const [instructions, setInstructions] = useState<string[]>([]);
+    const [purpose, setPurpose] = useState(initialData?.purpose || "");
+    const [instructions, setInstructions] = useState<string[]>(initialData?.instructions || []);
     const [isLoading, setIsLoading] = useState(false);
 
     useEffect(() => {

@@ -1,102 +1,142 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from youtube_transcript_api import YouTubeTranscriptApi
-from openai import OpenAI
-from dotenv import load_dotenv
+import subprocess
+import requests
 import os
-import re
-import tempfile
+import sys
+import time
+import random
+import string
+from dotenv import load_dotenv
+from youtube_transcript_api import YouTubeTranscriptApi
 
-# Load environment variables
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# Initialize OpenAI
-api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key) if api_key else None
+DAILY_API_KEY = os.getenv("DAILY_API_KEY")
 
-def extract_video_id(url):
-    regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^\"&?\/\s]{11})"
-    match = re.search(regex, url)
-    if match:
-        return match.group(1)
-    return None
+def generate_room_name(user_id):
+    """Generate unique room name"""
+    timestamp = int(time.time())
+    random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    return f"voice-{user_id[:8]}-{timestamp}-{random_suffix}"
 
-@app.route('/transcript', methods=['POST'])
-def get_transcript():
+@app.route('/start-session', methods=['POST'])
+def start_session():
+    """Create Daily.co room and spawn voice worker"""
+    
     try:
         data = request.json
-        url = data.get('url')
+        user_id = data.get('user_id', 'anonymous-user')
         
-        if not url:
-            return jsonify({'success': False, 'error': 'URL is required'}), 400
-            
-        video_id = extract_video_id(url)
-        if not video_id:
-            return jsonify({'success': False, 'error': 'Invalid YouTube URL'}), 400
-            
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-        full_text = " ".join([item['text'] for item in transcript_list])
+        print(f"📞 Creating voice session for user: {user_id}")
+        
+        # Generate unique room name
+        room_name = generate_room_name(user_id)
+        
+        # Create Daily.co room
+        response = requests.post(
+            "https://api.daily.co/v1/rooms",
+            headers={
+                "Authorization": f"Bearer {DAILY_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "name": room_name,
+                "privacy": "private",
+                "properties": {
+                    "max_participants": 2,
+                    "enable_chat": False,
+                    "enable_screenshare": False,
+                    "start_video_off": True,
+                    "start_audio_off": False,
+                    "exp": int(time.time()) + 3600
+                }
+            }
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Daily.co API error: {response.text}")
+        
+        room_data = response.json()
+        room_url = room_data["url"]
+        room_name = room_data["name"]
+        
+        print(f"✅ Room created: {room_url}")
+        
+        # Create meeting token
+        token_response = requests.post(
+            "https://api.daily.co/v1/meeting-tokens",
+            headers={
+                "Authorization": f"Bearer {DAILY_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "properties": {
+                    "room_name": room_name,
+                    "is_owner": True
+                }
+            }
+        )
+        
+        if token_response.status_code != 200:
+            raise Exception(f"Token creation error: {token_response.text}")
+        
+        token = token_response.json()["token"]
+        
+        # ✅ Start voice worker using same Python as current process
+        print(f"🚀 Spawning voice worker with venv Python...")
+        subprocess.Popen(
+            [
+                sys.executable,  # ✅ CRITICAL: Uses venv Python!
+                "voice_worker.py",
+                room_url,
+                token,
+                user_id
+            ],
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        
+        print(f"✅ Voice worker spawned for room: {room_url}")
         
         return jsonify({
-            'success': True,
-            'transcript': full_text
+            "success": True,
+            "room_url": room_url,
+            "token": token,
+            "expires_at": room_data["config"]["exp"]
         })
         
     except Exception as e:
-        print(f"YouTube Error: {str(e)}")
-        error_msg = str(e)
-        if "TranscriptsDisabled" in error_msg:
-             error_msg = "Subtitles are disabled for this video"
-        elif "NoTranscriptFound" in error_msg:
-             error_msg = "No suitable transcript found"
-        return jsonify({'success': False, 'error': error_msg}), 200
-
-@app.route('/transcribe', methods=['POST'])
-def transcribe_audio():
-    if not client:
-        return jsonify({'success': False, 'error': 'OPENAI_API_KEY not found in .env'}), 500
-
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'error': 'No file part'}), 400
-        
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'error': 'No selected file'}), 400
-
-    try:
-        # Save temp file for Whisper
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp:
-            file.save(temp.name)
-            temp_path = temp.name
-
-        # Transcribe
-        with open(temp_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-1", 
-                file=audio_file,
-                response_format="text"
-            )
-
-        # Cleanup
-        os.unlink(temp_path)
-
+        print(f"❌ Error in start_session: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
-            'success': True,
-            'transcript': transcription
-        })
+            "success": False,
+            "error": str(e)
+        }), 500
 
-    except Exception as e:
-        print(f"Whisper Error: {str(e)}")
-        if 'os.unlink' not in str(e) and 'temp_path' in locals():
-            try: os.unlink(temp_path)
-            except: pass
-        return jsonify({'success': False, 'error': str(e)}), 500
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "service": "voice-backend",
+        "timestamp": int(time.time())
+    })
 
-if __name__ == '__main__':
-    print("🚀 Python Backend running on http://localhost:5000")
-    if not api_key:
-        print("⚠️  WARNING: OPENAI_API_KEY not found. Video/Audio transcription will fail.")
-    app.run(port=5000, debug=True)
+if __name__ == "__main__":
+    print("=" * 60)
+    print("🚀 Mitesh AI Voice Backend Starting...")
+    print("=" * 60)
+    print(f"📍 Port: 5000")
+    print(f"🐍 Python: {sys.executable}")
+    print(f"🔑 Daily.co API Key: {'✅ Found' if DAILY_API_KEY else '❌ Missing'}")
+    print("=" * 60)
+    
+    if not DAILY_API_KEY:
+        print("⚠️ WARNING: DAILY_API_KEY not found in .env file!")
+        exit(1)
+    
+    app.run(host="0.0.0.0", port=5000, debug=False)

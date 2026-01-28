@@ -14,6 +14,7 @@ import SuggestedQuestionsView from '@/components/mind/sections/SuggestedQuestion
 import ExperienceSettingsView from '@/components/mind/sections/ExperienceSettingsView';
 import VoiceSettingsView from '@/components/mind/sections/VoiceSettingsView';
 import CloneQualityView from '@/components/mind/sections/CloneQualityView';
+import UserQuestionsView from '@/components/mind/sections/UserQuestionsView';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -105,11 +106,11 @@ const MindPage = () => {
       if (dbProfiles.length > 0) {
         setProfiles(dbProfiles);
         // Prioritize primary, then latest update
-        const primary = dbProfiles.find(p => p.is_primary) || dbProfiles[0];
+        const primary = dbProfiles.find((p: any) => p.is_primary) || dbProfiles[0];
         setSelectedProfileId(primary.id);
 
         // Ensure at least one is marked primary in DB if none are
-        if (!dbProfiles.some(p => p.is_primary)) {
+        if (!dbProfiles.some((p: any) => p.is_primary)) {
           console.log('⚠️ No primary profile found, marking', primary.name, 'as primary');
           await updateMindProfile({ is_primary: true }, primary.id);
           // Update local state too
@@ -348,31 +349,7 @@ const MindPage = () => {
   });
 
   const renderContent = () => {
-    // If activeTab is NOT content (e.g. voice), or if activeTab IS content but we selected a section
-    // Wait, the logic should be:
-    // Top tabs: Content, Voice
-    // Sidebar sections: Identity (Profile, Bio, Social), Behavior, Appearance
-
-    // If user clicks "Content" top tab, we show the file explorer.
-    // If user clicks a sidebar section, we show that section.
-
-    // Let's assume:
-    // activeTab = 'content' | 'voice'
-    // activeSection = 'profile' | 'biography' | ...
-
-    // If activeTab is 'content' AND no specific section is "active" in a way that overrides content...
-    // Actually, the sidebar has "Content" and "Voice" as top tabs, and then a list of sections below.
-    // The "Content" top tab seems to trigger the file explorer view.
-    // The sections below trigger their specific views.
-
-    // So if activeTab === 'content', we show the file explorer?
-    // But the sidebar structure implies the sections are always visible.
-    // Let's look at the behavior:
-    // Clicking "Content" top tab -> Shows file explorer (FolderSidebar + ContentList)
-    // Clicking "Profile" -> Shows ProfileView
-
-    // So we can use a single state variable or a combination.
-    // Let's say when "Content" is clicked, we set activeSection to null or 'content-explorer'.
+    const activeProfile = profiles.find(p => p.id === selectedProfileId);
 
     if (activeTab === 'content') {
       return (
@@ -594,15 +571,21 @@ const MindPage = () => {
         {activeTab === 'voice' && <VoiceSettingsView profileId={selectedProfileId!} />}
         {activeTab !== 'voice' && (
           <>
-            {activeSection === 'profile' && <ProfileView profileId={selectedProfileId!} onDelete={handleDeleteProfile} />}
-            {activeSection === 'biography' && <BiographyView profileId={selectedProfileId!} />}
-            {activeSection === 'social-links' && <SocialLinksView profileId={selectedProfileId!} />}
-            {activeSection === 'purpose' && <PurposeInstructionsView profileId={selectedProfileId!} />}
-            {activeSection === 'speaking-style' && <SpeakingStyleView profileId={selectedProfileId!} />}
-            {activeSection === 'response-settings' && <ResponseSettingsView profileId={selectedProfileId!} />}
-            {activeSection === 'suggested-questions' && <SuggestedQuestionsView profileId={selectedProfileId!} />}
-            {activeSection === 'experience-settings' && <ExperienceSettingsView profileId={selectedProfileId!} />}
-            {activeSection === 'clone-quality' && <CloneQualityView profileId={selectedProfileId!} />}
+            {activeSection === 'profile' && <ProfileView profileId={selectedProfileId!} initialData={activeProfile} onDelete={handleDeleteProfile} />}
+            {activeSection === 'biography' && <BiographyView profileId={selectedProfileId!} initialData={activeProfile} />}
+            {activeSection === 'social-links' && <SocialLinksView profileId={selectedProfileId!} initialData={activeProfile} />}
+            {activeSection === 'purpose' && <PurposeInstructionsView profileId={selectedProfileId!} initialData={activeProfile} />}
+            {activeSection === 'speaking-style' && <SpeakingStyleView profileId={selectedProfileId!} initialData={activeProfile} />}
+            {activeSection === 'response-settings' && <ResponseSettingsView profileId={selectedProfileId!} initialData={activeProfile} />}
+            {activeSection === 'suggested-questions' && <SuggestedQuestionsView profileId={selectedProfileId!} initialData={activeProfile} />}
+            {activeSection === 'experience-settings' && <ExperienceSettingsView profileId={selectedProfileId!} initialData={activeProfile} />}
+            {activeSection === 'clone-quality' && <CloneQualityView profileId={selectedProfileId!} initialData={activeProfile} />}
+            {activeSection === 'user-questions' && (
+              <>
+                {console.log("!!!!!!!!!!!! MindPage: Rendering UserQuestionsView with profileId:", selectedProfileId)}
+                <UserQuestionsView profileId={selectedProfileId!} />
+              </>
+            )}
           </>
         )}
       </div>

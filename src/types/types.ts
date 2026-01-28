@@ -47,6 +47,9 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   created_at?: string;
+  is_edited?: boolean;
+  is_verified?: boolean;
+  original_content?: string;
   // UI only fields
   image?: string;
   mindMap?: any;
@@ -93,6 +96,7 @@ export interface MindProfile {
   name: string;
   headline: string;
   description?: string;
+  avatar_url?: string;
   is_primary: boolean;
   purpose?: string;
   instructions?: string[];

@@ -58,21 +58,46 @@ serve(async (req) => {
         }
 
         else if (action === 'get_content') {
-            // 1. Fetch Knowledge Sources
-            let queryKS = supabaseClient
-                .from('knowledge_sources')
-                .select('*', { count: 'exact' })
-                .order('created_at', { ascending: false })
-                .range(offset, offset + limit - 1)
+            // 1. Fetch Knowledge Sources (with batching to bypass 1000 row limit)
+            const allKsItems = [];
+            let hasMore = true;
+            let currentOffset = offset;
+            const batchSize = 1000;
+            let loops = 0;
+            let totalKsCount = 0;
 
-            if (folderId) queryKS = queryKS.eq('folder_id', folderId)
+            console.log(`[get_content] Starting fetch loop. Limit: ${limit}, Offset: ${offset}`);
 
-            if (profileId && profileId !== 'all') {
-                queryKS = queryKS.or(`profile_id.eq.${profileId},profile_id.is.null`)
+            while (hasMore && allKsItems.length < limit && loops < 10) {
+                let queryKS = supabaseClient
+                    .from('knowledge_sources')
+                    .select('*', { count: 'exact' })
+                    .order('created_at', { ascending: false })
+                    .range(currentOffset, currentOffset + batchSize - 1)
+
+                if (folderId) queryKS = queryKS.eq('folder_id', folderId)
+
+                if (profileId && profileId !== 'all') {
+                    queryKS = queryKS.or(`profile_id.eq.${profileId},profile_id.is.null`)
+                }
+
+                const { data: ksData, count: ksCount, error: ksError } = await queryKS
+                if (ksError) throw ksError
+
+                if (ksData && ksData.length > 0) {
+                    allKsItems.push(...ksData);
+                    currentOffset += ksData.length;
+                    totalKsCount = ksCount || 0;
+
+                    // If we got fewer than batchSize, we are done
+                    if (ksData.length < batchSize) hasMore = false;
+                } else {
+                    hasMore = false;
+                }
+                loops++;
             }
 
-            const { data: ksData, count: ksCount, error: ksError } = await queryKS
-            if (ksError) throw ksError
+            console.log(`[get_content] Fetched ${allKsItems.length} items from Knowledge Sources.`);
 
             // 2. Fetch Content Items (Legacy) - Just get some to mix in if needed, or skip
             // For simplicity/performance, we might just focus on KS if that's the main store now.
@@ -87,12 +112,12 @@ serve(async (req) => {
             // Normalize
             const items = []
 
-            ksData?.forEach((item: any) => {
+            allKsItems.forEach((item: any) => {
                 items.push({
                     id: item.id,
                     title: item.title,
-                    type: item.source_type,
-                    source_type: item.source_type,
+                    type: item.source_type || 'text', // Fallback for missing source_type
+                    source_type: item.source_type || 'text',
                     word_count: item.word_count || 0,
                     file_url: item.source_url,
                     folder_id: item.folder_id,
@@ -121,7 +146,7 @@ serve(async (req) => {
                 })
             }
 
-            result = { data: items, count: (ksCount || 0) + (ciData?.length || 0) }
+            result = { data: items, count: (totalKsCount || 0) + (ciData?.length || 0) }
         }
 
         else if (action === 'get_profiles') {
@@ -171,6 +196,34 @@ serve(async (req) => {
             }
         }
 
+        else if (action === 'get_emotional_history') {
+            const { userId, limit = 50 } = await req.json()
+            const { data, error } = await supabaseClient
+                .from('user_emotional_history')
+                .select('*')
+                .eq('user_id', userId)
+                .order('created_at', { ascending: false })
+                .limit(limit)
+
+            if (error) throw error
+            result = { data }
+        }
+
+        else if (action === 'get_alerts') {
+            const { status = 'pending', severity } = await req.json()
+            let query = supabaseClient
+                .from('admin_alerts')
+                .select('*, audience_users!inner(name, email)')
+                .order('created_at', { ascending: false })
+
+            if (status !== 'all') query = query.eq('status', status)
+            if (severity && severity !== 'all') query = query.eq('severity', severity)
+
+            const { data, error } = await query
+            if (error) throw error
+            result = { data }
+        }
+
         else {
             throw new Error(`Unknown action: ${action}`)
         }
@@ -180,7 +233,7 @@ serve(async (req) => {
             { headers: { ...corsHeaders, "Content-Type": "application/json" } },
         )
 
-    } catch (error) {
+    } catch (error: any) {
         console.error("Admin Data Error:", error)
         return new Response(
             JSON.stringify({ error: error.message }),

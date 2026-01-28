@@ -9,11 +9,14 @@ import {
     AccordionTrigger,
 } from "@/components/ui/accordion";
 
+import { MindProfile } from '@/types/types';
+
 interface CloneQualityViewProps {
     profileId: string;
+    initialData?: MindProfile;
 }
 
-const CloneQualityView = ({ }: CloneQualityViewProps) => {
+const CloneQualityView = ({ profileId, initialData }: CloneQualityViewProps) => {
     const [tasks] = useState([
         { id: 1, text: "Add Purpose to your Clone", completed: true },
         { id: 2, text: "Add a Description for your Clone", completed: true },

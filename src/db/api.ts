@@ -40,7 +40,11 @@ export const getMindProfiles = async () => {
     const userId = user?.id || storedId;
 
     let query = supabase.from('mind_profile').select('*');
-    if (userId) query = query.eq('user_id', userId);
+    if (userId) {
+      query = query.or(`user_id.eq.${userId},is_primary.eq.true`);
+    } else {
+      query = query.eq('is_primary', true);
+    }
 
     const { data } = await query.order('is_primary', { ascending: false });
     return data || [];
@@ -51,13 +55,21 @@ export const getMindProfile = async (profileId?: string) => {
   try {
     const { data, error } = await supabase.rpc('get_admin_profile', { p_profile_id: profileId || null });
     if (error) throw error;
-    return data;
+    // Handle RPC returning array or single object
+    const profile = Array.isArray(data) ? data[0] : data;
+    console.log('📦 Fetched Mind Profile (RPC):', profileId, !!profile);
+    return profile;
   } catch (err) {
     console.error("Error fetching profile via RPC:", err);
-    // Fallback
+    // Fallback: This bypasses RPC if it fails or is too restrictive
     let query = supabase.from('mind_profile').select('*');
-    if (profileId) query = query.eq('id', profileId);
+    if (profileId) {
+      query = query.eq('id', profileId);
+    } else {
+      query = query.eq('is_primary', true);
+    }
     const { data } = await query.limit(1).maybeSingle();
+    console.log('📦 Fetched Mind Profile (Fallback):', profileId, !!data);
     return data;
   }
 };
@@ -268,6 +280,68 @@ export const deleteFolder = async (id: string): Promise<void> => {
 
   if (error) {
     console.error("Error deleting folder:", error);
+    throw error;
+  }
+};
+
+// Voice Settings Management
+export interface VoiceSettings {
+  voice_stability: number;
+  voice_similarity: number;
+  voice_speed: number;
+  voice_model: string;
+}
+
+export const updateVoiceSettings = async (profileId: string, settings: VoiceSettings) => {
+  try {
+    const { error } = await supabase
+      .from('mind_profile')
+      .update({
+        voice_stability: settings.voice_stability,
+        voice_similarity: settings.voice_similarity,
+        voice_speed: settings.voice_speed,
+        voice_model: settings.voice_model
+      })
+      .eq('id', profileId);
+
+    if (error) throw error;
+    console.log('✅ Voice settings updated:', profileId);
+  } catch (error) {
+    console.error('Error updating voice settings:', error);
+    throw error;
+  }
+};
+
+export const testVoice = async (text: string, settings: VoiceSettings, profileId?: string): Promise<Blob> => {
+  try {
+    const response = await fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/voice-engine?mode=test`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({
+          text,
+          voiceId: profileId, // Will fetch from profile if provided
+          settings: {
+            stability: settings.voice_stability,
+            similarity_boost: settings.voice_similarity,
+            speed: settings.voice_speed,
+            model_id: settings.voice_model
+          }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Voice test failed: ${response.status}`);
+    }
+
+    return await response.blob();
+  } catch (error) {
+    console.error('Error testing voice:', error);
     throw error;
   }
 };
@@ -599,33 +673,59 @@ export const deleteAudienceUsers = async (ids: string[]): Promise<void> => {
 
 
 export const upsertAudienceUser = async (user: { id: string; email?: string; name?: string; profile_id?: string }) => {
-  // Check if user exists first to preserve existing data like tags/status
-  const { data: existing } = await supabase
-    .from('audience_users')
-    .select('*')
-    .eq('user_id', user.id)
-    .single();
+  console.log("🔍 [upsertAudienceUser] Syncing:", user.id);
+  try {
+    // 1. Fetch ALL matching users to handle duplicates
+    const { data: users, error: findError } = await supabase
+      .from('audience_users')
+      .select('*')
+      .eq('user_id', user.id);
 
-  const updates = {
-    user_id: user.id,
-    email: user.email || existing?.email,
-    name: user.name || existing?.name || 'Unknown',
-    last_active: new Date().toISOString(),
-    profile_id: user.profile_id || existing?.profile_id,
-    // Only set default status if new
-    status: existing?.status || 'active'
-  };
+    if (findError) {
+      console.error("❌ [upsertAudienceUser] Find error:", findError);
+      throw findError;
+    }
 
-  const { data, error } = await supabase
-    .from('audience_users')
-    .upsert(updates, { onConflict: 'user_id' })
-    .select()
-    .single();
+    const existing = users && users.length > 0 ? users[0] : null;
+    const updates: any = {
+      user_id: user.id,
+      email: user.email || existing?.email,
+      name: user.name || existing?.name || 'Unknown',
+      last_active: new Date().toISOString(),
+      profile_id: user.profile_id || existing?.profile_id,
+      status: existing?.status || 'active'
+    };
 
-  if (error) {
-    console.error("Error syncing audience user:", error);
+    if (existing) {
+      console.log("📝 [upsertAudienceUser] Updating existing record:", existing.id);
+      const { data, error } = await supabase
+        .from('audience_users')
+        .update(updates)
+        .eq('id', existing.id)
+        .select();
+
+      if (error) {
+        console.error("❌ [upsertAudienceUser] Update error:", error);
+        throw error;
+      }
+      return data?.[0];
+    } else {
+      console.log("🆕 [upsertAudienceUser] Inserting new record");
+      const { data, error } = await supabase
+        .from('audience_users')
+        .insert([updates])
+        .select();
+
+      if (error) {
+        console.error("❌ [upsertAudienceUser] Insert error:", error);
+        throw error;
+      }
+      return data?.[0];
+    }
+  } catch (error) {
+    console.error("❌ [upsertAudienceUser] CRITICAL FAILURE:", error);
+    return null;
   }
-  return data;
 };
 
 export const deleteAllAudienceUsers = async (profileId?: string, forceAll: boolean = false): Promise<void> => {
@@ -767,70 +867,170 @@ export const getMessages = async (sessionId: string): Promise<Message[]> => {
   return data as Message[];
 };
 
-export const saveMessage = async (sessionId: string, role: string, content: string) => {
-  console.log("Saving message:", { sessionId, role, contentLength: content.length });
+export const saveMessage = async (sessionId: string, role: string, content: string, id?: string) => {
+  const logPrefix = `[saveMessage][${role}]`;
+  console.log(`${logPrefix} START - Session: ${sessionId}, Length: ${content.length}`);
 
-  // 1. Get User ID (Required)
-  // 1. Get User ID (Required)
-  const { data: convData, error: fetchErr } = await supabase
-    .from('conversations')
-    .select('user_id')
-    .eq('id', sessionId)
-    .single();
+  try {
+    // 1. Get User ID from Conversation
+    const { data: convData, error: fetchErr } = await supabase
+      .from('conversations')
+      .select('user_id')
+      .eq('id', sessionId)
+      .single();
 
-  if (fetchErr || !convData) throw new Error("Conversation not found");
-
-  // 2. Insert Message
-  const { error: msgError } = await supabase.from('messages').insert({
-    conversation_id: sessionId,
-    user_id: convData.user_id,
-    role,
-    content
-  });
-
-  if (msgError) {
-    console.error("Error saving message:", msgError);
-    throw msgError;
-  }
-
-  // 3. Update Conversation Timestamp + Summary
-  const summaryPreview = content.substring(0, 100) + (content.length > 100 ? '...' : '');
-
-  const { error: convError } = await supabase.from('conversations')
-    .update({
-      last_message_at: new Date().toISOString(),
-      summary: summaryPreview
-    })
-    .eq('id', sessionId);
-
-  if (convError) console.error("Error updating conversation timestamp:", convError);
-
-  // 3. Increment Message Count for Audience User (if user message)
-  if (role === 'user') {
-    try {
-      // First get the conversation to find the user_id
-      const { data: conv } = await supabase.from('conversations').select('user_id').eq('id', sessionId).single();
-
-      if (conv && conv.user_id) {
-        // Increment count using rpc is safer, but direct update works for simple apps
-        // We find the audience user by user_id link
-        const { data: audienceUser } = await supabase
-          .from('audience_users')
-          .select('id, message_count')
-          .eq('user_id', conv.user_id)
-          .single();
-
-        if (audienceUser) {
-          await supabase.from('audience_users')
-            .update({ message_count: (audienceUser.message_count || 0) + 1, last_active: new Date().toISOString() })
-            .eq('id', audienceUser.id);
-        }
-      }
-    } catch (err) {
-      console.warn("Failed to update message count:", err);
+    if (fetchErr || !convData) {
+      console.error(`${logPrefix} Conversation not found for sessionId:`, sessionId);
+      throw new Error("Conversation not found");
     }
+
+    // 2. Insert Message
+    const { data: savedMsg, error: msgError } = await supabase.from('messages').insert({
+      id: id || undefined, // Use explicit ID if provided
+      conversation_id: sessionId,
+      user_id: convData.user_id,
+      role,
+      content
+    })
+      .select()
+      .single();
+
+    if (msgError) {
+      console.error(`${logPrefix} Insert error:`, msgError);
+      throw msgError;
+    }
+
+    // 3. Update Conversation Timestamp
+    const { error: convError } = await supabase.from('conversations')
+      .update({
+        last_message_at: new Date().toISOString(),
+      })
+      .eq('id', sessionId);
+
+    if (convError) console.error(`${logPrefix} Conv update error:`, convError);
+
+    // 4. Increment Message Count for Audience User (if user message)
+    if (role === 'user') {
+      console.log(`${logPrefix} Incrementing count for user_id:`, convData.user_id);
+      const { data: users, error: audError } = await supabase
+        .from('audience_users')
+        .select('*')
+        .eq('user_id', convData.user_id);
+
+      if (audError) {
+        console.error(`${logPrefix} Audience fetch error:`, audError);
+      }
+
+      const audienceUser = users && users.length > 0 ? users[0] : null;
+
+      if (audienceUser) {
+        console.log(`${logPrefix} Audience user found, updating count`);
+        await supabase.from('audience_users')
+          .update({
+            message_count: (Number(audienceUser.message_count) || 0) + 1,
+            last_active: new Date().toISOString()
+          })
+          .eq('id', audienceUser.id);
+      } else {
+        console.warn(`${logPrefix} No audience user found to increment count`);
+      }
+    }
+    console.log(`${logPrefix} END - Success`);
+    return savedMsg;
+  } catch (err) {
+    console.error(`${logPrefix} CRITICAL FAILURE:`, err);
+    throw err;
   }
 };
+
+export const updateMessage = async (id: string, content: string, isVerified: boolean) => {
+  console.log("Updating message:", id, { contentLength: content.length, isVerified });
+  const { data, error } = await supabase
+    .from('messages')
+    .update({
+      content,
+      is_edited: true,
+      is_verified: isVerified,
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error updating message:", error);
+    throw error;
+  }
+  return data;
+};
+
+export const getMessageHistoryForTraining = async (profileId?: string): Promise<any[]> => {
+  try {
+    let query = supabase
+      .from('messages')
+      .select(`
+        id,
+        content,
+        role,
+        is_verified,
+        created_at,
+        conversation_id,
+        conversations(id, profile_id)
+      `)
+      .order('created_at', { ascending: false });
+
+    // Filter by profile if requested
+    if (profileId && profileId !== 'all') {
+      query = query.eq('conversations.profile_id', profileId);
+    }
+
+    const { data, error } = await query.limit(500);
+    if (error) {
+      console.error("Error fetching message history for training:", error);
+      throw error;
+    }
+
+    if (!data || data.length === 0) return [];
+
+    // Grouping by conversation to create Q&A pairs
+    const pairs: any[] = [];
+    const convGroups: Record<string, any[]> = {};
+
+    data.forEach((msg: any) => {
+      const cid = msg.conversation_id || 'unlinked';
+      if (!convGroups[cid]) convGroups[cid] = [];
+      convGroups[cid].push(msg);
+    });
+
+    Object.keys(convGroups).forEach(cid => {
+      // Sort messages in this conversation chronologically
+      const msgs = convGroups[cid].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+      for (let i = 0; i < msgs.length; i++) {
+        // Find User questions
+        if (msgs[i].role === 'user') {
+          // Look for next message as answer (usually role: assistant)
+          const assistantReply = msgs[i + 1]?.role === 'assistant' ? msgs[i + 1].content : "No AI reply saved yet";
+
+          pairs.push({
+            id: msgs[i].id,
+            question: msgs[i].content,
+            answer: assistantReply,
+            is_verified: msgs[i + 1]?.is_verified || false,
+            created_at: msgs[i].created_at,
+            conversation_id: cid
+          });
+        }
+      }
+    });
+
+    // Sort pairs by newest first
+    return pairs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  } catch (err) {
+    console.error("Error in getMessageHistoryForTraining:", err);
+    return [];
+  }
+};
+
 
 // Analytics API
 export const getAnalyticsMetrics = async (days: number = 7): Promise<AnalyticsMetric[]> => {

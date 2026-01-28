@@ -78,22 +78,7 @@ const AdvancedSidebar = ({
 
             <ScrollArea className="flex-1 px-2">
                 <div className="space-y-6 py-2">
-                    {/* Monetization Section */}
-                    <div className="space-y-1">
-                        <h3 className="px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                            Monetization
-                        </h3>
-                        <div className="relative">
-                            {activeSection === 'manage-monetization' && (
-                                <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-orange-500 rounded-r-full" />
-                            )}
-                            <SidebarItem
-                                label="Manage Monetization"
-                                isActive={activeSection === 'manage-monetization'}
-                                onClick={() => onSectionChange('manage-monetization')}
-                            />
-                        </div>
-                    </div>
+
 
                     {/* Automations Section */}
                     <div className="space-y-1">

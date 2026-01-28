@@ -5,6 +5,7 @@ import { Search, GripVertical, Pencil, Trash2, Plus, Sparkles } from 'lucide-rea
 import { cn } from '@/lib/utils';
 import { getMindProfile, updateMindProfile } from '@/db/api';
 import { useToast } from '@/hooks/use-toast';
+import { MindProfile } from '@/types/types';
 
 interface Question {
     id: string;
@@ -13,9 +14,10 @@ interface Question {
 
 interface SuggestedQuestionsViewProps {
     profileId: string;
+    initialData?: MindProfile;
 }
 
-const SuggestedQuestionsView = ({ profileId }: SuggestedQuestionsViewProps) => {
+const SuggestedQuestionsView = ({ profileId, initialData }: SuggestedQuestionsViewProps) => {
     const { toast } = useToast();
     const [searchQuery, setSearchQuery] = useState("");
     const [generatedQuestions, setGeneratedQuestions] = useState<Question[]>([
@@ -25,7 +27,7 @@ const SuggestedQuestionsView = ({ profileId }: SuggestedQuestionsViewProps) => {
         { id: '4', text: "What is a powerful question you often ask your clients to inspire reflection?" },
         { id: '5', text: "What is a common pattern you observe in individuals who seek your guidance?" },
     ]);
-    const [visibleQuestions, setVisibleQuestions] = useState<Question[]>([]);
+    const [visibleQuestions, setVisibleQuestions] = useState<Question[]>(initialData?.suggested_questions as Question[] || []);
     const [isLoading, setIsLoading] = useState(false);
 
     useEffect(() => {

@@ -47,13 +47,16 @@ serve(async (req) => {
       
       (System Note: Use this link when the user asks for this specific topic or lesson.)`;
 
+            const wordCount = content.split(/\s+/).length;
+
             // Store in knowledge_sources
             const { data: inserted, error } = await supabase.from('knowledge_sources').insert({
                 title: `${currentCategory}: ${title}`,
                 content: content,
                 summary: `Course Index Entry for: ${title} in ${currentCategory}`,
-                type: 'course_index',
+                source_type: 'course_index', // Changed from 'type' to match schema
                 status: 'processed',
+                word_count: wordCount,
                 profile_id: profileId,
                 metadata: { url: url, category: currentCategory }
             }).select('id').single();

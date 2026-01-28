@@ -1,5 +1,26 @@
+# flask
+# flask-cors
+# youtube-transcript-api
+# openai
+# python-dotenv
+# pipecat-ai[daily,cartesia,openai,silero]==0.0.100
+# python-dotenv>=1.0.0
+# aiohttp>=3.9.0
+# loguru>=0.7.0
+# cartesia
+# daily-python
+# onnxruntime
+# supabase
+
 flask
 flask-cors
 youtube-transcript-api
 openai
 python-dotenv
+pipecat-ai[daily,cartesia,openai,silero]==0.0.100
+aiohttp>=3.9.0
+loguru>=0.7.0
+cartesia
+daily-python
+onnxruntime
+supabase

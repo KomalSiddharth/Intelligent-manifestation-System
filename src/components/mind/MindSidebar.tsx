@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { Settings, PieChart, AudioWaveform, ChevronRight, Sparkles, MessageSquare, Plus } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -148,6 +148,19 @@ const MindSidebar = ({
 
             <ScrollArea className="flex-1 px-2">
                 <div className="space-y-6 py-2">
+                    {/* Insights Section */}
+                    <div className="space-y-1">
+                        <h3 className="px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                            Insights
+                        </h3>
+                        <SidebarItem
+                            label="User Questions"
+                            isActive={activeSection === 'user-questions'}
+                            onClick={() => onSectionChange('user-questions')}
+                            icon={MessageSquare}
+                        />
+                    </div>
+
                     {/* Identity Section */}
                     <div className="space-y-1">
                         <h3 className="px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
@@ -208,6 +221,7 @@ const MindSidebar = ({
                             onClick={() => onSectionChange('experience-settings')}
                         />
                     </div>
+
 
                     {/* Clone Quality */}
                     <div className="px-4 pt-4">

@@ -5,19 +5,19 @@ import { Label } from '@/components/ui/label';
 import { Camera } from 'lucide-react';
 import { getMindProfile, updateMindProfile } from '@/db/api';
 import { useToast } from '@/hooks/use-toast';
+import { MindProfile } from '@/types/types';
 
 interface ProfileViewProps {
     profileId: string;
+    initialData?: MindProfile;
     onDelete: () => void;
 }
 
-const ProfileView = ({ profileId, onDelete }: ProfileViewProps) => {
+const ProfileView = ({ profileId, initialData, onDelete }: ProfileViewProps) => {
     const { toast } = useToast();
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const [previewUrl, setPreviewUrl] = useState("https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?ixlib=rb-1.2.1&auto=format&fit=facearea&facepad=2&w=256&h=256&q=80");
-    const [firstName, setFirstName] = useState("");
-    const [lastName, setLastName] = useState("");
-    const [handle, setHandle] = useState("");
+    const [previewUrl, setPreviewUrl] = useState(initialData?.avatar_url || "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?ixlib=rb-1.2.1&auto=format&fit=facearea&facepad=2&w=256&h=256&q=80");
+    const [name, setName] = useState(initialData?.name || "");
     const [isLoading, setIsLoading] = useState(false);
 
     useEffect(() => {
@@ -28,9 +28,7 @@ const ProfileView = ({ profileId, onDelete }: ProfileViewProps) => {
         try {
             const profile = await getMindProfile(profileId);
             if (profile) {
-                setFirstName(profile.first_name || "");
-                setLastName(profile.last_name || "");
-                setHandle(profile.handle || "");
+                setName(profile.name || "");
                 if (profile.avatar_url) setPreviewUrl(profile.avatar_url);
             }
         } catch (error) {
@@ -42,9 +40,7 @@ const ProfileView = ({ profileId, onDelete }: ProfileViewProps) => {
         setIsLoading(true);
         try {
             await updateMindProfile({
-                first_name: firstName,
-                last_name: lastName,
-                handle: handle,
+                name: name,
                 avatar_url: previewUrl
             }, profileId);
             toast({
@@ -116,40 +112,15 @@ const ProfileView = ({ profileId, onDelete }: ProfileViewProps) => {
 
                 <div className="space-y-4">
                     <div className="space-y-2">
-                        <Label>Name</Label>
+                        <Label>Clone Name</Label>
                         <p className="text-sm text-muted-foreground">
-                            The instance name will be displayed in addition to the Clone Name when shown on the profile
+                            This name will be displayed on the profile
                         </p>
-                        <div className="grid grid-cols-2 gap-4">
-                            <Input
-                                value={firstName}
-                                onChange={(e) => setFirstName(e.target.value)}
-                                placeholder="First Name"
-                            />
-                            <Input
-                                value={lastName}
-                                onChange={(e) => setLastName(e.target.value)}
-                                placeholder="Last Name"
-                            />
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <Label>Clone Handle</Label>
-                        <p className="text-sm text-muted-foreground">
-                            This is your unique URL. Ideally, this should match your name and/or your handle on another site like X/Instagram.
-                        </p>
-                        <div className="flex rounded-md border bg-muted/50">
-                            <div className="px-3 py-2 text-sm text-muted-foreground border-r bg-muted">
-                                www.delphi.ai/
-                            </div>
-                            <input
-                                className="flex-1 px-3 py-2 bg-transparent text-sm outline-none"
-                                value={handle}
-                                onChange={(e) => setHandle(e.target.value)}
-                                placeholder="your-handle"
-                            />
-                        </div>
+                        <Input
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="Full Name (e.g. Mitesh-Khatri)"
+                        />
                     </div>
                 </div>
             </div>

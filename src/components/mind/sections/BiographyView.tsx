@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { getMindProfile, updateMindProfile } from '@/db/api';
 import { useToast } from '@/hooks/use-toast';
+import { MindProfile } from '@/types/types';
 
 interface Organization {
     id: string;
@@ -23,20 +24,21 @@ interface Organization {
 
 interface BiographyViewProps {
     profileId: string;
+    initialData?: MindProfile;
 }
 
-const BiographyView = ({ profileId }: BiographyViewProps) => {
+const BiographyView = ({ profileId, initialData }: BiographyViewProps) => {
     const { toast } = useToast();
-    const [headline, setHeadline] = useState("");
-    const [description, setDescription] = useState("");
-    const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
+    const [headline, setHeadline] = useState(initialData?.headline || "");
+    const [description, setDescription] = useState(initialData?.description || "");
+    const [selectedTopics, setSelectedTopics] = useState<string[]>(initialData?.topics || []);
     const [availableTopics, setAvailableTopics] = useState<string[]>([
         'Psychology', 'Wellness', 'Entrepreneurship', 'Education',
         'Finance', 'Technology', 'Health', 'Science', 'Design', 'Marketing', 'Music', 'Law', 'Religion', 'Art'
     ]);
     const [isAddingTopic, setIsAddingTopic] = useState(false);
     const [newTopic, setNewTopic] = useState("");
-    const [organizations, setOrganizations] = useState<Organization[]>([]);
+    const [organizations, setOrganizations] = useState<Organization[]>(initialData?.organizations || []);
     const [isAddOrgOpen, setIsAddOrgOpen] = useState(false);
     const [isEditOrgOpen, setIsEditOrgOpen] = useState(false);
     const [currentOrg, setCurrentOrg] = useState<Organization | null>(null);
@@ -51,15 +53,20 @@ const BiographyView = ({ profileId }: BiographyViewProps) => {
 
     const loadProfile = async () => {
         try {
+            console.log('📖 BiographyView: Loading profile for', profileId);
             const profile = await getMindProfile(profileId);
+            console.log('✅ BiographyView: Profile data:', profile);
             if (profile) {
                 setHeadline(profile.headline || "");
                 setDescription(profile.description || "");
                 setSelectedTopics(profile.topics || []);
                 setOrganizations(profile.organizations || []);
+                console.log('✨ BiographyView: State updated');
+            } else {
+                console.warn('⚠️ BiographyView: No profile found');
             }
         } catch (error) {
-            console.error('Error loading profile:', error);
+            console.error('❌ BiographyView: Error loading profile:', error);
         }
     };
 

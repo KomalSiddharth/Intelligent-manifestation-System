@@ -4,14 +4,16 @@ import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { getMindProfile, updateMindProfile } from '@/db/api';
 import { useToast } from '@/hooks/use-toast';
+import { MindProfile } from '@/types/types';
 
 interface SpeakingStyleViewProps {
     profileId: string;
+    initialData?: MindProfile;
 }
 
-const SpeakingStyleView = ({ profileId }: SpeakingStyleViewProps) => {
+const SpeakingStyleView = ({ profileId, initialData }: SpeakingStyleViewProps) => {
     const { toast } = useToast();
-    const [speakingStyle, setSpeakingStyle] = useState("");
+    const [speakingStyle, setSpeakingStyle] = useState(initialData?.speaking_style || "");
     const [isLoading, setIsLoading] = useState(false);
 
     useEffect(() => {

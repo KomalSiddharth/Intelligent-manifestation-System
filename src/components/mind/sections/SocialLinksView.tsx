@@ -14,6 +14,8 @@ import {
     DialogFooter,
 } from "@/components/ui/dialog";
 
+import { MindProfile } from '@/types/types';
+
 interface SocialLink {
     id: string;
     name: string;
@@ -24,20 +26,31 @@ interface SocialLink {
 
 interface SocialLinksViewProps {
     profileId: string;
+    initialData?: MindProfile;
 }
 
-const SocialLinksView = ({ profileId }: SocialLinksViewProps) => {
+const SocialLinksView = ({ profileId, initialData }: SocialLinksViewProps) => {
     const { toast } = useToast();
-    const [availableSocials, setAvailableSocials] = useState<SocialLink[]>([
-        { id: 'instagram', name: 'Instagram', handle: 'Add an account!', connected: false, icon: Instagram },
-        { id: 'x', name: 'X', handle: 'Add an account!', connected: false, icon: Twitter },
-        { id: 'twitter', name: 'Twitter', handle: 'Add an account!', connected: false, icon: Twitter },
-        { id: 'linkedin', name: 'Linkedin', handle: 'Add an account!', connected: false, icon: Linkedin },
-        { id: 'facebook', name: 'Facebook', handle: 'Add an account!', connected: false, icon: Facebook },
-        { id: 'youtube', name: 'Youtube', handle: 'Add an account!', connected: false, icon: Youtube },
-        { id: 'tiktok', name: 'Tiktok', handle: 'Add an account!', connected: false, icon: Video },
-        { id: 'website', name: 'Website', handle: 'Add an account!', connected: false, icon: Globe },
-    ]);
+    const [availableSocials, setAvailableSocials] = useState<SocialLink[]>(() => {
+        const initial = [
+            { id: 'instagram', name: 'Instagram', handle: 'Add an account!', connected: false, icon: Instagram },
+            { id: 'x', name: 'X', handle: 'Add an account!', connected: false, icon: Twitter },
+            { id: 'twitter', name: 'Twitter', handle: 'Add an account!', connected: false, icon: Twitter },
+            { id: 'linkedin', name: 'Linkedin', handle: 'Add an account!', connected: false, icon: Linkedin },
+            { id: 'facebook', name: 'Facebook', handle: 'Add an account!', connected: false, icon: Facebook },
+            { id: 'youtube', name: 'Youtube', handle: 'Add an account!', connected: false, icon: Youtube },
+            { id: 'tiktok', name: 'Tiktok', handle: 'Add an account!', connected: false, icon: Video },
+            { id: 'website', name: 'Website', handle: 'Add an account!', connected: false, icon: Globe },
+        ];
+        if (initialData?.social_links) {
+            const savedLinks = initialData.social_links as Array<{ id: string, handle: string }>;
+            return initial.map(social => {
+                const saved = savedLinks.find(s => s.id === social.id);
+                return saved ? { ...social, handle: saved.handle, connected: true } : social;
+            });
+        }
+        return initial;
+    });
     const [isLoading, setIsLoading] = useState(false);
 
     useEffect(() => {

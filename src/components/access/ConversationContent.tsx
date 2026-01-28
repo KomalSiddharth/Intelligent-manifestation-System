@@ -8,6 +8,7 @@ import { getConversationMessages } from '@/db/api';
 import type { Conversation, Message } from '@/types/types';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { Badge } from '@/components/ui/badge';
+import { MessageFeedback } from '@/components/chat/MessageFeedback';
 
 interface ConversationContentProps {
     conversation: Conversation | null;
@@ -166,6 +167,14 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
                                                 content={message.content.replace(/\(SYSTEM CONTEXT:.*?\)\s*/g, '').trim()}
                                                 className={message.role === 'assistant' ? '' : 'text-white'}
                                             />
+
+                                            {/* Feedback buttons for AI responses */}
+                                            {message.role === 'assistant' && message.id && (
+                                                <MessageFeedback
+                                                    messageId={message.id}
+                                                    className="mt-2 opacity-60 hover:opacity-100 transition-opacity"
+                                                />
+                                            )}
                                         </div>
                                         <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                                             <Button

@@ -20,8 +20,16 @@ serve(async (req) => {
 
         let textToSpeak = "";
         let voiceIdUsed = "";
+        let customSettings: any = null;
 
-        if (mode === 'tts') {
+        if (mode === 'test') {
+            console.log("🎤 Voice Engine (Test Mode) Request Received");
+            const { text, settings, voiceId } = await req.json();
+            if (!text) throw new Error("Text is required for test mode");
+            textToSpeak = text;
+            voiceIdUsed = voiceId || Deno.env.get("ELEVEN_LABS_VOICE_ID") || "ErXwobaYiN019PkySvjV";
+            customSettings = settings; // Use custom settings from request
+        } else if (mode === 'tts') {
             console.log("🎤 Voice Engine (TTS Mode) Request Received");
             const { text, voiceId } = await req.json();
             if (!text) throw new Error("Text is required for TTS mode");
@@ -130,23 +138,25 @@ STRICT INSTRUCTIONS:
 
         // Step 5: Text to Speech (Common for both modes)
         console.log("🔊 Generating audio for:", textToSpeak.substring(0, 50) + "...");
-        const elevenLabsApiKey = Deno.env.get("ELEVEN_LABS_API_KEY");
-
+        // Step 5: Text-to-Speech (ElevenLabs)
+        console.log("🔊 Generating audio for:", textToSpeak.slice(0, 50) + "...");
         console.log("🎙️ Using voice:", voiceIdUsed);
 
-        const elResponse = await fetch(
+        const elevenLabsResponse = await fetch(
             `https://api.elevenlabs.io/v1/text-to-speech/${voiceIdUsed}`,
             {
-                method: 'POST',
+                method: "POST",
                 headers: {
-                    'Accept': 'audio/mpeg',
-                    'Content-Type': 'application/json',
-                    'xi-api-key': elevenLabsApiKey || "",
+                    "xi-api-key": Deno.env.get("ELEVEN_LABS_API_KEY") || "",
+                    "Content-Type": "application/json",
                 },
                 body: JSON.stringify({
                     text: textToSpeak,
-                    model_id: 'eleven_multilingual_v2',
-                    voice_settings: {
+                    model_id: customSettings?.model_id || "eleven_multilingual_v2",
+                    voice_settings: customSettings ? {
+                        stability: customSettings.stability,
+                        similarity_boost: customSettings.similarity_boost,
+                    } : {
                         stability: 0.5,
                         similarity_boost: 0.75,
                     },
@@ -154,9 +164,9 @@ STRICT INSTRUCTIONS:
             }
         );
 
-        if (!elResponse.ok) {
-            const errText = await elResponse.text();
-            console.error("❌ ElevenLabs Error:", errText);
+        if (!elevenLabsResponse.ok) {
+            const errorData = await elevenLabsResponse.json().catch(() => ({ error: "Unknown ElevenLabs error" }));
+            console.error("❌ ElevenLabs Error:", errorData.error);
 
             // Fallback: Return text for browser TTS
             return new Response(null, {
@@ -165,16 +175,16 @@ STRICT INSTRUCTIONS:
                     "Content-Type": "application/json",
                     "X-Response-Text": encodeURIComponent(textToSpeak),
                     "X-TTS-Failed": "true",
-                    "X-TTS-Error": encodeURIComponent(errText.substring(0, 200)),
+                    "X-TTS-Error": encodeURIComponent(errorData.error.substring(0, 200)), // Changed errText to errorData.error
                 }
             });
         }
 
         // Success: Return audio
-        const audioBlob = await elResponse.blob();
-        console.log("✅ Audio generated, size:", audioBlob.size);
+        const audioArrayBuffer = await elevenLabsResponse.arrayBuffer();
+        console.log("✅ Audio generated, size:", audioArrayBuffer.byteLength); // Changed audioBlob.size to audioArrayBuffer.byteLength
 
-        return new Response(audioBlob, {
+        return new Response(audioArrayBuffer, { // Changed audioBlob to audioArrayBuffer
             headers: {
                 ...corsHeaders,
                 "Content-Type": "audio/mpeg",

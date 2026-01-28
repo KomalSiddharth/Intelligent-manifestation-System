@@ -82,14 +82,49 @@ serve(async (req) => {
     }
     */
 
-    const { query, userId: bodyUserId, sessionId, profileId, history, detectedLanguage = 'English', detectedSentiment = 'neutral' } = requestBody;
+    // const requestBody = await req.json(); // REMOVED DUPLICATE
+
+    // FEEDBACK TRACKING REMOVED AS REQUESTED
+
+    // ==================== ADMIN UPDATE MESSAGE HANDLER ====================
+    if (requestBody.action === 'update_message') {
+        const { messageId, content, isVerified } = requestBody;
+        console.log(`✏️ [UPDATE] Admin updating message ${messageId}`);
+
+        if (!messageId || !content) {
+            return new Response(JSON.stringify({ error: "Missing messageId or content" }), { status: 400, headers: corsHeaders });
+        }
+
+        try {
+            const { error } = await supabaseClient
+                .from('messages')
+                .update({
+                    content,
+                    is_verified: isVerified,
+                    is_edited: true,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', messageId);
+
+            if (error) throw error;
+            return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
+        } catch (error: any) {
+            console.error("❌ [UPDATE] failed:", error);
+            return new Response(JSON.stringify({ error: `Failed to update message: ${error.message || JSON.stringify(error)}` }), { status: 500, headers: corsHeaders });
+        }
+    }
 
     try {
+        let { query, userId: bodyUserId, sessionId, profileId, history, detectedLanguage = 'English', detectedSentiment = 'neutral', assistantMessageId } = requestBody;
+
+        const startRoutingTime = Date.now();
+        const activeProfileId = profileId;
+
         // 1. Setup OpenAI Client
         const openaiKey = Deno.env.get("OPENAI_API_KEY");
 
         if (!query) {
-            return new Response(JSON.stringify({ error: "Query is required" }), { status: 400 });
+            return new Response(JSON.stringify({ error: "Query is required" }), { status: 400, headers: corsHeaders });
         }
 
         // --- SECURITY: AUTHENTICATION ---
@@ -164,43 +199,31 @@ serve(async (req) => {
             apiKey: openaiKey,
         });
 
-        // ==================== HELPER FUNCTIONS (PORTED) ====================
+        // ==================== INTELLIGENT ROUTING SYSTEM ====================
 
-        // A. Model Router
-        type ModelProvider = 'openai' | 'anthropic' | 'cerebras' | 'google';
-        interface ModelChoice {
+        // Legacy function kept for backward compatibility (now uses intelligent router)
+        async function chooseModelIntelligent(message: string, emotionalState: string, userId: string): Promise<{
             provider: ModelProvider;
             model: string;
-        }
+        }> {
+            try {
+                const decision = await routeIntelligently(
+                    message,
+                    emotionalState,
+                    userId,
+                    openai,
+                    supabaseClient
+                );
 
-        function chooseModel(message: string): ModelChoice {
-            console.log(`🔍 [CHAT] Choosing model for: ${message.slice(0, 50)}...`);
-            const msg = message.toLowerCase();
-
-            const hasClaude = !!Deno.env.get("ANTHROPIC_API_KEY");
-            const hasCerebras = !!Deno.env.get("CEREBRAS_API_KEY");
-            const hasGemini = !!Deno.env.get("GEMINI_API_KEY");
-
-            // 1. Context/History -> Gemini (Infinite Window)
-            const historicalKeywords = ["remember", "last time", "before", "past", "weeks ago", "months ago", "summary of our chats", "pichli baat"];
-            if (historicalKeywords.some(k => msg.includes(k)) && hasGemini) {
-                return { provider: 'google', model: 'gemini-1.5-pro' };
+                return {
+                    provider: decision.provider,
+                    model: decision.model
+                };
+            } catch (error) {
+                console.error('❌ Intelligent routing failed, using fallback:', error);
+                // Fallback to simple routing
+                return { provider: 'openai', model: 'gpt-4o-mini' };
             }
-
-            // 2. Creative Writing/Storytelling -> Claude (Best at creative tasks)
-            const creativeKeywords = ["write", "story", "creative", "poem", "essay", "article", "blog", "draft", "compose"];
-            if (creativeKeywords.some(k => msg.includes(k)) && hasClaude) {
-                return { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' };
-            }
-
-            // 3. Complex Logic/Reasoning -> GPT-4o (Best reasoning)
-            const complexKeywords = ["code", "logic", "calculate", "strategy", "complex", "plan", "science", "physics", "math", "debug", "algorithm"];
-            if (complexKeywords.some(k => msg.includes(k))) {
-                return { provider: 'openai', model: 'gpt-4o' };
-            }
-
-            // Default fallback - GPT-4o-mini (reliable & fast)
-            return { provider: 'openai', model: 'gpt-4o-mini' };
         }
 
         // --- NEW: GraphRAG Traversal ---
@@ -260,7 +283,7 @@ serve(async (req) => {
                 if (sources && sources.length > 0) {
                     context += "\nRELATED INSIGHTS:\n";
                     sources.forEach((s: any) => {
-                        if (s.source) context += `[Ref: ${s.source.title}] ${s.source.content.slice(0, 300)}...\n`;
+                        if (s.source && s.source.content) context += `[Ref: ${s.source.title}] ${s.source.content.slice(0, 300)}...\n`;
                     });
                 }
 
@@ -367,20 +390,45 @@ serve(async (req) => {
             return data ? data.reverse() : [];
         }
 
+        // E. Get Emotional History (Last 7 interactions)
+        async function getEmotionalHistory(uid: string, profId: string) {
+            if (!uid || uid === 'anonymous') return [];
+            try {
+                const { data } = await supabaseClient
+                    .from("user_emotional_history")
+                    .select("emotion_category, intensity, urgency_level, created_at")
+                    .eq("user_id", uid)
+                    .eq("profile_id", profId)
+                    .order("created_at", { ascending: false })
+                    .limit(7);
+                return data || [];
+            } catch (err) {
+                console.error("❌ [EMO] History Fetch Error:", err);
+                return [];
+            }
+        }
+
         // ==================== CORE LOGIC ====================
 
         // 2. Fetch Context & Prepare Prompt
-        const activeProfileId = profileId;
-        const [userProfileParams, psychProfile, sessionHistory, dynamicProfile] = await Promise.all([
+        const [userProfileParams, psychProfile, sessionHistory, dynamicProfile, emotionalHistory] = await Promise.all([
             buildProfilePrompt(chatUserId, activeProfileId),
             getPsychProfile(chatUserId, activeProfileId),
             getSessionHistory(sessionId),
-            getMindProfileSettings(activeProfileId)
+            getMindProfileSettings(activeProfileId),
+            getEmotionalHistory(chatUserId, activeProfileId)
         ]);
 
+        const emotionalTimeline = emotionalHistory.length > 0
+            ? emotionalHistory.map((e: any) => `${new Date(e.created_at).toLocaleDateString()}: ${e.emotion_category} (Intensity: ${e.intensity})`).join(' | ')
+            : "No previous emotional data.";
+
         // --- PARALLEL: SENTIMENT & EMBEDDINGS ---
-        let detectedSentiment = "neutral";
-        let detectedLanguage = "english";
+        detectedSentiment = "neutral";
+        detectedLanguage = "english";
+        let detectedIntensity = 0.5;
+        let detectedUrgency = "low";
+        let crisisDetected = false;
         let queryEmbedding: number[] = [];
 
         try {
@@ -391,10 +439,12 @@ serve(async (req) => {
                     messages: [
                         {
                             role: "system",
-                            content: `Analyze the user's input for TWO things:
-                            1. EMOTIONAL STATE: 'distressed', 'motivated', 'neutral'
-                            2. LANGUAGE: 'English', 'Hinglish', 'Hindi', 'Marathi', 'Gujarati', 'Telugu', 'Tamil'.
-                            Return JSON: { "sentiment": "string", "language": "string" }`
+                            content: `Analyze the user's input for THREE things:
+                            1. EMOTION: 'Anxious', 'Depressed', 'Frustrated', 'Angry', 'Hopeful', 'Joyful', 'Despair', 'Lonely', 'Curious', 'Neutral'.
+                            2. INTENSITY: Score 0.0 to 1.0 (float).
+                            3. URGENCY: 'low', 'medium', 'high', 'critical' (Check for suicide/self-harm/giving up).
+                            4. LANGUAGE: 'English', 'Hinglish', 'Hindi', 'Marathi', 'Gujarati', 'Telugu', 'Tamil'.
+                            Return JSON: { "sentiment": "string", "intensity": float, "urgency": "string", "language": "string", "crisis": boolean }`
                         },
                         { role: "user", content: query }
                     ],
@@ -411,6 +461,9 @@ serve(async (req) => {
             const sentimentData = JSON.parse(sentimentResponse.choices[0].message.content || "{}");
             detectedSentiment = sentimentData.sentiment || "neutral";
             detectedLanguage = sentimentData.language || "english";
+            detectedIntensity = sentimentData.intensity || 0.5;
+            detectedUrgency = sentimentData.urgency || "low";
+            crisisDetected = sentimentData.crisis || false;
 
             console.log(`🧠 [SENSE] User State: ${detectedSentiment} | Language: ${detectedLanguage}`);
 
@@ -612,8 +665,10 @@ Rule:
             "**TACTICAL DEPTH (DELPHI BEATER)**: Never give generic 'Talk to a friend' or 'Write a letter' advice. Instead, prescribe **Named Rituals** or **Techniques**.",
             "**RITUAL PRESCRIPTION**: Instead of 'Forgive yourself', say: '**The Mirror Technique**' or '**The Burning Ritual**'. Instead of 'Analyze your thoughts', say: '**The 5-Why Analysis**'. Give the STEP-BY-STEP protocol for the ritual.",
             "**PHYSICALITY**: Advice must be physical. E.g., 'Write it on paper and burn it', 'Stand in front of a mirror', 'Do the Superbrain Yoga'. Avoid purely mental advice.",
-            "**TIME/SCHEDULE PROTOCOL (CRITICAL)**: If asked for a time routine/breakup, YOU MUST provide a **DAILY SCHEDULE** (e.g., Morning Routine 30 mins, Evening Routine 30 mins). **NEVER** provide weekly hour totals (e.g., '3.5 hours per week') as it is lazy and inactionable. Giving a weekly breakdown instead of a daily routine is a FAILURE.",
-            "**SPECIFIC TOOL NAMING**: When suggesting learning, NEVER say 'Watch videos' or 'Read books'. You must say: 'Watch the **Law of Attraction Masterclass**' or 'Practice **Ho'oponopono**'. Always name the specific tool."
+            "**SPECIFIC TOOL NAMING**: When suggesting learning, NEVER say 'Watch videos' or 'Read books'. You must say: 'Watch the **Law of Attraction Masterclass**' or 'Practice **Ho'oponopono**'. Always name the specific tool.",
+            "**ADAPTIVE RESILIENCE RECALL**: If the user is currently in a 'distressed' or 'neutral' state, look into the MEMORY CONTEXT for 'Resilience Markers' (past breakthroughs, victories over fear, or successful use of techniques like Ho'oponopono).",
+            "**RESILIENCE TRIGGER**: If a relevant marker is found, weave it naturally into your response to remind the user of their own strength. Example: 'Komal, jaise aapne Covid ke waqt [Event] ko handle kiya tha, wahi power aaj bhi aapke paas hai.'",
+            "**MEMORY HYGIENE**: Do NOT mention the same memory in every turn. Use it selectively (only once per session) to create a high-impact emotional connection. Never bring up past failures or dukh if the user is already in a 'motivated' state."
         ];
 
         let TONE_INSTRUCTION = "";
@@ -820,8 +875,16 @@ IDENTITY:
         - CORE DESIRE: ${psychProfile.core_desire || 'Unknown'}
         - LIMITING BELIEFS: ${psychProfile.limiting_beliefs?.join(', ') || 'None detected yet'}
         - CURRENT GOALS: ${JSON.stringify(psychProfile.goals || {})}
-        ` : 'No long-term memory yet. Ask impactful questions to learn about their goals and desires.'
-            }
+        ` : 'No long-term memory yet.'}
+
+        EMOTIONAL JOURNEY(LAST 7 STEPS):
+        ${emotionalTimeline}
+        
+        ADAPTIVE COACHING INSTRUCTION:
+        * **ADAPTIVE GREETING**: If this is the START of a session (sessionHistory is empty) and the user has previous emotional history, reference their last emotional state naturally in your greeting. E.g., "Hi [Name], I've been thinking about what you shared yesterday about [Context]. How are you feeling today?"
+        * **EMOTIONAL TRENDS**: If the Trend is Declining (e.g., Joy -> Anxiety over 7 segments), be significantly more empathetic and offer grounding techniques before any coaching.
+        * **CRITICAL URGENCY**: If Urgency is High/Critical, bypass normal coaching and focus entirely on emotional stabilization and validation.
+        * **MILESTONE CELEBRATIONS**: If the user has shifted from a negative state ('Anxiety', 'Despair') in the past sessions to a positive state ('Hopeful', 'Joyful') now, CELEBRATE this shift explicitly as a major emotional breakthrough.
 
 
 PERSONALIZATION:
@@ -829,7 +892,73 @@ PERSONALIZATION:
         `;
 
         // 5. Generate Response & Handle Stream
-        const { provider, model: selectedModel } = chooseModel(query);
+        // const { provider, model: selectedModel } = chooseModel(query);
+        // Intelligent routing
+        let provider, selectedModel;
+        let routingDecision;
+        try {
+            routingDecision = await routeIntelligently(
+                query,
+                detectedSentiment || 'neutral',
+                chatUserId,
+                openai,
+                supabaseClient
+            );
+            provider = routingDecision.provider;
+            selectedModel = routingDecision.model;
+            console.log(`🎯 [ROUTING] ${selectedModel} | Intent: ${routingDecision.intent}`);
+        } catch (error) {
+            console.error('Routing failed:', error);
+            provider = 'openai';
+            selectedModel = 'gpt-4o-mini';
+        }
+
+        // ==================== ENSEMBLE MODE (CRITICAL QUERIES) ====================
+        if (routingDecision?.isCritical && routingDecision?.intent === 'emotional_crisis') {
+            console.log('🚨 [CRISIS] Activating ensemble mode for critical emotional query');
+
+            try {
+                // Run ensemble mode (GPT-4o x2)
+                const ensembleResult = await ensembleMode(
+                    query,
+                    systemPrompt,
+                    sessionHistory.map((m: any) => ({ role: m.role, content: m.content })),
+                    openai
+                );
+
+                // Use the better response
+                const ensembleResponse = ensembleResult.response;
+
+                // Track metrics immediately
+                await trackRoutingMetrics(
+                    {
+                        ...routingDecision,
+                        model: ensembleResult.selectedModel,
+                        reasoning: `Ensemble: ${ensembleResult.reasoning}`
+                    },
+                    chatUserId,
+                    Date.now() - startRoutingTime,
+                    true,
+                    supabaseClient
+                );
+
+                // Return response directly (skip streaming loop)
+                const encoder = new TextEncoder();
+                return new Response(
+                    new ReadableStream({
+                        start(controller) {
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ensembleResponse)}\n\n`));
+                            controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+                            controller.close();
+                        }
+                    }),
+                    { headers: { "Content-Type": "text/event-stream" } }
+                );
+
+            } catch (error) {
+                console.error('❌ Ensemble mode failed, continuing with normal routing:', error);
+            }
+        }
         const encoder = new TextEncoder();
         let fullResponse = "";
 
@@ -893,6 +1022,11 @@ PERSONALIZATION:
                             }),
                         });
 
+                        if (!response.ok) {
+                            const errorData = await response.text();
+                            throw new Error(`Anthropic API Error (${response.status}): ${errorData}`);
+                        }
+
                         const reader = response.body?.getReader();
                         const decoder = new TextDecoder();
                         while (true) {
@@ -934,6 +1068,11 @@ PERSONALIZATION:
                             }
                         );
 
+                        if (!response.ok) {
+                            const errorData = await response.text();
+                            throw new Error(`Google API Error (${response.status}): ${errorData}`);
+                        }
+
                         const reader = response.body?.getReader();
                         const decoder = new TextDecoder();
                         while (true) {
@@ -956,8 +1095,11 @@ PERSONALIZATION:
                         }
                         controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
                     }
-                } catch (err) {
+                } catch (err: any) {
                     console.error("❌ [CHAT] Stream Error:", err);
+                    const errorMsg = `Error: ${err.message || 'AI Generation Failed'}`;
+                    fullResponse = errorMsg;
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorMsg)}\n\n`));
                     controller.error(err);
                 } finally {
                     const responseMetadata = {
@@ -975,6 +1117,8 @@ PERSONALIZATION:
                     // Background Tasks (Intent Detection & Fact Extraction)
                     const backgroundTasks = async () => {
                         try {
+                            // 0. Track Routing Metrics - REMOVED AS REQUESTED
+
                             const currentTime = new Date().toISOString();
 
                             // 1. Intent Detection (Reminders & Tasks)
@@ -1064,23 +1208,22 @@ PERSONALIZATION:
                                 console.warn("⚠️ [SECURITY] Blocked anonymous write to user_facts");
                             }
 
-                            // B. Update Psych Profile (Infinite Memory - Atomic)
-                            if (analysisData.psych_update && chatUserId !== 'anonymous') {
-                                const update = analysisData.psych_update;
-                                if (update.core_desire || update.limiting_beliefs?.length > 0 || update.goals) {
-                                    const { error: psychError } = await supabaseClient.rpc('update_psych_profile', {
-                                        p_user_id: chatUserId,
-                                        p_profile_id: activeProfileId || null,
-                                        p_core_desire: update.core_desire || null,
-                                        p_new_beliefs: update.limiting_beliefs || [],
-                                        p_new_goals: update.goals || {}
-                                    });
+                            // C. Record Emotional History (New Feature)
+                            if (chatUserId !== 'anonymous') {
+                                const { error: emoError } = await supabaseClient.rpc('record_emotional_event', {
+                                    p_user_id: chatUserId,
+                                    p_profile_id: activeProfileId || null,
+                                    p_session_id: sessionId || null,
+                                    p_emotion: detectedSentiment,
+                                    p_intensity: detectedIntensity,
+                                    p_urgency: detectedUrgency,
+                                    p_crisis: crisisDetected
+                                });
 
-                                    if (psychError) {
-                                        console.error("❌ [RPC] update_psych_profile failed:", psychError);
-                                    } else {
-                                        console.log("🧠 [MEMORY] Atomic Update for:", chatUserId);
-                                    }
+                                if (emoError) {
+                                    console.error("❌ [EMO] Record Event Failed:", emoError);
+                                } else {
+                                    console.log(`🧠 [EMO] History Saved: ${detectedSentiment} (${detectedUrgency})`);
                                 }
                             }
 
@@ -1112,3 +1255,543 @@ PERSONALIZATION:
         });
     }
 });
+
+// ==================== MERGED INTELLIGENT ROUTER LOGIC ====================
+
+// ==================== TYPES ====================
+
+export type ModelProvider = 'openai' | 'anthropic' | 'cerebras' | 'google';
+
+export interface RoutingDecision {
+    provider: ModelProvider;
+    model: string;
+    intent: string;
+    complexity: number;
+    reasoning: string;
+    estimatedCost: number;
+    isCritical: boolean;
+}
+
+export interface IntentClassification {
+    intent: string;
+    complexity: number;
+    isCritical: boolean;
+    reasoning: string;
+}
+
+export interface UserContext {
+    conversationDepth: number;
+    hasEmotionalHistory: boolean;
+    recentTopics: string[];
+}
+
+// ==================== CACHING LAYER ====================
+
+class RouterCache {
+    private cache = new Map<string, {
+        decision: RoutingDecision;
+        timestamp: number;
+    }>();
+
+    private readonly TTL = 60 * 60 * 1000; // 1 hour
+    private readonly MAX_SIZE = 1000;
+
+    // Stats
+    private hits = 0;
+    private misses = 0;
+
+    getCacheKey(message: string, userId: string): string {
+        const normalized = message.toLowerCase().trim().slice(0, 100);
+        return `${userId}:${normalized}`;
+    }
+
+    get(message: string, userId: string): RoutingDecision | null {
+        const key = this.getCacheKey(message, userId);
+        const cached = this.cache.get(key);
+
+        if (cached && Date.now() - cached.timestamp < this.TTL) {
+            this.hits++;
+            console.log(`⚡ [CACHE] Hit! (${this.getHitRate()}% hit rate)`);
+            return cached.decision;
+        }
+
+        this.misses++;
+        return null;
+    }
+
+    set(message: string, userId: string, decision: RoutingDecision): void {
+        const key = this.getCacheKey(message, userId);
+        this.cache.set(key, { decision, timestamp: Date.now() });
+
+        // Cleanup old entries
+        if (this.cache.size > this.MAX_SIZE) {
+            const oldestKey = this.cache.keys().next().value;
+            this.cache.delete(oldestKey);
+        }
+    }
+
+    getHitRate(): number {
+        const total = this.hits + this.misses;
+        return total > 0 ? Math.round((this.hits / total) * 100) : 0;
+    }
+
+    getStats() {
+        return {
+            hits: this.hits,
+            misses: this.misses,
+            hitRate: this.getHitRate(),
+            cacheSize: this.cache.size
+        };
+    }
+}
+
+const routerCache = new RouterCache();
+
+// ==================== LAYER 1: INTENT CLASSIFICATION ====================
+
+export async function classifyIntent(
+    message: string,
+    emotionalState?: string,
+    openai?: OpenAI
+): Promise<IntentClassification> {
+    if (!openai) {
+        return {
+            intent: 'general_chat',
+            complexity: 5,
+            isCritical: false,
+            reasoning: 'OpenAI client not available'
+        };
+    }
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [{
+                role: "system",
+                content: `Classify this query into ONE category:
+
+1. "emotional_crisis" - Suicide, self-harm, severe depression, giving up
+2. "emotional_support" - Anxiety, stress, fear, sadness, loneliness
+3. "creative_writing" - Stories, poems, articles, blog posts
+4. "technical_complex" - Code, math, strategy, business plans, science
+5. "long_context" - Asks about past conversations, history, "remember when"
+6. "general_chat" - Casual questions, simple advice
+
+Also rate complexity 1-10 (10 = most complex)
+
+Return JSON: {
+    "intent": "category",
+    "complexity": 1-10,
+    "isCritical": true/false,
+    "reasoning": "brief explanation"
+}`
+            }, {
+                role: "user",
+                content: `User message: "${message}"\nDetected emotion: ${emotionalState || 'unknown'}`
+            }],
+            response_format: { type: "json_object" }
+        });
+
+        const result = JSON.parse(response.choices[0].message.content || '{}');
+        console.log(`🧠 [ROUTING] Intent: ${result.intent}, Complexity: ${result.complexity}`);
+
+        return {
+            intent: result.intent || 'general_chat',
+            complexity: result.complexity || 5,
+            isCritical: result.isCritical || false,
+            reasoning: result.reasoning || 'No reasoning provided'
+        };
+    } catch (error) {
+        console.error('❌ Intent classification failed:', error);
+        return {
+            intent: 'general_chat',
+            complexity: 5,
+            isCritical: false,
+            reasoning: 'Classification error - using fallback'
+        };
+    }
+}
+
+// ==================== LAYER 2: COMPLEXITY ANALYSIS ====================
+
+export function analyzeComplexity(message: string, conversationDepth: number): number {
+    let score = 5; // Base score
+
+    // Message length
+    if (message.length > 500) score += 2;
+    if (message.length > 1000) score += 2;
+
+    // Technical indicators
+    const technicalTerms = ['algorithm', 'function', 'database', 'API', 'code', 'debug', 'strategy', 'business model'];
+    if (technicalTerms.some(term => message.toLowerCase().includes(term))) score += 2;
+
+    // Multi-part questions
+    const questionMarks = (message.match(/\?/g) || []).length;
+    if (questionMarks > 2) score += 1;
+
+    // Conversation depth
+    if (conversationDepth > 10) score += 1; // Long conversation
+
+    return Math.min(score, 10);
+}
+
+// ==================== LAYER 3: CONTEXT ENHANCEMENT ====================
+
+export async function getUserRoutingContext(
+    userId: string,
+    supabaseClient: any
+): Promise<UserContext> {
+    try {
+        const { data: recentMessages } = await supabaseClient
+            .from('messages')
+            .select('content, role')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false })
+            .limit(5);
+
+        return {
+            conversationDepth: recentMessages?.length || 0,
+            hasEmotionalHistory: false, // Can be enhanced
+            recentTopics: [] // Can be enhanced
+        };
+    } catch (error) {
+        console.error('❌ Failed to get user context:', error);
+        return {
+            conversationDepth: 0,
+            hasEmotionalHistory: false,
+            recentTopics: []
+        };
+    }
+}
+
+// ==================== LAYER 4: SMART MODEL SELECTION ====================
+
+export async function selectModelIntelligent(
+    message: string,
+    emotionalState: string,
+    userId: string,
+    openai: OpenAI,
+    supabaseClient: any
+): Promise<RoutingDecision> {
+
+    // Parallel execution for speed
+    const [classification, context] = await Promise.all([
+        classifyIntent(message, emotionalState, openai),
+        getUserRoutingContext(userId, supabaseClient)
+    ]);
+
+    const complexity = analyzeComplexity(message, context.conversationDepth);
+
+    // Decision tree
+    let provider: ModelProvider = 'openai';
+    let model = 'gpt-4o-mini';
+    let reasoning = 'Default fast model';
+    let estimatedCost = 0.0001;
+
+    // Critical emotional crisis - ALWAYS use best model
+    if (classification.isCritical || classification.intent === 'emotional_crisis') {
+        provider = 'openai';
+        model = 'gpt-4o';
+        reasoning = 'Critical emotional state detected - using most empathetic model';
+        estimatedCost = 0.01;
+    }
+    // Emotional support - GPT-4o for empathy
+    else if (classification.intent === 'emotional_support' && complexity > 6) {
+        provider = 'openai';
+        model = 'gpt-4o';
+        reasoning = 'Complex emotional support requires advanced empathy';
+        estimatedCost = 0.01;
+    }
+    // Creative writing - Claude excels here
+    else if (classification.intent === 'creative_writing' && Deno.env.get('ANTHROPIC_API_KEY')) {
+        provider = 'anthropic';
+        model = 'claude-3-5-sonnet-20241022';
+        reasoning = 'Creative task - Claude is best storyteller';
+        estimatedCost = 0.015;
+    }
+    // Long context/history - Gemini's strength
+    else if (classification.intent === 'long_context' && Deno.env.get('GEMINI_API_KEY')) {
+        provider = 'google';
+        model = 'gemini-1.5-pro';
+        reasoning = 'Long conversation history - Gemini has 1M context window';
+        estimatedCost = 0.0075;
+    }
+    // Technical/complex - GPT-4o for reasoning
+    else if (classification.intent === 'technical_complex' && complexity > 7) {
+        provider = 'openai';
+        model = 'gpt-4o';
+        reasoning = 'Complex technical query requires advanced reasoning';
+        estimatedCost = 0.01;
+    }
+    // Simple queries - fast and cheap
+    else {
+        provider = 'openai';
+        model = 'gpt-4o-mini';
+        reasoning = 'General query - optimizing for speed and cost';
+        estimatedCost = 0.0001;
+    }
+
+    console.log(`🎯 [ROUTING] Selected: ${model} | Reason: ${reasoning}`);
+
+    return {
+        provider,
+        model,
+        intent: classification.intent,
+        complexity,
+        reasoning,
+        estimatedCost,
+        isCritical: classification.isCritical
+    };
+}
+
+// ==================== LAYER 5: FALLBACK CHAIN ====================
+
+const FALLBACK_CHAIN: Record<string, string[]> = {
+    'gpt-4o': ['claude-3-5-sonnet-20241022', 'gpt-4o-mini'],
+    'claude-3-5-sonnet-20241022': ['gpt-4o', 'gpt-4o-mini'],
+    'gemini-1.5-pro': ['gpt-4o', 'gpt-4o-mini'],
+    'gpt-4o-mini': ['gpt-3.5-turbo']
+};
+
+export function getFallbackChain(model: string): string[] {
+    return FALLBACK_CHAIN[model] || ['gpt-4o-mini'];
+}
+
+// ==================== LAYER 6: PERFORMANCE MONITORING ====================
+
+export async function trackRoutingMetrics(
+    routingDecision: RoutingDecision,
+    userId: string,
+    responseTime: number,
+    success: boolean,
+    supabaseClient: any,
+    messageId?: string // Optional messageId from frontend
+) {
+    try {
+        await supabaseClient.from('routing_metrics').insert({
+            user_id: userId,
+            intent: routingDecision.intent,
+            complexity: routingDecision.complexity,
+            model_used: routingDecision.model,
+            reasoning: routingDecision.reasoning,
+            estimated_cost: routingDecision.estimatedCost,
+            response_time_ms: responseTime,
+            success,
+            is_critical: routingDecision.isCritical,
+            created_at: new Date().toISOString(),
+            message_id: messageId // Link to messages table
+        });
+    } catch (error) {
+        console.error('❌ Failed to track routing metrics:', error);
+    }
+}
+
+// ==================== MAIN ROUTING FUNCTION ====================
+
+export async function routeIntelligently(
+    message: string,
+    emotionalState: string,
+    userId: string,
+    openai: OpenAI,
+    supabaseClient: any
+): Promise<RoutingDecision> {
+
+    // Check cache first
+    const cached = routerCache.get(message, userId);
+    if (cached) {
+        return cached;
+    }
+
+    // Perform intelligent routing
+    const decision = await selectModelIntelligent(
+        message,
+        emotionalState,
+        userId,
+        openai,
+        supabaseClient
+    );
+
+    // Cache the decision
+    routerCache.set(message, userId, decision);
+
+    // Log cache stats periodically
+    const stats = routerCache.getStats();
+    if ((stats.hits + stats.misses) % 10 === 0) {
+        console.log(`📊 [CACHE] Stats:`, stats);
+    }
+
+    return decision;
+}
+
+// ==================== ENSEMBLE MODE FOR CRITICAL QUERIES ====================
+
+export async function ensembleMode(
+    message: string,
+    systemPrompt: string,
+    conversationHistory: any[],
+    openai: OpenAI
+): Promise<{
+    response: string;
+    modelsUsed: string[];
+    selectedModel: string;
+    reasoning: string;
+}> {
+    console.log('🚨 [ENSEMBLE] Running dual-model validation for critical query');
+
+    try {
+        // Run GPT-4o twice with different temperatures for diversity
+        const [response1, response2] = await Promise.all([
+            openai.chat.completions.create({
+                model: 'gpt-4o',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    ...conversationHistory,
+                    { role: 'user', content: message }
+                ],
+                temperature: 0.3, // More focused
+            }),
+            openai.chat.completions.create({
+                model: 'gpt-4o',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    ...conversationHistory,
+                    { role: 'user', content: message }
+                ],
+                temperature: 0.7, // More creative
+            })
+        ]);
+
+        const text1 = response1.choices[0].message.content || '';
+        const text2 = response2.choices[0].message.content || '';
+
+        // Use GPT-4o-mini to judge which response is better
+        const judgeResponse = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{
+                role: 'system',
+                content: `You are evaluating two AI responses to a user in emotional crisis.
+                
+Pick the response that is:
+1. Most empathetic and validating
+2. Provides immediate emotional support
+3. Includes crisis resources if needed
+4. Uses warm, human language
+5. Avoids being preachy or dismissive
+
+Return JSON: {
+    "choice": "A" or "B",
+    "reasoning": "brief explanation why this response is better"
+}`
+            }, {
+                role: 'user',
+                content: `User's message: "${message}"
+
+Response A (Temperature 0.3 - Focused):
+${text1}
+
+Response B (Temperature 0.7 - Creative):
+${text2}
+
+Which response is better for someone in emotional crisis?`
+            }],
+            response_format: { type: 'json_object' }
+        });
+
+        const judgment = JSON.parse(judgeResponse.choices[0].message.content || '{}');
+        const selectedResponse = judgment.choice === 'A' ? text1 : text2;
+        const selectedTemp = judgment.choice === 'A' ? '0.3' : '0.7';
+
+        console.log(`🏆 [ENSEMBLE] Selected response ${judgment.choice} (temp ${selectedTemp}): ${judgment.reasoning}`);
+
+        return {
+            response: selectedResponse,
+            modelsUsed: ['gpt-4o (temp 0.3)', 'gpt-4o (temp 0.7)'],
+            selectedModel: `gpt-4o (temp ${selectedTemp})`,
+            reasoning: judgment.reasoning || 'Better empathy and support'
+        };
+
+    } catch (error) {
+        console.error('❌ [ENSEMBLE] Failed, using single model fallback:', error);
+
+        // Fallback to single GPT-4o call
+        const fallbackResponse = await openai.chat.completions.create({
+            model: 'gpt-4o',
+            messages: [
+                { role: 'system', content: systemPrompt },
+                ...conversationHistory,
+                { role: 'user', content: message }
+            ],
+            temperature: 0.5,
+        });
+
+        return {
+            response: fallbackResponse.choices[0].message.content || '',
+            modelsUsed: ['gpt-4o (fallback)'],
+            selectedModel: 'gpt-4o (fallback)',
+            reasoning: 'Ensemble failed, used single model'
+        };
+    }
+}
+
+// ==================== USER FEEDBACK TRACKING ====================
+
+export async function trackUserFeedback(
+    messageId: string,
+    rating: number,
+    supabaseClient: any
+): Promise<void> {
+    try {
+        await supabaseClient
+            .from('routing_metrics')
+            .update({ user_satisfaction: rating })
+            .eq('message_id', messageId);
+
+        console.log(`✅ [FEEDBACK] Tracked rating ${rating} for message ${messageId}`);
+    } catch (error) {
+        console.error('❌ [FEEDBACK] Failed to track:', error);
+    }
+}
+
+export async function getRoutingRecommendations(
+    supabaseClient: any
+): Promise<Array<{
+    intent: string;
+    recommendedModel: string;
+    avgSatisfaction: number;
+    sampleSize: number;
+}>> {
+    try {
+        const { data } = await supabaseClient
+            .from('model_performance_by_intent')
+            .select('*')
+            .gte('usage_count', 10); // At least 10 samples
+
+        if (!data) return [];
+
+        // Group by intent and pick best model
+        const recommendations = new Map();
+
+        for (const row of data) {
+            const existing = recommendations.get(row.intent);
+            if (!existing || row.avg_satisfaction > existing.avgSatisfaction) {
+                recommendations.set(row.intent, {
+                    intent: row.intent,
+                    recommendedModel: row.model_used,
+                    avgSatisfaction: row.avg_satisfaction,
+                    sampleSize: row.usage_count
+                });
+            }
+        }
+
+        return Array.from(recommendations.values());
+    } catch (error) {
+        console.error('❌ [FEEDBACK] Failed to get recommendations:', error);
+        return [];
+    }
+}
+
+// ==================== EXPORT CACHE STATS ====================
+
+export function getCacheStats() {
+    return routerCache.getStats();
+}
