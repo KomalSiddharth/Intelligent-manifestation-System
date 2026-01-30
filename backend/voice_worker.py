@@ -152,10 +152,10 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     base_prompt = "You are Mitesh Khatri, a Law of Attraction Coach. Be warm, energetic. Keep responses SHORT."
     ctx_mgr = ContextManager(base_prompt)
     
-    # KB Processor
+    # KB Processor - TEMPORARILY DISABLED
     kb_processor = None
-    if supabase and openai_client:
-        kb_processor = KnowledgeBaseProcessor(ctx_mgr, openai_client, user_id, base_prompt, supabase)
+    # if supabase and openai_client:
+    #     kb_processor = KnowledgeBaseProcessor(ctx_mgr, openai_client, user_id, base_prompt, supabase)
 
     messages = ctx_mgr.get_messages()
     context = OpenAILLMContext(messages)
@@ -166,8 +166,8 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         transport.input(),
         stt,
     ]
-    if kb_processor:
-        processors.append(kb_processor)
+    # if kb_processor:
+    #     processors.append(kb_processor)
     
     processors.extend([
         context_aggregator.user(),
