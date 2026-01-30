@@ -1505,7 +1505,7 @@ export async function selectModelIntelligent(
     // Creative writing - Claude excels here
     else if (classification.intent === 'creative_writing' && Deno.env.get('ANTHROPIC_API_KEY')) {
         provider = 'anthropic';
-        model = 'claude-3-5-sonnet-20241022';
+        model = 'claude-3-5-sonnet-latest';
         reasoning = 'Creative task - Claude is best storyteller';
         estimatedCost = 0.015;
     }
@@ -1547,8 +1547,8 @@ export async function selectModelIntelligent(
 // ==================== LAYER 5: FALLBACK CHAIN ====================
 
 const FALLBACK_CHAIN: Record<string, string[]> = {
-    'gpt-4o': ['claude-3-5-sonnet-20241022', 'gpt-4o-mini'],
-    'claude-3-5-sonnet-20241022': ['gpt-4o', 'gpt-4o-mini'],
+    'gpt-4o': ['claude-3-5-sonnet-latest', 'gpt-4o-mini'],
+    'claude-3-5-sonnet-latest': ['gpt-4o', 'gpt-4o-mini'],
     'gemini-1.5-pro': ['gpt-4o', 'gpt-4o-mini'],
     'gpt-4o-mini': ['gpt-3.5-turbo']
 };

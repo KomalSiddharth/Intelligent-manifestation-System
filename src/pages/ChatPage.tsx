@@ -1538,11 +1538,12 @@ const ChatPage = () => {
             </div>
 
             {/* Voice Call Overlay */}
-            <Dialog open={isCallOpen} onOpenChange={setIsCallOpen}>
-                <DialogContent className="sm:max-w-xl p-0 bg-transparent border-none overflow-hidden">
-                    <VoiceAssistant profileId={selectedProfile?.id} />
-                </DialogContent>
-            </Dialog>
+            {/* Voice Call Overlay */}
+            <VoiceAssistant
+                isOpen={isCallOpen}
+                onClose={() => setIsCallOpen(false)}
+                userId={chatUserId}
+            />
         </IdentityGate >
     );
 };
