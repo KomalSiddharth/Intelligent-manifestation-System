@@ -6,7 +6,7 @@ aiohttp>=3.11.12
 loguru>=0.7.3
 openai>=1.74.0
 cartesia>=2.0.3
-onnxruntime==1.16.3
-supabase==2.3.4
+onnxruntime>=1.20.1
+supabase>=2.3.4
 pipecat-ai[daily,cartesia,openai,silero]==0.0.100
-gunicorn==21.2.0
+gunicorn>=21.2.0
