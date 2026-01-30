@@ -19,7 +19,7 @@ app = Flask(__name__)
 CORS(app, resources={
     r"/*": {
         "origins": [
-            "*", # Allowing all for now to ensure it works, but you should replace this with your Vercel URL later
+            "https://manifest-smoky.vercel.app/", # Allowing all for now to ensure it works, but you should replace this with your Vercel URL later
             "http://localhost:5173",
             "http://localhost:3000",
             "http://127.0.0.1:5173",
