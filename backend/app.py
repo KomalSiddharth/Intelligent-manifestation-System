@@ -14,7 +14,15 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 app = Flask(__name__)
-CORS(app)
+# Production CORS config
+CORS(app, resources={
+    r"/*": {
+        "origins": ["*"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"],
+        "supports_credentials": True
+    }
+})
 
 DAILY_API_KEY = os.getenv("DAILY_API_KEY")
 
@@ -143,4 +151,5 @@ if __name__ == '__main__':
     print("=" * 60)
     
     port = int(os.getenv("PORT", 5000))
+    print(f"🚀 Starting on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)

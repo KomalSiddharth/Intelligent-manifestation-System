@@ -37,9 +37,11 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             setStatus('Creating session...');
 
             // 1. Call backend to create room
-            const response = await fetch('http://localhost:5000/start-session', {
+            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+            const response = await fetch(`${apiUrl}/start-session`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({ user_id: userId })
             });
 
