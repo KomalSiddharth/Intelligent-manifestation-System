@@ -198,6 +198,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
         # Send initial greeting
         try:
+            await asyncio.sleep(1) # ✅ Connection stability delay
             greeting = TextFrame("Hello! I'm Mitesh, your AI coach. How can I help you today?")
             await task.queue_frame(greeting)
             logger.info("👋 Queued greeting message")
@@ -213,12 +214,8 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     async def on_app_message(transport, message, sender):
         logger.info(f"📨 App message from {sender}: {message}")
 
-
-    @transport.event_handler("on_track_started")
-    async def on_track_started(transport, track, participant):
-        logger.info(f"🎵 Track started: {track.kind} from {participant.get('id', 'unknown')}")
-
     await runner.run(task)
+
 
 
 

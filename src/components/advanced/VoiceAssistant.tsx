@@ -19,6 +19,8 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
 
     const callObjectRef = useRef<DailyCall | null>(null);
 
+    const audioRef = useRef<HTMLAudioElement>(null);
+
     // Cleanup function
     const cleanup = () => {
         if (callObjectRef.current) {
@@ -91,6 +93,12 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                         console.log('🔊 AI speaking');
                         setIsAISpeaking(true);
                         setStatus('Mitesh is speaking...');
+
+                        // ✅ ATTACH AUDIO TRACK TO ELEMENT
+                        if (audioRef.current && event.track) {
+                            audioRef.current.srcObject = new MediaStream([event.track]);
+                            audioRef.current.play().catch(err => console.error("Audio play error:", err));
+                        }
                     }
                 })
                 .on('track-stopped', (event) => {
@@ -158,7 +166,12 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                 <div id="voice-assistant-description" className="sr-only">
                     Voice Assistant Interface for Mitesh Khatri AI
                 </div>
+
+                {/* ✅ HIDDEN AUDIO ELEMENT */}
+                <audio ref={audioRef} autoPlay style={{ display: 'none' }} />
+
                 <div className="flex flex-col items-center gap-6 py-8">
+
                     {/* Avatar */}
                     <div className="relative">
                         <div className="w-32 h-32 rounded-full bg-gradient-to-br from-red-500 to-purple-600 flex items-center justify-center">
