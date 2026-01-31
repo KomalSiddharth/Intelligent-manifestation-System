@@ -989,23 +989,21 @@ const ChatPage = () => {
 
     const handleVerified = useCallback((user: any) => {
         const stableId = user.user_id || user.id;
-        console.log("✅ Verified in ChatPage:", user.name, "ID:", stableId);
-        setUserFullDetails(user);
 
-        // Only update if user ID actually changed
-        if (stableId && stableId !== chatUserId) {
-            console.log("🔄 User ID changed, updating sessions...");
+        // Only update if something actually changed to avoid re-render loops
+        if (stableId !== chatUserId || !userFullDetails) {
+            console.log("✅ Verified in ChatPage:", user.name, "ID:", stableId);
+            setUserFullDetails(user);
             setChatUserId(stableId);
+
             if (location.state?.sessionId) {
                 setCurrentSessionId(location.state.sessionId);
                 activeSessionIdRef.current = location.state.sessionId;
                 window.history.replaceState({}, document.title, location.pathname);
             }
             loadSessions(stableId);
-        } else if (stableId) {
-            console.log("✋ User ID same, skipping session reload");
         }
-    }, [location.state, chatUserId]);
+    }, [location.state, chatUserId, userFullDetails]);
 
     return (
         <IdentityGate onVerified={handleVerified} profileId={selectedProfile?.id}>

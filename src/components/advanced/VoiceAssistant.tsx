@@ -69,8 +69,14 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                     setIsConnected(true);
                     setIsConnecting(false);
                     setStatus('Connected! Click mic to speak.');
-                    // @ts-ignore
-                    callObject.setLocalAudio(false).catch(() => { });
+                    try {
+                        const result = callObject.setLocalAudio(false);
+                        if (result instanceof Promise) {
+                            result.catch(e => console.error("Initial mute error:", e));
+                        }
+                    } catch (e) {
+                        console.error("Initial mute error:", e);
+                    }
                 })
                 .on('left-meeting', () => {
                     console.log('👋 Left meeting');
@@ -152,7 +158,12 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
         onClose();
     };
 
-    // Lifecycle
+    // Lifecycle Debugging
+    useEffect(() => {
+        console.log("💎 [VOICE_ASSISTANT] Mounted");
+        return () => console.log("💎 [VOICE_ASSISTANT] Unmounting!");
+    }, []);
+
     useEffect(() => {
         if (isOpen && !isConnected && !isConnecting) {
             startVoiceSession();

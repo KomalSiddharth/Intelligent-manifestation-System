@@ -104,7 +104,15 @@ class KnowledgeBaseProcessor(FrameProcessor):
         self.last_transcript = ""
     
     async def process_frame(self, frame, direction):
-        await self.push_frame(frame, direction)
+        await super().process_frame(frame, direction)
+
+        # Skip logic if not started (handled by super().process_frame for StartFrame)
+        if isinstance(frame, StartFrame):
+            logger.debug("🎬 KnowledgeBaseProcessor started")
+            return
+            
+        if not self._started:
+            return
 
         if isinstance(frame, TranscriptionFrame):
             text = frame.text.strip()

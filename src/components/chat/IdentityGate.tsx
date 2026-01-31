@@ -33,6 +33,12 @@ export default function IdentityGate({ onVerified, profileId, children }: Identi
     // Development mode flag - set to true to bypass OTP
     const DEV_MODE = import.meta.env.DEV; // Automatically true in development
 
+    // Lifecycle Debugging
+    useEffect(() => {
+        console.log("🔒 [IDENTITY_GATE] Mounted");
+        return () => console.log("🔒 [IDENTITY_GATE] Unmounting!");
+    }, []);
+
     // Check for existing session
     useEffect(() => {
         const storedEmail = localStorage.getItem('chat_user_email');
