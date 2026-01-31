@@ -1,10 +1,15 @@
-
 import asyncio
 import os
 import sys
 import aiohttp
 from loguru import logger
 from dotenv import load_dotenv
+
+# Ensure logs are flushed immediately
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
 
 from pipecat.frames.frames import EndFrame, StartFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -108,19 +113,28 @@ class KnowledgeBaseProcessor(FrameProcessor):
                 logger.info(f"🎤 USER: '{text}'")
                 
                 if self.supabase and self.openai_client:
-                    # Async KB search
-                    kb_context = await search_knowledge_base(self.user_id, text, self.openai_client, self.supabase)
-                    if kb_context:
-                        # Inject directly into pipeline context
-                        enhanced_prompt = f"{self.base_prompt}\n\nMANDATORY KNOWLEDGE CONTEXT:\n{kb_context}\n\nRule: Use ONLY the above context to answer. If not found, stay in character but keep it short."
-                        
-                        # Find system message and update
-                        for msg in self.context.messages:
-                            if msg["role"] == "system":
-                                msg["content"] = enhanced_prompt
-                                break
-                        
-                        logger.info("✅ KB context injected into LLM context")
+                    # Async KB search with timeout to prevent hangs
+                    try:
+                        kb_context = await asyncio.wait_for(
+                            search_knowledge_base(self.user_id, text, self.openai_client, self.supabase),
+                            timeout=8.0
+                        )
+                        if kb_context:
+                            # Inject directly into pipeline context
+                            enhanced_prompt = f"{self.base_prompt}\n\nMANDATORY KNOWLEDGE CONTEXT:\n{kb_context}\n\nRule: Use ONLY the above context to answer. If not found, stay in character but keep it short."
+                            
+                            # Find system message and update
+                            for msg in self.context.messages:
+                                if msg["role"] == "system":
+                                    msg["content"] = enhanced_prompt
+                                    break
+                            
+                            logger.info("✅ KB context injected into LLM context")
+                    except asyncio.TimeoutError:
+                        logger.warning("⏱️ KB search timed out - continuing with base persona")
+                    except Exception as e:
+                        logger.error(f"❌ KB processor error: {e}")
+
 
 
 # --- MAIN ---
@@ -247,7 +261,23 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     async def on_app_message(transport, message, sender):
         logger.info(f"📨 App message from {sender}: {message}")
 
-    await runner.run(task)
+    # Heartbeat task to debug silent disconnections
+    async def heartbeat():
+        try:
+            while True:
+                await asyncio.sleep(5)
+                logger.info("💓 Worker is alive and processing...")
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+
+    try:
+        await runner.run(task)
+    finally:
+        heartbeat_task.cancel()
+        await asyncio.sleep(0.1) # Brief pause for log flush
+
 
 
 

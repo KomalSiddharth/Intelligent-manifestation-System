@@ -106,9 +106,9 @@ def start_session():
         
         print(f"✅ Token created")
         
-        # ✅ Spawn voice worker subprocess (CORRECT PATH & LOGGING!)
-        print("🚀 Spawning voice worker...")
-        subprocess.Popen(
+        # ✅ Spawn voice worker subprocess with EXPLICIT LOG PIPING
+        print("🚀 Spawning voice worker...", flush=True)
+        worker_process = subprocess.Popen(
             [
                 sys.executable,
                 "voice_worker.py",
@@ -117,14 +117,21 @@ def start_session():
                 user_id
             ],
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            stdout=None, # Inherit from parent (Railway captures this)
-            stderr=None, # Inherit from parent
-            bufsize=1,   # Line buffered
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, # Merge stderr into stdout
+            bufsize=1,
             universal_newlines=True
         )
 
+        # Thread to read and print worker logs so they appear in Railway
+        import threading
+        def pipe_logs(process):
+            for line in iter(process.stdout.readline, ""):
+                print(f"[WORKER] {line}", end="", flush=True)
         
-        print(f"✅ Voice worker spawned successfully")
+        threading.Thread(target=pipe_logs, args=(worker_process,), daemon=True).start()
+        
+        print(f"✅ Voice worker spawned successfully (PID: {worker_process.pid})", flush=True)
         
         return jsonify({
             "success": True,
@@ -133,9 +140,10 @@ def start_session():
         })
 
     except Exception as e:
-        print(f"❌ Error creating session: {e}")
+        print(f"❌ Error creating session: {e}", flush=True)
         import traceback
         traceback.print_exc()
+
         return jsonify({
             "success": False,
             "error": str(e)
