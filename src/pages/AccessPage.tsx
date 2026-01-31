@@ -23,6 +23,8 @@ import {
 } from '@/db/api';
 import type { AudienceUser, MindProfile } from '@/types/types';
 import ConversationsView from '@/components/access/ConversationsView';
+import BroadcastsView from '@/components/access/BroadcastsView';
+
 import {
   Select,
   SelectContent,
@@ -317,7 +319,11 @@ const AccessPage = () => {
     }
 
 
-    // ... inside renderContent
+    if (activeSection === 'broadcasts') {
+      return (
+        <BroadcastsView />
+      );
+    }
     if (activeSection === 'external') {
       return (
         <div className="space-y-6">

@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import DailyIframe, { DailyCall } from '@daily-co/daily-js';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
-import { Mic, MicOff, Phone, X } from 'lucide-react';
+import { Mic, MicOff, Phone } from 'lucide-react';
 
 interface VoiceAssistantProps {
     isOpen: boolean;
@@ -57,10 +57,7 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             const callObject = DailyIframe.createCallObject({
                 url: room_url,
                 token: token,
-                subscribeToTracksAutomatically: true,
-                dailyConfig: {
-                    experimentalChromeVideoMuteLightOff: true
-                }
+                subscribeToTracksAutomatically: true
             });
 
             callObjectRef.current = callObject;
@@ -72,7 +69,8 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                     setIsConnected(true);
                     setIsConnecting(false);
                     setStatus('Connected! Click mic to speak.');
-                    callObject.setLocalAudio(false); // ✅ Force muted on join
+                    // @ts-ignore
+                    callObject.setLocalAudio(false).catch(() => { });
                 })
                 .on('left-meeting', () => {
                     console.log('👋 Left meeting');
@@ -83,13 +81,14 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                     setStatus('Connection Error');
                 })
                 .on('participant-joined', (event) => {
-                    console.log('🤖 Participant joined:', event.participant.user_name);
-                    if (event.participant.user_name === 'Mitesh AI Coach') {
+                    const name = event?.participant?.user_name || 'Someone';
+                    console.log('🤖 Participant joined:', name);
+                    if (name === 'Mitesh AI Coach') {
                         setStatus('Mitesh is ready!');
                     }
                 })
                 .on('track-started', (event) => {
-                    if (!event.participant.local && event.track.kind === 'audio') {
+                    if (event?.participant && !event.participant.local && event.track?.kind === 'audio') {
                         console.log('🔊 AI speaking');
                         setIsAISpeaking(true);
                         setStatus('Mitesh is speaking...');
@@ -97,17 +96,21 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                         // ✅ ATTACH AUDIO TRACK TO ELEMENT
                         if (audioRef.current && event.track) {
                             audioRef.current.srcObject = new MediaStream([event.track]);
-                            audioRef.current.play().catch(err => console.error("Audio play error:", err));
+                            audioRef.current.play().catch(err => {
+                                console.warn("Auto-play blocked, wait for user gesture:", err);
+                                setStatus('Mitesh is speaking (Click MK to hear)');
+                            });
                         }
                     }
                 })
                 .on('track-stopped', (event) => {
-                    if (!event.participant.local && event.track.kind === 'audio') {
+                    if (event?.participant && !event.participant.local && event.track?.kind === 'audio') {
                         console.log('🔇 AI stopped');
                         setIsAISpeaking(false);
                         setStatus(isMuted ? 'Click mic to speak' : 'Listening...');
                     }
                 });
+
 
             // Join
             await callObject.join();
@@ -151,8 +154,6 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
 
     // Lifecycle
     useEffect(() => {
-        let isSubscribed = true;
-
         if (isOpen && !isConnected && !isConnecting) {
             startVoiceSession();
         } else if (!isOpen && isConnected) {
@@ -161,16 +162,15 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
         }
 
         return () => {
-            isSubscribed = false;
             // NOTE: We don't call cleanup() here anymore to prevent 
             // disconnections during minor parent re-renders.
             // cleanup() is handled by isOpen toggle or explicit endCall.
         };
     }, [isOpen, isConnected, isConnecting]);
 
-
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
+
             <DialogContent className="sm:max-w-md bg-gray-900 text-white border-gray-800" aria-describedby="voice-assistant-description">
                 <DialogTitle className="sr-only">Voice Assistant</DialogTitle>
                 <div id="voice-assistant-description" className="sr-only">
@@ -183,9 +183,18 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                 <div className="flex flex-col items-center gap-6 py-8">
 
                     {/* Avatar */}
-                    <div className="relative">
-                        <div className="w-32 h-32 rounded-full bg-gradient-to-br from-red-500 to-purple-600 flex items-center justify-center">
-                            <span className="text-4xl font-bold text-white">MK</span>
+                    <div
+                        className="relative cursor-pointer group"
+                        onClick={() => {
+                            if (audioRef.current && isAISpeaking) {
+                                console.log("🔘 Force playing audio...");
+                                audioRef.current.play().catch(e => console.error("Force play failed:", e));
+                            }
+                        }}
+                        title={isAISpeaking ? "Click to force play audio" : ""}
+                    >
+                        <div className="w-32 h-32 rounded-full bg-gradient-to-br from-red-500 to-purple-600 flex items-center justify-center group-hover:scale-105 transition-transform duration-300">
+                            <span className="text-4xl font-bold text-white uppercase">{userId.substring(0, 2)}</span>
                         </div>
                         {/* Pulse animation when AI is speaking */}
                         {isAISpeaking && (
@@ -196,6 +205,7 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                             <div className="absolute inset-0 rounded-full border-4 border-blue-500 animate-pulse opacity-50" />
                         )}
                     </div>
+
 
                     {/* Status Text */}
                     <div className="text-center space-y-2">

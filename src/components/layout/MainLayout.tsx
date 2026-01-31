@@ -10,18 +10,38 @@ interface MainLayoutProps {
   children: React.ReactNode;
 }
 
+import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/db/supabase';
+
 const MainLayout = ({ children }: MainLayoutProps) => {
+  const { toast } = useToast();
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  // Avoid hydration mismatch
+  // Real-time Broadcast Listener
   useEffect(() => {
     setMounted(true);
-  }, []);
+
+    const channel = supabase.channel('platform-broadcast')
+      .on('broadcast', { event: 'notification' }, (payload) => {
+        console.log('📢 Broadcast received:', payload);
+        toast({
+          title: payload.payload.title || 'Announcement',
+          description: payload.payload.message,
+          variant: 'default',
+        });
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [toast]);
 
   const tabs = [
+
     { name: 'Insights', path: '/insights' },
     { name: 'Mind', path: '/mind' },
     { name: 'Access', path: '/access' },
