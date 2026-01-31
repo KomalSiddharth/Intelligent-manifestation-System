@@ -18,13 +18,30 @@ const BroadcastsView = () => {
         if (!message.trim()) return;
 
         setIsSending(true);
-        try {
-            // Supabase Realtime Broadcast
-            const channel = supabase.channel('platform-broadcast');
+        const channel = supabase.channel('platform-broadcast');
 
-            await channel.subscribe(async (status) => {
+        // Timeout fallback if subscription hangs
+        const timeout = setTimeout(() => {
+            if (isSending) {
+                setIsSending(false);
+                supabase.removeChannel(channel);
+                toast({
+                    title: "Connection Timeout",
+                    description: "Could not connect to Supabase Realtime. Please try again.",
+                    variant: "destructive"
+                });
+            }
+        }, 5000);
+
+        try {
+            console.log('📡 Subscribing to broadcast channel...');
+
+            channel.subscribe(async (status) => {
                 if (status === 'SUBSCRIBED') {
-                    await channel.send({
+                    clearTimeout(timeout);
+                    console.log('✅ Subscribed! Sending payload...');
+
+                    const response = await channel.send({
                         type: 'broadcast',
                         event: 'notification',
                         payload: {
@@ -35,29 +52,44 @@ const BroadcastsView = () => {
                         },
                     });
 
-                    toast({
-                        title: 'Broadcast Sent!',
-                        description: 'Your message has been pushed to all online users.',
-                    });
+                    console.log('📤 Broadcast response:', response);
 
-                    setMessage('');
-                    setTitle('');
-                    // Clean up channel after send
+                    if (response === 'ok') {
+                        toast({
+                            title: 'Broadcast Sent!',
+                            description: 'Notification has been pushed to online users.',
+                        });
+                        setMessage('');
+                        setTitle('');
+                    } else {
+                        throw new Error('Failed to deliver broadcast');
+                    }
+
+                    setIsSending(false);
                     supabase.removeChannel(channel);
+                } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+                    clearTimeout(timeout);
+                    setIsSending(false);
+                    toast({
+                        title: 'Connection Error',
+                        description: 'Realtime channel closed unexpectedly.',
+                        variant: 'destructive',
+                    });
                 }
             });
 
         } catch (error) {
+            clearTimeout(timeout);
             console.error('Broadcast error:', error);
             toast({
                 title: 'Error',
-                description: 'Failed to send broadcast.',
+                description: 'Failed to send broadcast. Check console for details.',
                 variant: 'destructive',
             });
-        } finally {
             setIsSending(false);
         }
     };
+
 
     return (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
