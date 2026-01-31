@@ -132,19 +132,26 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     cartesia_api_key = os.getenv("CARTESIA_API_KEY")
     openai_api_key = os.getenv("OPENAI_API_KEY")
     voice_id = os.getenv("CARTESIA_VOICE_ID")
-    supabase_url = os.getenv("VITE_SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    supabase_url = os.getenv("VITE_SUPABASE_URL") or os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
     
     if not (cartesia_api_key and openai_api_key and voice_id):
-        logger.error("❌ Missing keys")
+        logger.error(f"❌ Missing keys - Cartesia: {'OK' if cartesia_api_key else 'MISSING'}, OpenAI: {'OK' if openai_api_key else 'MISSING'}, Voice: {'OK' if voice_id else 'MISSING'}")
         return
 
     # Supabase Setup
     supabase = None
     openai_client = None
     if SUPABASE_AVAILABLE and supabase_url and supabase_key:
-        supabase = create_client(supabase_url, supabase_key)
-        openai_client = OpenAIClient(api_key=openai_api_key) # Now an Async client
+        try:
+            supabase = create_client(supabase_url, supabase_key)
+            openai_client = OpenAIClient(api_key=openai_api_key)
+            logger.info("✅ Supabase and OpenAI RAG initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize RAG clients: {e}")
+    else:
+        logger.warning(f"⚠️ RAG conditions not met - URL: {'OK' if supabase_url else 'MISSING'}, Key: {'OK' if supabase_key else 'MISSING'}")
+
 
 
     # Transport
@@ -246,12 +253,18 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        logger.error("Usage: python voice_worker.py <room_url> <token> [user_id]")
-        sys.exit(1)
+    try:
+        if len(sys.argv) < 3:
+            logger.error("Usage: python voice_worker.py <room_url> <token> [user_id]")
+            sys.exit(1)
+            
+        room_url = sys.argv[1]
+        token = sys.argv[2]
+        user_id = sys.argv[3] if len(sys.argv) > 3 else "anonymous"
         
-    room_url = sys.argv[1]
-    token = sys.argv[2]
-    user_id = sys.argv[3] if len(sys.argv) > 3 else "anonymous"
-    
-    asyncio.run(main(room_url, token, user_id))
+        asyncio.run(main(room_url, token, user_id))
+    except Exception as e:
+        logger.error(f"💥 WORKER CRASHED: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

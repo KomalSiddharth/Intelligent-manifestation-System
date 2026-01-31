@@ -106,18 +106,23 @@ def start_session():
         
         print(f"✅ Token created")
         
-        # ✅ Spawn voice worker subprocess (CORRECT PATH!)
+        # ✅ Spawn voice worker subprocess (CORRECT PATH & LOGGING!)
         print("🚀 Spawning voice worker...")
         subprocess.Popen(
             [
-                sys.executable,       # Use same Python as current process
-                "voice_worker.py",    # ✅ Just filename (we're in backend/)
+                sys.executable,
+                "voice_worker.py",
                 room_url,
                 token,
                 user_id
             ],
-            cwd=os.path.dirname(os.path.abspath(__file__))  # ✅ Current directory (backend/)
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stdout=None, # Inherit from parent (Railway captures this)
+            stderr=None, # Inherit from parent
+            bufsize=1,   # Line buffered
+            universal_newlines=True
         )
+
         
         print(f"✅ Voice worker spawned successfully")
         
