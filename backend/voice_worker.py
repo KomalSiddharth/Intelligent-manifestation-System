@@ -187,7 +187,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
         logger.info(f"👋 User joined: {participant.get('id')}")
-        transport.capture_participant_transcription(participant["id"])
+        await transport.capture_participant_transcription(participant["id"])
         # Optional: Welcome message could be triggered here
 
     @transport.event_handler("on_participant_left")

@@ -18,19 +18,15 @@ app = Flask(__name__)
 # ✅ CORS Configuration - CRITICAL FOR PRODUCTION!
 CORS(app, resources={
     r"/*": {
-        "origins": [
-            "https://manifest-smoky.vercel.app/", # Allowing all for now to ensure it works, but you should replace this with your Vercel URL later
-            "http://localhost:5173",
-            "http://localhost:3000",
-            "http://127.0.0.1:5173",
-            "http://127.0.0.1:3000",
-        ],
+        "origins": "*",  # Allow all for robustness in production, though you can restrict to frontend URL later
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type", "Authorization"],
         "supports_credentials": True,
         "max_age": 3600
     }
 })
+
 
 DAILY_API_KEY = os.getenv("DAILY_API_KEY")
 
