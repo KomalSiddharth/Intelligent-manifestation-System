@@ -58,54 +58,63 @@ class ContextManager:
         return self.messages
 
 async def search_knowledge_base(user_id: str, query: str, openai_client, supabase_client) -> str:
-    """Search Supabase knowledge base using RAG"""
+    """Search Supabase knowledge base using RAG (Synced with Chat Engine)"""
     if not supabase_client: return ""
     try:
         logger.debug(f"🔍 Searching KB for: '{query[:50]}...'")
         embedding_response = openai_client.embeddings.create(model="text-embedding-3-small", input=query)
-        result = supabase_client.rpc('match_knowledge_base', {
+        
+        # Use 'match_knowledge' RPC (same as chat-engine)
+        result = supabase_client.rpc('match_knowledge', {
             'query_embedding': embedding_response.data[0].embedding,
-            'match_threshold': 0.7, 'match_count': 3
+            'match_threshold': 0.35, # Synced threshold
+            'match_count': 5,
+            'p_profile_id': None # Can be extended for specific profiles
         }).execute()
+        
         if result.data:
-            return "\n\n".join([f"**{item.get('title','')}**\n{item.get('content','')}" for item in result.data])
+            logger.info(f"🧩 Found {len(result.data)} knowledge chunks")
+            return "\n\n".join([f"[Source: {item.get('source_title','Unknown')}]\n{item.get('content','')}" for item in result.data])
         return ""
     except Exception as e:
         logger.error(f"❌ KB search error: {e}")
         return ""
 
 class KnowledgeBaseProcessor(FrameProcessor):
-    """Processes transcriptions and injects knowledge base context"""
-    def __init__(self, ctx_manager, openai_client, user_id, base_prompt, supabase_client):
+    """Processes transcriptions and injects knowledge base context into Pipecat context"""
+    def __init__(self, context, openai_client, user_id, base_prompt, supabase_client):
         super().__init__()
-        self.ctx_manager = ctx_manager
+        self.context = context
         self.openai_client = openai_client
         self.user_id = user_id
         self.base_prompt = base_prompt
         self.supabase = supabase_client
         self.last_transcript = ""
-        self._started = False
     
     async def process_frame(self, frame, direction):
-        if isinstance(frame, StartFrame):
-            self._started = True
-            await self.push_frame(frame, direction)
-            return
-        
-        if isinstance(frame, (TextFrame, TranscriptionFrame)):
-            text = getattr(frame, 'text', str(frame))
-            if text and text != self.last_transcript and len(text.strip()) > 0:
+        await self.push_frame(frame, direction)
+
+        if isinstance(frame, TranscriptionFrame):
+            text = frame.text.strip()
+            if text and text != self.last_transcript:
                 self.last_transcript = text
                 logger.info(f"🎤 USER: '{text}'")
-                if self.user_id and self._started and self.supabase:
-                    # Blocking call to ensure context is ready
+                
+                if self.supabase and self.openai_client:
+                    # Async KB search
                     kb_context = await search_knowledge_base(self.user_id, text, self.openai_client, self.supabase)
                     if kb_context:
-                        enhanced_prompt = f"{self.base_prompt}\n\nRELEVANT CONTEXT:\n{kb_context}"
-                        self.ctx_manager.update_system_prompt(enhanced_prompt)
-                        logger.info("✅ KB context injected")
-        
-        await self.push_frame(frame, direction)
+                        # Inject directly into pipeline context
+                        enhanced_prompt = f"{self.base_prompt}\n\nMANDATORY KNOWLEDGE CONTEXT:\n{kb_context}\n\nRule: Use ONLY the above context to answer. If not found, stay in character but keep it short."
+                        
+                        # Find system message and update
+                        for msg in self.context.messages:
+                            if msg["role"] == "system":
+                                msg["content"] = enhanced_prompt
+                                break
+                        
+                        logger.info("✅ KB context injected into LLM context")
+
 
 # --- MAIN ---
 
@@ -148,26 +157,34 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     llm = OpenAILLMService(api_key=openai_api_key, model="gpt-4o")
     tts = CartesiaTTSService(api_key=cartesia_api_key, voice_id=voice_id)
 
-    # Context & Prompt
-    base_prompt = "You are Mitesh Khatri, a Law of Attraction Coach. Be warm, energetic. Keep responses SHORT."
-    ctx_mgr = ContextManager(base_prompt)
+    # Context & Persona (Synced with Chat Engine)
+    base_prompt = """You are Mitesh Khatri, the world's no. 1 coach and Law of Attraction Expert.
+    Identity: Transformational Leadership Coach & NLP Expert.
+    Speaking Style: High-energy, powerful, authoritative yet warm and deeply human.
+    Rules: 
+    1. Base 80% of your advice on the provided knowledge. 
+    2. Keep responses CONCISE and short for voice.
+    3. Use Friendly emojis naturally in spirit.
+    4. Start with 'How are you feeling?' if appropriate.
+    5. Never hallucinate links or facts."""
     
-    # KB Processor - TEMPORARILY DISABLED
-    kb_processor = None
-    # if supabase and openai_client:
-    #     kb_processor = KnowledgeBaseProcessor(ctx_mgr, openai_client, user_id, base_prompt, supabase)
-
-    messages = ctx_mgr.get_messages()
+    # Context
+    messages = [{"role": "system", "content": base_prompt}]
     context = OpenAILLMContext(messages)
     context_aggregator = llm.create_context_aggregator(context)
+
+    # KB Processor
+    kb_processor = None
+    if supabase and openai_client:
+        kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
 
     # Pipeline
     processors = [
         transport.input(),
         stt,
     ]
-    # if kb_processor:
-    #     processors.append(kb_processor)
+    if kb_processor:
+        processors.append(kb_processor)
     
     processors.extend([
         context_aggregator.user(),
@@ -180,6 +197,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     pipeline = Pipeline(processors)
     
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+
     
     runner = PipelineRunner()
     
