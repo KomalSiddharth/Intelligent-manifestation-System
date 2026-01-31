@@ -41,13 +41,21 @@ export default function IdentityGate({ onVerified, profileId, children }: Identi
 
     // Check for existing session
     useEffect(() => {
+        // If already verified, don't trigger a blocking reload that unmounts children
+        if (isVerified) {
+            console.log("🔒 [IDENTITY_GATE] Already verified, skipping blocking check.");
+            setIsLoading(false);
+            return;
+        }
+
         const storedEmail = localStorage.getItem('chat_user_email');
         if (storedEmail) {
             handleFastVerify(storedEmail);
         } else {
             setIsLoading(false);
         }
-    }, [profileId]);
+    }, [profileId, isVerified]); // Added isVerified to deps but guarded inside
+
 
     // Fast verify for existing sessions (skip OTP if already logged in)
     async function handleFastVerify(emailToVerify: string) {

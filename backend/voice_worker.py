@@ -102,16 +102,17 @@ class KnowledgeBaseProcessor(FrameProcessor):
         self.base_prompt = base_prompt
         self.supabase = supabase_client
         self.last_transcript = ""
+        self._is_started = False
     
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
 
-        # Skip logic if not started (handled by super().process_frame for StartFrame)
         if isinstance(frame, StartFrame):
+            self._is_started = True
             logger.debug("🎬 KnowledgeBaseProcessor started")
             return
             
-        if not self._started:
+        if not self._is_started:
             return
 
         if isinstance(frame, TranscriptionFrame):
