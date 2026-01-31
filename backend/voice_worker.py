@@ -186,16 +186,40 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     # Event Handlers
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
-        logger.info(f"👋 User joined: {participant.get('id')}")
-        await transport.capture_participant_transcription(participant["id"])
-        # Optional: Welcome message could be triggered here
+        participant_id = participant.get('id')
+        logger.info(f"👋 User joined: {participant_id}")
+        
+        # Start capturing transcription
+        try:
+            await transport.capture_participant_transcription(participant_id)
+            logger.info(f"✅ Started transcription capture for {participant_id}")
+        except Exception as e:
+            logger.error(f"❌ Transcription capture failed: {e}")
+
+        # Send initial greeting
+        try:
+            greeting = TextFrame("Hello! I'm Mitesh, your AI coach. How can I help you today?")
+            await task.queue_frame(greeting)
+            logger.info("👋 Queued greeting message")
+        except Exception as e:
+            logger.error(f"❌ Failed to queue greeting: {e}")
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
         logger.info(f"👋 User left: {participant.get('id')}")
         await task.cancel()
 
+    @transport.event_handler("on_app_message")
+    async def on_app_message(transport, message, sender):
+        logger.info(f"📨 App message from {sender}: {message}")
+
+
+    @transport.event_handler("on_track_started")
+    async def on_track_started(transport, track, participant):
+        logger.info(f"🎵 Track started: {track.kind} from {participant.get('id', 'unknown')}")
+
     await runner.run(task)
+
 
 
 if __name__ == "__main__":
