@@ -151,13 +151,23 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
 
     // Lifecycle
     useEffect(() => {
+        let isSubscribed = true;
+
         if (isOpen && !isConnected && !isConnecting) {
             startVoiceSession();
-        } else if (!isOpen) {
+        } else if (!isOpen && isConnected) {
+            // Only cleanup if we are explicitly closing the dialog
             cleanup();
         }
-        return () => cleanup();
-    }, [isOpen]);
+
+        return () => {
+            isSubscribed = false;
+            // NOTE: We don't call cleanup() here anymore to prevent 
+            // disconnections during minor parent re-renders.
+            // cleanup() is handled by isOpen toggle or explicit endCall.
+        };
+    }, [isOpen, isConnected, isConnecting]);
+
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
