@@ -22,11 +22,12 @@ from pipecat.frames.frames import TextFrame, TranscriptionFrame
 # Knowledge base integration (optional)
 try:
     from supabase import create_client, Client
-    from openai import OpenAI as OpenAIClient
+    from openai import AsyncOpenAI as OpenAIClient  # ✅ Use Async client
     SUPABASE_AVAILABLE = True
 except ImportError:
     SUPABASE_AVAILABLE = False
-    logger.warning("⚠️ Supabase not installed - knowledge base disabled")
+    logger.warning("⚠️ Supabase or OpenAI not installed - knowledge base disabled")
+
 
 # Load environment
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -62,15 +63,20 @@ async def search_knowledge_base(user_id: str, query: str, openai_client, supabas
     if not supabase_client: return ""
     try:
         logger.debug(f"🔍 Searching KB for: '{query[:50]}...'")
-        embedding_response = openai_client.embeddings.create(model="text-embedding-3-small", input=query)
         
-        # Use 'match_knowledge' RPC (same as chat-engine)
-        result = supabase_client.rpc('match_knowledge', {
-            'query_embedding': embedding_response.data[0].embedding,
-            'match_threshold': 0.35, # Synced threshold
-            'match_count': 5,
-            'p_profile_id': None # Can be extended for specific profiles
-        }).execute()
+        # ✅ Async embedding call
+        embedding_response = await openai_client.embeddings.create(model="text-embedding-3-small", input=query)
+        
+        # ✅ Run blocking Supabase call in a separate thread to prevent loop blocking
+        def run_rpc():
+            return supabase_client.rpc('match_knowledge', {
+                'query_embedding': embedding_response.data[0].embedding,
+                'match_threshold': 0.35, # Synced threshold
+                'match_count': 5,
+                'p_profile_id': None
+            }).execute()
+        
+        result = await asyncio.to_thread(run_rpc)
         
         if result.data:
             logger.info(f"🧩 Found {len(result.data)} knowledge chunks")
@@ -79,6 +85,7 @@ async def search_knowledge_base(user_id: str, query: str, openai_client, supabas
     except Exception as e:
         logger.error(f"❌ KB search error: {e}")
         return ""
+
 
 class KnowledgeBaseProcessor(FrameProcessor):
     """Processes transcriptions and injects knowledge base context into Pipecat context"""
@@ -137,7 +144,8 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     openai_client = None
     if SUPABASE_AVAILABLE and supabase_url and supabase_key:
         supabase = create_client(supabase_url, supabase_key)
-        openai_client = OpenAIClient(api_key=openai_api_key)
+        openai_client = OpenAIClient(api_key=openai_api_key) # Now an Async client
+
 
     # Transport
     transport = DailyTransport(
