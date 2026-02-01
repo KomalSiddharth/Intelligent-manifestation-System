@@ -619,7 +619,9 @@ export const createAudienceUser = async (user: Partial<AudienceUser>, profileId?
       tags: user.tags || [],
       message_count: user.message_count || 0,
       status: user.status || 'active',
+      status: user.status || 'active',
       last_active: user.last_active || null,
+      birthday: user.birthday || null,
       profile_id: profileId,
       user_id: user.user_id || crypto.randomUUID()
     })
@@ -640,7 +642,9 @@ export const bulkCreateAudienceUsers = async (users: Partial<AudienceUser>[], pr
     tags: user.tags || [],
     message_count: user.message_count || 0,
     status: user.status || 'active',
+    status: user.status || 'active',
     last_active: user.last_active || null,
+    birthday: user.birthday || null,
     profile_id: profileId,
     user_id: user.user_id || crypto.randomUUID()
   }));
@@ -672,7 +676,7 @@ export const deleteAudienceUsers = async (ids: string[]): Promise<void> => {
 
 
 
-export const upsertAudienceUser = async (user: { id: string; email?: string; name?: string; profile_id?: string }) => {
+export const upsertAudienceUser = async (user: { id: string; email?: string; name?: string; profile_id?: string; birthday?: string }) => {
   console.log("🔍 [upsertAudienceUser] Syncing:", user.id);
   try {
     // 1. Fetch ALL matching users to handle duplicates
@@ -693,6 +697,7 @@ export const upsertAudienceUser = async (user: { id: string; email?: string; nam
       name: user.name || existing?.name || 'Unknown',
       last_active: new Date().toISOString(),
       profile_id: user.profile_id || existing?.profile_id,
+      birthday: user.birthday || existing?.birthday,
       status: existing?.status || 'active'
     };
 
@@ -809,20 +814,41 @@ export const getSessions = async (userId: string, profileId?: string): Promise<C
 export const getAllConversations = async (profileId?: string): Promise<Conversation[]> => {
   let query = supabase
     .from('conversations')
-    .select('*') // JOIN REMOVED FOR DEBUGGING
+    .select('*')
     .order('last_message_at', { ascending: false });
 
   if (profileId) {
     query = query.eq('profile_id', profileId);
   }
 
-  const { data, error } = await query;
+  const { data: conversations, error } = await query;
 
   if (error) {
     console.error("Error fetching all conversations:", error);
     return [];
   }
-  return data || [];
+
+  if (!conversations || conversations.length === 0) return [];
+
+  // Manual Join: Fetch audience users for these conversations
+  const userIds = [...new Set(conversations.map(c => c.user_id).filter(Boolean))];
+
+  if (userIds.length > 0) {
+    const { data: users } = await supabase
+      .from('audience_users')
+      .select('user_id, name, email')
+      .in('user_id', userIds);
+
+    if (users) {
+      const userMap = new Map(users.map(u => [u.user_id, u]));
+      return conversations.map(c => ({
+        ...c,
+        audience_user: userMap.get(c.user_id)
+      }));
+    }
+  }
+
+  return conversations;
 };
 
 // Enhanced to fetch by conversationId OR userId (for full history)
@@ -963,6 +989,24 @@ export const updateMessage = async (id: string, content: string, isVerified: boo
   return data;
 };
 
+export const dismissMessage = async (id: string) => {
+  console.log("Dismissing message:", id);
+  const { data, error } = await supabase
+    .from('messages')
+    .update({
+      is_dismissed: true,
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error dismissing message:", error);
+    throw error;
+  }
+  return data;
+};
+
 export const getMessageHistoryForTraining = async (profileId?: string): Promise<any[]> => {
   try {
     let query = supabase
@@ -972,6 +1016,7 @@ export const getMessageHistoryForTraining = async (profileId?: string): Promise<
         content,
         role,
         is_verified,
+        is_dismissed,
         created_at,
         conversation_id,
         conversations(id, profile_id)
@@ -1010,6 +1055,9 @@ export const getMessageHistoryForTraining = async (profileId?: string): Promise<
         if (msgs[i].role === 'user') {
           // Look for next message as answer (usually role: assistant)
           const assistantReply = msgs[i + 1]?.role === 'assistant' ? msgs[i + 1].content : "No AI reply saved yet";
+
+          // SKIP if message is dismissed
+          if (msgs[i].is_dismissed) continue;
 
           pairs.push({
             id: msgs[i].id,

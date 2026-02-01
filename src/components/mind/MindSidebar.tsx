@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Settings, PieChart, AudioWaveform, ChevronRight, Sparkles, MessageSquare, Plus } from 'lucide-react';
+import { Settings, PieChart, ChevronRight, Sparkles, MessageSquare, Plus } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -87,16 +87,7 @@ const MindSidebar = ({
                         <PieChart className="w-4 h-4 mr-2" />
                         Content
                     </button>
-                    <button
-                        onClick={() => onTabChange('voice')}
-                        className={cn(
-                            "flex items-center w-full px-2 py-1.5 text-sm font-medium transition-colors rounded-md",
-                            activeTab === 'voice' ? "text-orange-500" : "text-muted-foreground hover:text-foreground"
-                        )}
-                    >
-                        <AudioWaveform className="w-4 h-4 mr-2" />
-                        Voice
-                    </button>
+
                 </div>
 
                 {/* Clone Selector */}
@@ -146,7 +137,7 @@ const MindSidebar = ({
                 </div>
             </div>
 
-            <ScrollArea className="flex-1 px-2">
+            <ScrollArea className="flex-1 px-2 min-h-0">
                 <div className="space-y-6 py-2">
                     {/* Insights Section */}
                     <div className="space-y-1">

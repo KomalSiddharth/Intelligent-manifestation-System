@@ -47,6 +47,7 @@ const SettingsPage = () => {
             category: "GENERAL",
             items: [
                 { icon: Bell, label: "Notifications", id: "notifications" },
+                { icon: Users, label: "Personal Profile", id: "profile" },
                 { icon: Mic, label: "Voice Settings", id: "voice" },
                 { icon: Key, label: "SSO", id: "sso" },
             ]
@@ -201,6 +202,35 @@ const SettingsPage = () => {
                                 </p>
                             </div>
                             <VoiceSettingsPanel profileId={profileId} />
+                        </div>
+                    )}
+
+                    {activeTab === 'profile' && (
+                        <div className="space-y-6">
+                            <div className="space-y-1">
+                                <h1 className="text-2xl font-semibold">Personal Profile</h1>
+                                <p className="text-muted-foreground">
+                                    Manage your personal details and preferences.
+                                </p>
+                            </div>
+
+                            <div className="border rounded-lg bg-card p-6 space-y-4">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                                        Date of Birth
+                                    </label>
+                                    <p className="text-xs text-muted-foreground mb-2">
+                                        We'll use this to celebrate your special moments!
+                                    </p>
+                                    <input
+                                        type="date"
+                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 max-w-sm"
+                                    />
+                                </div>
+                                <Button className="bg-orange-600 hover:bg-orange-700 text-white">
+                                    Save Changes
+                                </Button>
+                            </div>
                         </div>
                     )}
 

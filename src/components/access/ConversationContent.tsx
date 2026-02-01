@@ -23,57 +23,7 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [copiedId, setCopiedId] = useState<number | null>(null);
 
-    useEffect(() => {
-        if (conversation) {
-            fetchMessages();
-        } else {
-            setMessages([]);
-        }
-    }, [conversation]);
-
-    useEffect(() => {
-        // Auto-scroll to bottom on new messages
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages]);
-
-    const fetchMessages = async () => {
-        if (!conversation) return;
-        try {
-            setLoading(true);
-            const userId = (conversation as any).audience_users?.user_id || conversation.user_id;
-
-            let data: Message[] = [];
-            if (userId) {
-                data = await getConversationMessages(userId, true);
-            } else {
-                data = await getConversationMessages(conversation.id);
-            }
-
-            const uniqueMessages = data.filter((msg, index, self) =>
-                index === self.findIndex((m) => (
-                    m.role === msg.role &&
-                    m.content === msg.content &&
-                    (m.created_at === msg.created_at || Math.abs(new Date(m.created_at || 0).getTime() - new Date(msg.created_at || 0).getTime()) < 1000)
-                ))
-            );
-
-            setMessages(uniqueMessages);
-        } catch (error) {
-            console.error('Error fetching messages:', error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleCopy = async (text: string, index: number) => {
-        try {
-            await navigator.clipboard.writeText(text);
-            setCopiedId(index);
-            setTimeout(() => setCopiedId(null), 2000);
-        } catch (err) {
-            console.error('Failed to copy text: ', err);
-        }
-    };
+    const userName = participantName || "Unknown User";
 
     const getInitials = (name: string) => {
         return name
@@ -84,24 +34,46 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
             .slice(0, 2);
     };
 
-    const userName = participantName || 'User';
+    useEffect(() => {
+        if (conversation) {
+            fetchMessages();
+        } else {
+            setMessages([]);
+        }
+    }, [conversation]);
 
-    if (!conversation) {
-        return (
-            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground bg-muted/10 p-8 transition-all duration-300 animate-in fade-in">
-                <div className="w-16 h-16 rounded-full bg-muted/20 flex items-center justify-center mb-4">
-                    <MessageSquareOff className="w-8 h-8 opacity-20" />
-                </div>
-                <h3 className="text-lg font-medium">No Conversation Selected</h3>
-                <p className="text-sm">Choose a conversation from the list to view chat history.</p>
-            </div>
-        );
-    }
+    useEffect(() => {
+        // Auto-scroll to bottom on new messages
+        // Use 'auto' for instant jump to avoid "scrolling" sensation blocking user interaction
+        if (messages.length > 0) {
+            messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+        }
+    }, [messages]);
+
+    const handleCopy = (content: string, id: number) => {
+        navigator.clipboard.writeText(content);
+        setCopiedId(id);
+        setTimeout(() => setCopiedId(null), 2000);
+    };
+
+    const fetchMessages = async () => {
+        if (!conversation?.id) return;
+        setLoading(true);
+        try {
+            const data = await getConversationMessages(conversation.id);
+            setMessages(data);
+        } catch (error) {
+            console.error("Failed to fetch messages", error);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     return (
         <div className="absolute inset-0 flex flex-col overflow-hidden bg-background">
             {/* Chat Header */}
             <div className="px-6 py-4 border-b flex items-center justify-between bg-background/95 backdrop-blur z-10 shrink-0">
+                {/* ... header content ... */}
                 <div className="flex items-center gap-3">
                     <Avatar className="h-10 w-10 ring-2 ring-primary/10">
                         <AvatarFallback className="bg-primary/5 text-primary text-sm font-semibold">
@@ -138,7 +110,7 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
             </div>
 
             {/* Messages Area */}
-            <ScrollArea className="flex-1 p-6">
+            <ScrollArea className="flex-1 p-6 min-h-0">
                 <div className="max-w-4xl mx-auto w-full space-y-8 pb-4">
                     {loading ? (
                         <div className="flex flex-col items-center justify-center py-20 gap-4">

@@ -142,11 +142,13 @@ const MainLayout = ({ children }: MainLayoutProps) => {
             <Button variant="ghost" size="icon" className="relative">
               <Bell className="h-5 w-5" />
             </Button>
-            <Avatar className="h-8 w-8">
-              <AvatarFallback className="bg-primary text-primary-foreground">
-                <User className="h-4 w-4" />
-              </AvatarFallback>
-            </Avatar>
+            <Link to="/settings">
+              <Avatar className="h-8 w-8 hover:ring-2 hover:ring-orange-500 transition-all cursor-pointer">
+                <AvatarFallback className="bg-primary text-primary-foreground">
+                  <User className="h-4 w-4" />
+                </AvatarFallback>
+              </Avatar>
+            </Link>
           </div>
         </div>
 

@@ -112,9 +112,11 @@ const ConversationsView = ({ profileId, onSelectConversation }: ConversationsVie
     const getDisplayName = (conv: Conversation) => {
         if (anonymize) return `Anonymous ${conv.user_id.substring(0, 4).toUpperCase()}`;
 
+        // Priority 2: Use the local map (fallback)
         const user = usersMap[conv.user_id];
         if (user && user.name && user.name !== 'Unknown') return user.name;
         if (user && user.email) return user.email;
+
         return `User ${conv.user_id.substring(0, 6)}...`;
     };
 

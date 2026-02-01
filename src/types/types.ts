@@ -27,6 +27,8 @@ export interface AudienceUser {
   message_count: number;
   status: 'active' | 'invited' | 'revoked';
   last_active: string | null;
+  last_seen: string | null;
+  birthday: string | null;
   user_id: string | null;
   profile_id: string | null;
   created_at: string;

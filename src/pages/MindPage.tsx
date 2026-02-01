@@ -12,7 +12,7 @@ import SpeakingStyleView from '@/components/mind/sections/SpeakingStyleView';
 import ResponseSettingsView from '@/components/mind/sections/ResponseSettingsView';
 import SuggestedQuestionsView from '@/components/mind/sections/SuggestedQuestionsView';
 import ExperienceSettingsView from '@/components/mind/sections/ExperienceSettingsView';
-import VoiceSettingsView from '@/components/mind/sections/VoiceSettingsView';
+
 import CloneQualityView from '@/components/mind/sections/CloneQualityView';
 import UserQuestionsView from '@/components/mind/sections/UserQuestionsView';
 import { Button } from '@/components/ui/button';
@@ -568,26 +568,23 @@ const MindPage = () => {
     // Render other sections
     return (
       <div className="flex-1 overflow-auto bg-background">
-        {activeTab === 'voice' && <VoiceSettingsView profileId={selectedProfileId!} />}
-        {activeTab !== 'voice' && (
-          <>
-            {activeSection === 'profile' && <ProfileView profileId={selectedProfileId!} initialData={activeProfile} onDelete={handleDeleteProfile} />}
-            {activeSection === 'biography' && <BiographyView profileId={selectedProfileId!} initialData={activeProfile} />}
-            {activeSection === 'social-links' && <SocialLinksView profileId={selectedProfileId!} initialData={activeProfile} />}
-            {activeSection === 'purpose' && <PurposeInstructionsView profileId={selectedProfileId!} initialData={activeProfile} />}
-            {activeSection === 'speaking-style' && <SpeakingStyleView profileId={selectedProfileId!} initialData={activeProfile} />}
-            {activeSection === 'response-settings' && <ResponseSettingsView profileId={selectedProfileId!} initialData={activeProfile} />}
-            {activeSection === 'suggested-questions' && <SuggestedQuestionsView profileId={selectedProfileId!} initialData={activeProfile} />}
-            {activeSection === 'experience-settings' && <ExperienceSettingsView profileId={selectedProfileId!} initialData={activeProfile} />}
-            {activeSection === 'clone-quality' && <CloneQualityView profileId={selectedProfileId!} initialData={activeProfile} />}
-            {activeSection === 'user-questions' && (
-              <>
-                {console.log("!!!!!!!!!!!! MindPage: Rendering UserQuestionsView with profileId:", selectedProfileId)}
-                <UserQuestionsView profileId={selectedProfileId!} />
-              </>
-            )}
-          </>
-        )}
+        <>
+          {activeSection === 'profile' && <ProfileView profileId={selectedProfileId!} initialData={activeProfile} onDelete={handleDeleteProfile} />}
+          {activeSection === 'biography' && <BiographyView profileId={selectedProfileId!} initialData={activeProfile} />}
+          {activeSection === 'social-links' && <SocialLinksView profileId={selectedProfileId!} initialData={activeProfile} />}
+          {activeSection === 'purpose' && <PurposeInstructionsView profileId={selectedProfileId!} initialData={activeProfile} />}
+          {activeSection === 'speaking-style' && <SpeakingStyleView profileId={selectedProfileId!} initialData={activeProfile} />}
+          {activeSection === 'response-settings' && <ResponseSettingsView profileId={selectedProfileId!} initialData={activeProfile} />}
+          {activeSection === 'suggested-questions' && <SuggestedQuestionsView profileId={selectedProfileId!} initialData={activeProfile} />}
+          {activeSection === 'experience-settings' && <ExperienceSettingsView profileId={selectedProfileId!} initialData={activeProfile} />}
+          {activeSection === 'clone-quality' && <CloneQualityView profileId={selectedProfileId!} initialData={activeProfile} />}
+          {activeSection === 'user-questions' && (
+            <>
+              {console.log("!!!!!!!!!!!! MindPage: Rendering UserQuestionsView with profileId:", selectedProfileId)}
+              <UserQuestionsView profileId={selectedProfileId!} />
+            </>
+          )}
+        </>
       </div>
     );
   };

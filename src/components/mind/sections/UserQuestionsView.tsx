@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
-import { getMessageHistoryForTraining, ingestContent } from '@/db/api';
+import { getMessageHistoryForTraining, ingestContent, dismissMessage } from '@/db/api';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 
@@ -49,6 +49,25 @@ const UserQuestionsView = ({ profileId }: UserQuestionsViewProps) => {
         }
     };
 
+    const handleDismiss = async (id: string) => {
+        try {
+            await dismissMessage(id);
+            // Remove from list locally
+            setQuestions(prev => prev.filter(item => item.id !== id));
+            toast({
+                title: "Dismissed",
+                description: "Question removed from review list.",
+            });
+        } catch (error) {
+            console.error("Failed to dismiss:", error);
+            toast({
+                title: "Error",
+                description: "Failed to dismiss question. Database error?",
+                variant: "destructive"
+            });
+        }
+    };
+
     const handleAddToBrain = async (q: any) => {
         try {
             const content = `Question: ${q.question}\n\nAnswer: ${q.answer}`;
@@ -62,6 +81,9 @@ const UserQuestionsView = ({ profileId }: UserQuestionsViewProps) => {
                 undefined,
                 profileId
             );
+
+            // Also dismiss it effectively so it doesn't show up again
+            await dismissMessage(q.id);
 
             toast({
                 title: "Added to Brain",
@@ -206,7 +228,7 @@ const UserQuestionsView = ({ profileId }: UserQuestionsViewProps) => {
                                                     className="text-destructive hover:text-destructive hover:bg-destructive/10 gap-2"
                                                     onClick={(e) => {
                                                         e.stopPropagation();
-                                                        setQuestions(prev => prev.filter(item => item.id !== q.id));
+                                                        handleDismiss(q.id);
                                                     }}
                                                 >
                                                     <Trash2 className="w-4 h-4" />
