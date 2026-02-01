@@ -122,10 +122,6 @@ const ChatPage = () => {
     const [isProcessing, setIsProcessing] = useState(false);
     const [playingMessageId, setPlayingMessageId] = useState<string | number | null>(null);
 
-    // Editing State
-    const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-    const [editContent, setEditContent] = useState('');
-    const [editIsVerified, setEditIsVerified] = useState(false);
 
     // Voice Output Hook
     const { speak, stop, isEnabled: voiceEnabled, isSpeaking, toggleEnabled: toggleVoice } = useVoiceOutput({ autoPlay: false, language: 'hi-IN' });
@@ -649,51 +645,6 @@ const ChatPage = () => {
         }
     };
 
-    const handleSaveEdit = async () => {
-        if (!editingMessageId) {
-            setEditingMessageId(null);
-            return;
-        }
-
-        try {
-            // Use Backend Function to bypass RLS policies
-            const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat-engine`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-                },
-                body: JSON.stringify({
-                    action: 'update_message',
-                    messageId: editingMessageId,
-                    content: editContent,
-                    isVerified: editIsVerified
-                })
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => null) || await response.text();
-                console.error("❌ [ChatPage] Update Failed Details:", errorData);
-                throw new Error(`Backend Error: ${JSON.stringify(errorData)}`);
-            }
-
-            setMessages(prev => prev.map(m =>
-                m.id === editingMessageId
-                    ? { ...m, content: editContent, is_edited: true, is_verified: editIsVerified }
-                    : m
-            ));
-
-            setEditingMessageId(null);
-            toast({ title: "Success", description: "Message updated successfully" });
-        } catch (error: any) {
-            console.error("Failed to update message", error);
-            toast({
-                title: "Error",
-                description: `Failed to update: ${error.message || "Unknown error"}`,
-                variant: "destructive"
-            });
-        }
-    };
 
     const handleRegenerate = async (index: number) => {
         if (isSendingRef.current || !chatUserId) return;
@@ -1201,118 +1152,59 @@ const ChatPage = () => {
                                                     <img src={msg.image} alt="Uploaded" className="max-w-full h-auto" />
                                                 </div>
                                             )}
-
-                                            {editingMessageId === msg.id ? (
-                                                <div className="bg-background/80 backdrop-blur-md border border-orange-500/30 rounded-2xl p-3 w-full shadow-lg animate-in fade-in zoom-in-95 duration-200">
-                                                    <Textarea
-                                                        value={editContent}
-                                                        onChange={(e) => setEditContent(e.target.value)}
-                                                        className="min-h-[200px] mb-3 bg-white/50 dark:bg-black/20 resize-y header-font text-base"
-                                                    />
-                                                    <div className="flex items-center justify-between gap-3">
-                                                        <label className="flex items-center gap-2 cursor-pointer group select-none bg-black/10 dark:bg-white/5 px-3 py-1.5 rounded-full hover:bg-black/20 dark:hover:bg-white/10 transition-colors border border-transparent hover:border-orange-500/30">
-                                                            <div className={cn(
-                                                                "w-4 h-4 rounded border flex items-center justify-center transition-colors",
-                                                                editIsVerified ? "bg-green-500 border-green-500" : "border-muted-foreground group-hover:border-orange-500"
-                                                            )} onClick={(e) => {
-                                                                e.preventDefault();
-                                                                setEditIsVerified(!editIsVerified);
-                                                            }}>
-                                                                {editIsVerified && <Check className="w-3 h-3 text-white" />}
-                                                            </div>
-                                                            <span className={cn("text-xs font-bold transition-colors uppercase tracking-wide", editIsVerified ? "text-green-600" : "text-muted-foreground")}>
-                                                                Verify by Human Mitesh
-                                                            </span>
-                                                        </label>
-                                                        <div className="flex items-center gap-2">
-                                                            <Button
-                                                                size="sm"
-                                                                variant="ghost"
-                                                                onClick={() => setEditingMessageId(null)}
-                                                                className="h-7 w-7 p-0 rounded-full hover:bg-destructive/10 hover:text-destructive"
-                                                            >
-                                                                <XCircle className="w-4 h-4" />
-                                                            </Button>
-                                                            <Button
-                                                                size="sm"
-                                                                onClick={handleSaveEdit}
-                                                                className="h-7 px-3 text-xs bg-green-600 hover:bg-green-700 text-white rounded-full gap-1"
-                                                            >
-                                                                <Save className="w-3.5 h-3.5" />
-                                                                Save
-                                                            </Button>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className={cn(
-                                                    "rounded-2xl px-5 py-3.5 text-[15px] leading-relaxed shadow-sm transition-all relative overflow-hidden",
-                                                    msg.role === 'user'
-                                                        ? "bg-gradient-to-br from-orange-500 to-red-600 text-white rounded-tr-none shadow-orange-500/20 font-medium"
-                                                        : cn(
-                                                            "glass text-foreground rounded-tl-none border-white/40",
-                                                            msg.is_verified && "border-green-500/30 bg-green-50/50 dark:bg-green-900/10"
-                                                        )
-                                                )}>
-                                                    {msg.mindMap ? (
-                                                        <InteractiveMindMap data={msg.mindMap} />
-                                                    ) : (
-                                                        <>
-                                                            <MarkdownRenderer content={msg.content} />
-                                                            {msg.sources && msg.sources.length > 0 && (
-                                                                <details className="mt-3 text-xs border-t border-white/10 pt-2 mb-2">
-                                                                    <summary className="opacity-70 cursor-pointer hover:opacity-100 transition-opacity font-medium flex items-center gap-1">
-                                                                        <div className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
-                                                                        {msg.sources.length} Sources Used
-                                                                    </summary>
-                                                                    <ul className="mt-2 space-y-1 pl-2">
-                                                                        {msg.sources.map((source: any, idx: number) => (
-                                                                            <li key={idx}>
-                                                                                <span className="font-bold text-orange-600 dark:text-orange-400">•</span>{' '}
-                                                                                {source.title}
-                                                                                <span className="opacity-60 ml-1">
-                                                                                    (Match: {(source.similarity * 100).toFixed(0)}%)
-                                                                                </span>
-                                                                            </li>
-                                                                        ))}
-                                                                    </ul>
-                                                                </details>
-                                                            )}
-                                                            {msg.is_verified && (
-                                                                <div className="mt-4 pt-2 border-t border-green-500/20 flex items-center justify-end">
-                                                                    <div className="flex items-center gap-1.5 bg-green-500/10 dark:bg-green-500/20 px-2.5 py-1 rounded-full border border-green-500/20">
-                                                                        <ShieldCheck className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
-                                                                        <span className="text-[10px] uppercase tracking-wider font-bold text-green-700 dark:text-green-300">
-                                                                            By Human Mitesh
-                                                                        </span>
-                                                                    </div>
+                                            <div className={cn(
+                                                "rounded-2xl px-5 py-3.5 text-[15px] leading-relaxed shadow-sm transition-all relative overflow-hidden",
+                                                msg.role === 'user'
+                                                    ? "bg-gradient-to-br from-orange-500 to-red-600 text-white rounded-tr-none shadow-orange-500/20 font-medium"
+                                                    : cn(
+                                                        "glass text-foreground rounded-tl-none border-white/40",
+                                                        msg.is_verified && "border-green-500/30 bg-green-50/50 dark:bg-green-900/10"
+                                                    )
+                                            )}>
+                                                {msg.mindMap ? (
+                                                    <InteractiveMindMap data={msg.mindMap} />
+                                                ) : (
+                                                    <>
+                                                        <MarkdownRenderer content={msg.content} />
+                                                        {msg.sources && msg.sources.length > 0 && (
+                                                            <details className="mt-3 text-xs border-t border-white/10 pt-2 mb-2">
+                                                                <summary className="opacity-70 cursor-pointer hover:opacity-100 transition-opacity font-medium flex items-center gap-1">
+                                                                    <div className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
+                                                                    {msg.sources.length} Sources Used
+                                                                </summary>
+                                                                <ul className="mt-2 space-y-1 pl-2">
+                                                                    {msg.sources.map((source: any, idx: number) => (
+                                                                        <li key={idx}>
+                                                                            <span className="font-bold text-orange-600 dark:text-orange-400">•</span>{' '}
+                                                                            {source.title}
+                                                                            <span className="opacity-60 ml-1">
+                                                                                (Match: {(source.similarity * 100).toFixed(0)}%)
+                                                                            </span>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </details>
+                                                        )}
+                                                        {msg.is_verified && (
+                                                            <div className="mt-4 pt-2 border-t border-green-500/20 flex items-center justify-end">
+                                                                <div className="flex items-center gap-1.5 bg-green-500/10 dark:bg-green-500/20 px-2.5 py-1 rounded-full border border-green-500/20">
+                                                                    <ShieldCheck className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
+                                                                    <span className="text-[10px] uppercase tracking-wider font-bold text-green-700 dark:text-green-300">
+                                                                        By Human Mitesh
+                                                                    </span>
                                                                 </div>
-                                                            )}
-                                                        </>
-                                                    )}
-                                                </div>
-                                            )}
+                                                            </div>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </div>
 
                                             {/* Action Buttons */}
                                             <div className={cn(
                                                 "flex items-center mt-1 px-1 gap-1",
                                                 msg.role === 'user' ? "justify-end" : "justify-start"
                                             )}>
-                                                {msg.role === 'assistant' && isAdmin && msg.id && (
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        className="h-6 w-6 text-muted-foreground/50 hover:text-blue-500 hover:bg-blue-500/5 transition-all"
-                                                        onClick={() => {
-                                                            setEditingMessageId(msg.id || null);
-                                                            setEditContent(msg.content);
-                                                            setEditIsVerified(msg.is_verified || false);
-                                                        }}
-                                                        title="Edit Message (Admin)"
-                                                    >
-                                                        <Pencil className="w-3 h-3" />
-                                                    </Button>
-                                                )}
+
                                                 <Button
                                                     variant="ghost"
                                                     size="icon"
