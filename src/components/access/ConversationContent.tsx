@@ -2,13 +2,16 @@ import { useState, useEffect, useRef } from 'react';
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Phone, MoreHorizontal, MessageSquareOff, Ghost, Copy, Check } from 'lucide-react';
+import { Phone, MoreHorizontal, MessageSquareOff, Ghost, Copy, Check, Pencil, ShieldCheck, Save, XCircle } from 'lucide-react';
 import { format } from 'date-fns';
 import { getConversationMessages } from '@/db/api';
 import type { Conversation, Message } from '@/types/types';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { Badge } from '@/components/ui/badge';
 import { MessageFeedback } from '@/components/chat/MessageFeedback';
+import { cn } from '@/lib/utils';
+import { Textarea } from '@/components/ui/textarea';
+import { useToast } from '@/hooks/use-toast';
 
 interface ConversationContentProps {
     conversation: Conversation | null;
@@ -22,6 +25,17 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
     const [loading, setLoading] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [copiedId, setCopiedId] = useState<number | null>(null);
+
+    // Editing State
+    const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+    const [editContent, setEditContent] = useState('');
+    const [editIsVerified, setEditIsVerified] = useState(false);
+
+    // We assume access to this component implies Admin/Privileged access
+    // But we can check if needed. For now, we'll enable edits.
+    const isAdmin = true;
+
+    const { toast } = useToast();
 
     const userName = participantName || "Unknown User";
 
@@ -54,6 +68,48 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
         navigator.clipboard.writeText(content);
         setCopiedId(id);
         setTimeout(() => setCopiedId(null), 2000);
+    };
+
+    const handleSaveEdit = async () => {
+        if (!editingMessageId) return;
+
+        try {
+            // Using the same chat-engine function for updates
+            const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat-engine`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+                },
+                body: JSON.stringify({
+                    action: 'update_message',
+                    messageId: editingMessageId,
+                    content: editContent,
+                    isVerified: editIsVerified
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => null) || await response.text();
+                throw new Error(`Backend Error: ${JSON.stringify(errorData)}`);
+            }
+
+            setMessages(prev => prev.map(m =>
+                m.id === editingMessageId
+                    ? { ...m, content: editContent, is_edited: true, is_verified: editIsVerified }
+                    : m
+            ));
+
+            setEditingMessageId(null);
+            toast({ title: "Success", description: "Message updated successfully" });
+        } catch (error: any) {
+            console.error("Failed to update message", error);
+            toast({
+                title: "Error",
+                description: `Failed to update: ${error.message || "Unknown error"}`,
+                variant: "destructive"
+            });
+        }
     };
 
     const fetchMessages = async () => {
@@ -129,26 +185,107 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
                                     className={`flex ${message.role === 'assistant' ? 'justify-start' : 'justify-end'} group`}
                                 >
                                     <div className={`flex flex-col gap-2 max-w-[85%] ${message.role === 'assistant' ? 'items-start' : 'items-end'}`}>
-                                        <div
-                                            className={`rounded-2xl p-4 shadow-sm relative transition-all duration-200 ${message.role === 'assistant'
-                                                ? 'bg-muted rounded-tl-none text-foreground border border-border hover:shadow-md'
-                                                : 'bg-orange-500 text-white rounded-tr-none hover:bg-orange-600 hover:shadow-lg'
-                                                }`}
-                                        >
-                                            <MarkdownRenderer
-                                                content={message.content.replace(/\(SYSTEM CONTEXT:.*?\)\s*/g, '').trim()}
-                                                className={message.role === 'assistant' ? '' : 'text-white'}
-                                            />
 
-                                            {/* Feedback buttons for AI responses */}
-                                            {message.role === 'assistant' && message.id && (
-                                                <MessageFeedback
-                                                    messageId={message.id}
-                                                    className="mt-2 opacity-60 hover:opacity-100 transition-opacity"
+                                        {/* Edit Mode vs Display Mode */}
+                                        {editingMessageId === message.id ? (
+                                            <div className="bg-background/80 backdrop-blur-md border border-orange-500/30 rounded-2xl p-3 w-full shadow-lg animate-in fade-in zoom-in-95 duration-200">
+                                                <Textarea
+                                                    value={editContent}
+                                                    onChange={(e) => setEditContent(e.target.value)}
+                                                    className="min-h-[200px] mb-3 bg-white/50 dark:bg-black/20 resize-y"
                                                 />
-                                            )}
-                                        </div>
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <label className="flex items-center gap-2 cursor-pointer group select-none bg-black/10 dark:bg-white/5 px-3 py-1.5 rounded-full hover:bg-black/20 dark:hover:bg-white/10 transition-colors border border-transparent hover:border-orange-500/30">
+                                                        <div className={cn(
+                                                            "w-4 h-4 rounded border flex items-center justify-center transition-colors",
+                                                            editIsVerified ? "bg-green-500 border-green-500" : "border-muted-foreground group-hover:border-orange-500"
+                                                        )} onClick={(e) => {
+                                                            e.preventDefault();
+                                                            setEditIsVerified(!editIsVerified);
+                                                        }}>
+                                                            {editIsVerified && <Check className="w-3 h-3 text-white" />}
+                                                        </div>
+                                                        <span className={cn("text-xs font-bold transition-colors uppercase tracking-wide", editIsVerified ? "text-green-600" : "text-muted-foreground")}>
+                                                            Verify by Human Mitesh
+                                                        </span>
+                                                    </label>
+                                                    <div className="flex items-center gap-2">
+                                                        <Button
+                                                            size="sm"
+                                                            variant="ghost"
+                                                            onClick={() => setEditingMessageId(null)}
+                                                            className="h-7 w-7 p-0 rounded-full hover:bg-destructive/10 hover:text-destructive"
+                                                        >
+                                                            <XCircle className="w-4 h-4" />
+                                                        </Button>
+                                                        <Button
+                                                            size="sm"
+                                                            onClick={handleSaveEdit}
+                                                            className="h-7 px-3 text-xs bg-green-600 hover:bg-green-700 text-white rounded-full gap-1"
+                                                        >
+                                                            <Save className="w-3.5 h-3.5" />
+                                                            Save
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div
+                                                className={cn(
+                                                    "rounded-2xl p-4 shadow-sm relative transition-all duration-200",
+                                                    message.role === 'assistant'
+                                                        ? cn(
+                                                            "bg-muted rounded-tl-none text-foreground border border-border hover:shadow-md",
+                                                            message.is_verified && "border-green-500/30 bg-green-50/50 dark:bg-green-900/10"
+                                                        )
+                                                        : "bg-orange-500 text-white rounded-tr-none hover:bg-orange-600 hover:shadow-lg"
+                                                )}
+                                            >
+                                                <MarkdownRenderer
+                                                    content={message.content.replace(/\(SYSTEM CONTEXT:.*?\)\s*/g, '').trim()}
+                                                    className={message.role === 'assistant' ? '' : 'text-white'}
+                                                />
+
+                                                {/* Verified Badge */}
+                                                {message.role === 'assistant' && message.is_verified && (
+                                                    <div className="mt-4 pt-2 border-t border-green-500/20 flex items-center justify-end">
+                                                        <div className="flex items-center gap-1.5 bg-green-500/10 dark:bg-green-500/20 px-2.5 py-1 rounded-full border border-green-500/20">
+                                                            <ShieldCheck className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
+                                                            <span className="text-[10px] uppercase tracking-wider font-bold text-green-700 dark:text-green-300">
+                                                                By Human Mitesh
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* Feedback buttons for AI responses */}
+                                                {message.role === 'assistant' && message.id && (
+                                                    <MessageFeedback
+                                                        messageId={message.id}
+                                                        className="mt-2 opacity-60 hover:opacity-100 transition-opacity"
+                                                    />
+                                                )}
+                                            </div>
+                                        )}
+
                                         <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                            {/* Admin Edit Button */}
+                                            {message.role === 'assistant' && isAdmin && message.id && (
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="h-6 w-6 text-muted-foreground/50 hover:text-blue-500 hover:bg-blue-500/5 transition-all"
+                                                    onClick={() => {
+                                                        setEditingMessageId(message.id!);
+                                                        setEditContent(message.content);
+                                                        setEditIsVerified(message.is_verified || false);
+                                                    }}
+                                                    title="Edit Message (Admin)"
+                                                >
+                                                    <Pencil className="w-3 h-3" />
+                                                </Button>
+                                            )}
+
                                             <Button
                                                 variant="ghost"
                                                 size="icon"
