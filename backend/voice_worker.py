@@ -9,7 +9,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 
-from pipecat.frames.frames import EndFrame, StartFrame, TextFrame
+from pipecat.frames.frames import EndFrame, StartFrame, TextFrame, TranscriptionFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
@@ -19,25 +19,141 @@ from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.transports.services.daily import DailyTransport, DailyParams
+from pipecat.processors.frame_processor import FrameProcessor
+
+# Try to import KB dependencies
+try:
+    from supabase import create_client
+    from openai import AsyncOpenAI
+    KB_AVAILABLE = True
+except ImportError:
+    KB_AVAILABLE = False
+    logger.warning("⚠️ Supabase/OpenAI not available - KB disabled")
 
 # Load environment
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
+# --- KNOWLEDGE BASE PROCESSOR ---
+
+class KnowledgeBaseProcessor(FrameProcessor):
+    """Searches Supabase KB and injects relevant context into LLM"""
+    
+    def __init__(self, llm_context, openai_client, user_id, base_prompt, supabase_client):
+        super().__init__()
+        self.llm_context = llm_context
+        self.openai_client = openai_client
+        self.user_id = user_id
+        self.base_prompt = base_prompt
+        self.supabase = supabase_client
+        self.last_transcript = ""
+    
+    async def _search_kb(self, text):
+        """Helper method for KB search with proper async handling"""
+        # Get embedding
+        embedding_response = await self.openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text
+        )
+        
+        # Search Supabase (blocking call in thread)
+        # NOTE: Verify 'match_knowledge' is your actual RPC function name!
+        result = await asyncio.to_thread(
+            lambda: self.supabase.rpc('match_knowledge', {
+                'query_embedding': embedding_response.data[0].embedding,
+                'match_threshold': 0.35,
+                'match_count': 3,
+                'p_profile_id': self.user_id if self.user_id != "anonymous" else None
+            }).execute()
+        )
+        
+        return result
+    
+    async def process_frame(self, frame, direction):
+        """Process transcription frames and inject KB context"""
+        
+        if isinstance(frame, TranscriptionFrame):
+            text = frame.text.strip()
+            
+            # Only process new, meaningful transcripts
+            if text and text != self.last_transcript and len(text) > 3:
+                self.last_transcript = text
+                logger.info(f"🎤 USER SAID: '{text}'")
+                
+                # Search KB if available
+                if self.supabase and self.openai_client:
+                    try:
+                        # Search KB with 5-second timeout
+                        result = await asyncio.wait_for(
+                            self._search_kb(text),
+                            timeout=5.0
+                        )
+                        
+                        # Inject context if found
+                        if result.data:
+                            kb_text = "\n\n".join([
+                                f"[{item.get('source_title', 'Source')}]: {item.get('content', '')}"
+                                for item in result.data
+                            ])
+                            
+                            enhanced_prompt = f"""{self.base_prompt}
+
+RELEVANT KNOWLEDGE FROM YOUR CONTENT:
+{kb_text}
+
+CRITICAL RULES: 
+1. Base your answer ONLY on the above knowledge.
+2. Keep responses SHORT (2-3 sentences) for voice conversation.
+3. Stay in character as Mitesh Khatri."""
+                            
+                            # Update system message in context
+                            for msg in self.llm_context.messages:
+                                if msg["role"] == "system":
+                                    msg["content"] = enhanced_prompt
+                                    break
+                            
+                            logger.info(f"✅ KB INJECTED: {len(result.data)} relevant chunks found")
+                        else:
+                            logger.info("ℹ️ No KB matches found, using base prompt")
+                    
+                    except asyncio.TimeoutError:
+                        logger.warning("⏱️ KB search timed out (5s), using base prompt")
+                    except Exception as e:
+                        logger.error(f"❌ KB search error: {e}")
+        
+        # Always push frame forward
+        await self.push_frame(frame, direction)
+
 # --- MAIN ---
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
-    logger.info(f"🚀 Starting clean voice worker for room: {room_url}")
+    logger.info(f"🚀 Starting voice worker with KB for room: {room_url}")
 
-    # Initialize Dependencies
+    # Initialize API Keys
     cartesia_api_key = os.getenv("CARTESIA_API_KEY")
     openai_api_key = os.getenv("OPENAI_API_KEY")
     voice_id = os.getenv("CARTESIA_VOICE_ID")
+    supabase_url = os.getenv("VITE_SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     
     if not (cartesia_api_key and openai_api_key and voice_id):
         logger.error(f"❌ Missing keys - Cartesia: {'OK' if cartesia_api_key else 'MISSING'}, OpenAI: {'OK' if openai_api_key else 'MISSING'}, Voice: {'OK' if voice_id else 'MISSING'}")
         return
+
+    # Initialize KB (Supabase + OpenAI)
+    supabase = None
+    openai_client = None
+    
+    if KB_AVAILABLE and supabase_url and supabase_key:
+        try:
+            supabase = create_client(supabase_url, supabase_key)
+            openai_client = AsyncOpenAI(api_key=openai_api_key)
+            logger.info("✅ Knowledge Base initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ KB initialization failed: {e}")
+    else:
+        logger.warning("⚠️ KB disabled - missing Supabase credentials")
 
     # Transport
     transport = DailyTransport(
@@ -57,7 +173,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     llm = OpenAILLMService(api_key=openai_api_key, model="gpt-4o")
     tts = CartesiaTTSService(api_key=cartesia_api_key, voice_id=voice_id)
 
-    # Context & Persona
+    # Base Persona
     base_prompt = """You are Mitesh Khatri, the world's no. 1 coach and Law of Attraction Expert.
     Identity: Transformational Leadership Coach & NLP Expert.
     Speaking Style: High-energy, powerful, authoritative yet warm and deeply human.
@@ -67,22 +183,43 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     3. Ask follow-up questions to keep conversation flowing.
     4. Stay in character as Mitesh Khatri at all times."""
     
-    # Context
+    # LLM Context
     messages = [{"role": "system", "content": base_prompt}]
     context = OpenAILLMContext(messages)
     context_aggregator = llm.create_context_aggregator(context)
 
-    # CLEAN PIPELINE - NO KB PROCESSOR!
-    pipeline = Pipeline([
+    # Create KB Processor
+    kb_processor = None
+    if supabase and openai_client:
+        kb_processor = KnowledgeBaseProcessor(
+            context, 
+            openai_client, 
+            user_id, 
+            base_prompt, 
+            supabase
+        )
+        logger.info("✅ KB Processor created")
+
+    # Build Pipeline with KB
+    processors = [
         transport.input(),
         stt,
+    ]
+    
+    # Add KB processor if available
+    if kb_processor:
+        processors.append(kb_processor)
+        logger.info("✅ KB Processor added to pipeline")
+    
+    processors.extend([
         context_aggregator.user(),
         llm,
         tts,
         transport.output(),
         context_aggregator.assistant()
     ])
-    
+
+    pipeline = Pipeline(processors)
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
     runner = PipelineRunner()
     
@@ -101,8 +238,8 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
         # Send initial greeting
         try:
-            await asyncio.sleep(1)  # Connection stability delay
-            greeting = TextFrame("Hello! I'm Mitesh, your AI coach. How are you feeling today?")
+            await asyncio.sleep(1)
+            greeting = TextFrame("Hello! I'm Mitesh, your AI coach. How can I help you today?")
             await task.queue_frame(greeting)
             logger.info("👋 Queued greeting message")
         except Exception as e:
@@ -117,12 +254,12 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     async def on_app_message(transport, message, sender):
         logger.info(f"📨 App message from {sender}: {message}")
 
-    # Heartbeat task to debug silent disconnections
+    # Heartbeat
     async def heartbeat():
         try:
             while True:
-                await asyncio.sleep(5)
-                logger.info("💓 Worker is alive and processing...")
+                await asyncio.sleep(10)
+                logger.info("💓 Worker alive with KB enabled" if kb_processor else "💓 Worker alive (no KB)")
         except asyncio.CancelledError:
             pass
 
