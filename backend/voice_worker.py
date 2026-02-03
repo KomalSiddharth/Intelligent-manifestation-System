@@ -22,7 +22,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.transports.livekit import LiveKitTransport, LiveKitParams
+from pipecat.transports.livekit.transport import LiveKitTransport, LiveKitParams
 from pipecat.processors.frame_processor import FrameProcessor
 
 # Try to import KB dependencies
