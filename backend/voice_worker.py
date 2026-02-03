@@ -54,18 +54,25 @@ class KnowledgeBaseProcessor(FrameProcessor):
     async def _search_kb(self, text):
         """Helper method for KB search"""
         try:
+            # Only search if we have a valid UUID for the profile
+            profile_id = self.user_id if len(self.user_id) > 30 else None
+            
             embedding_response = await self.openai.embeddings.create(
                 model="text-embedding-3-small",
                 input=text
             )
             
+            # Build search params dynamically to avoid type casting issues
+            rpc_params = {
+                'query_embedding': embedding_response.data[0].embedding,
+                'match_threshold': 0.35,
+                'match_count': 3
+            }
+            if profile_id:
+                rpc_params['p_profile_id'] = profile_id
+
             result = await asyncio.to_thread(
-                lambda: self.supabase.rpc('match_knowledge', {
-                    'query_embedding': embedding_response.data[0].embedding,
-                    'match_threshold': 0.35,
-                    'match_count': 3,
-                    'p_profile_id': None 
-                }).execute()
+                lambda: self.supabase.rpc('match_knowledge', rpc_params).execute()
             )
             return result
         except Exception as e:
@@ -162,11 +169,11 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     runner = PipelineRunner()
     
     @transport.event_handler("on_participant_connected")
-    async def on_connect(transport, participant):
+    async def on_connect(transport, participant_id):
         await asyncio.sleep(1.2)
-        logger.info(f"👋 User connected ({participant.identity}). Sending greeting...")
+        logger.info(f"👋 User connected ({participant_id}). Sending greeting...")
         try:
-            await task.queue_frame(TextFrame("Hello! I'm Mitesh. How can I help you today?"))
+            await task.queue_frame(TextFrame("Hello! I'm Mitesh Khatri. How can I help you today?"))
         except Exception as e:
             logger.error(f"❌ Greeting failed: {e}")
 
