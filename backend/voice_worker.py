@@ -170,7 +170,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(2.0) # Increased for better track stabilization
         logger.info(f"👋 User connected ({participant_id}). Sending greeting...")
         try:
             await task.queue_frame(TextFrame("Hello! I'm Mitesh Khatri. How can I help you today?"))
