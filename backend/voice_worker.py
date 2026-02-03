@@ -10,7 +10,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(line_buffering=True)
 
 from pipecat.frames.frames import (
-    EndFrame, StartFrame, TextFrame, TranscriptionFrame, Frame
+    EndFrame, StartFrame, TextFrame, TranscriptionFrame, Frame, LLMContextFrame
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.parallel_pipeline import ParallelPipeline
@@ -139,7 +139,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     # Services
     stt = OpenAISTTService(api_key=openai_key)
-    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o")
+    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
     # Context & Aggregators
@@ -150,19 +150,17 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     # KB Processor
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
 
-    # Pipeline: Parallel branches for Voice (TTS) and Memory (Aggregator)
-    # The final transport.output() acts as a universal sink for all branches.
+    # Pipeline: Optimized for LiveKit and reliable greeting
+    # Structure: Input -> Processing -> Aggregation -> LLM -> TTS -> Output -> Record
     pipeline = Pipeline([
         transport.input(),
         stt,
         kb_processor,
         aggregators.user(),
         llm,
-        ParallelPipeline([
-            tts,
-            aggregators.assistant()
-        ]),
-        transport.output()
+        tts,
+        transport.output(),
+        aggregators.assistant(),
     ])
 
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
@@ -170,10 +168,18 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        await asyncio.sleep(2.0) # Increased for better track stabilization
-        logger.info(f"👋 User connected ({participant_id}). Sending greeting...")
+        await asyncio.sleep(2.0)
+        logger.info(f"👋 User connected ({participant_id}). Triggering LLM greeting...")
         try:
-            await task.queue_frame(TextFrame("Hello! I'm Mitesh Khatri. How can I help you today?"))
+            # Injecting a Context Frame ensures it bypasses the aggregator
+            # and makes the LLM speak immediately.
+            context.add_message({
+                "role": "assistant", 
+                "content": "Hello! I am Mitesh Khatri, your AI success coach. I'm ready to help you with your goals. How can I assist you today?"
+            })
+            await task.queue_frame(TranscriptionFrame("greeting", "", "bot"))
+            # We also send the context to the LLM to make sure it's in sync
+            await task.queue_frame(LLMContextFrame(context))
         except Exception as e:
             logger.error(f"❌ Greeting failed: {e}")
 
