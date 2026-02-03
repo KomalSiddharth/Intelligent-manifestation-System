@@ -61,7 +61,7 @@ class KnowledgeBaseProcessor(FrameProcessor):
                 'query_embedding': embedding_response.data[0].embedding,
                 'match_threshold': 0.35,
                 'match_count': 3,
-                'p_profile_id': self.user_id if self.user_id != "anonymous" else None
+                'p_profile_id': None  # Fixed: Always use NULL for global search
             }).execute()
         )
         
