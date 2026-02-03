@@ -48,6 +48,7 @@ class KnowledgeBaseProcessor(FrameProcessor):
         self.base_prompt = base_prompt
         self.supabase = supabase_client
         self.last_transcript = ""
+        self._started = False  # CRITICAL: Track StartFrame receipt
     
     async def _search_kb(self, text):
         """Helper method for KB search with proper async handling"""
@@ -71,8 +72,21 @@ class KnowledgeBaseProcessor(FrameProcessor):
         return result
     
     async def process_frame(self, frame, direction):
-        """Process transcription frames and inject KB context"""
+        """Process frames with proper StartFrame handling"""
         
+        # CRITICAL: Handle StartFrame FIRST (required by Pipecat)
+        if isinstance(frame, StartFrame):
+            self._started = True
+            logger.info("🎬 KB Processor started - ready to process transcriptions")
+            await self.push_frame(frame, direction)
+            return
+        
+        # CRITICAL: Pass through if not started (prevents blocking)
+        if not self._started:
+            await self.push_frame(frame, direction)
+            return
+        
+        # NOW process TranscriptionFrame (only after StartFrame received)
         if isinstance(frame, TranscriptionFrame):
             text = frame.text.strip()
             
