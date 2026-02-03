@@ -17,8 +17,10 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAISTTService
-from pipecat.processors.aggregators.llm_response import (
-    LLMContext, LLMContextAggregatorPair
+from pipecat.processors.aggregators.openai_llm_context import (
+    OpenAILLMContext, 
+    OpenAIUserContextAggregator, 
+    OpenAIAssistantContextAggregator
 )
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -138,20 +140,21 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     # Context & Aggregators
     base_prompt = "You are Mitesh Khatri, the world's no. 1 coach. Keep answers short."
-    context = LLMContext([{"role": "system", "content": base_prompt}])
-    aggregators = LLMContextAggregatorPair(context)
+    context = OpenAILLMContext([{"role": "system", "content": base_prompt}])
+    user_aggregator = OpenAIUserContextAggregator(context)
+    assistant_aggregator = OpenAIAssistantContextAggregator(context)
 
     # KB Processor
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
 
-    # Pipeline Model
+    # Pipeline Model: Assistant aggregator BEFORE TTS to capture text
     pipeline = Pipeline([
         transport.input(),
         stt,
         kb_processor,
-        aggregators.user(),
+        user_aggregator,
         llm,
-        aggregators.assistant(),
+        assistant_aggregator,
         tts,
         transport.output() # Sink at the end
     ])
