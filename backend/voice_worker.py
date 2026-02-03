@@ -48,18 +48,14 @@ class KnowledgeBaseProcessor(FrameProcessor):
         self.base_prompt = base_prompt
         self.supabase = supabase_client
         self.last_transcript = ""
-        self._started = False  # CRITICAL: Track StartFrame receipt
     
     async def _search_kb(self, text):
         """Helper method for KB search with proper async handling"""
-        # Get embedding
         embedding_response = await self.openai_client.embeddings.create(
             model="text-embedding-3-small",
             input=text
         )
         
-        # Search Supabase (blocking call in thread)
-        # NOTE: Verify 'match_knowledge' is your actual RPC function name!
         result = await asyncio.to_thread(
             lambda: self.supabase.rpc('match_knowledge', {
                 'query_embedding': embedding_response.data[0].embedding,
@@ -72,39 +68,27 @@ class KnowledgeBaseProcessor(FrameProcessor):
         return result
     
     async def process_frame(self, frame, direction):
-        """Process frames with proper StartFrame handling"""
+        """Process frames - parent handles StartFrame validation"""
         
-        # CRITICAL: Handle StartFrame FIRST (required by Pipecat)
-        if isinstance(frame, StartFrame):
-            self._started = True
-            logger.info("🎬 KB Processor started - ready to process transcriptions")
-            await self.push_frame(frame, direction)
-            return
+        # CRITICAL: Let parent FrameProcessor handle all internal Pipecat logic
+        # This handles StartFrame, sets internal _started flag, and pushes frames
+        await super().process_frame(frame, direction)
         
-        # CRITICAL: Pass through if not started (prevents blocking)
-        if not self._started:
-            await self.push_frame(frame, direction)
-            return
-        
-        # NOW process TranscriptionFrame (only after StartFrame received)
+        # Now safely process TranscriptionFrame for KB search
         if isinstance(frame, TranscriptionFrame):
             text = frame.text.strip()
             
-            # Only process new, meaningful transcripts
             if text and text != self.last_transcript and len(text) > 3:
                 self.last_transcript = text
-                logger.info(f"🎤 USER SAID: '{text}'")
+                logger.info(f"🎤 USER: '{text}'")
                 
-                # Search KB if available
                 if self.supabase and self.openai_client:
                     try:
-                        # Search KB with 5-second timeout
                         result = await asyncio.wait_for(
                             self._search_kb(text),
                             timeout=5.0
                         )
                         
-                        # Inject context if found
                         if result.data:
                             kb_text = "\n\n".join([
                                 f"[{item.get('source_title', 'Source')}]: {item.get('content', '')}"
@@ -113,31 +97,24 @@ class KnowledgeBaseProcessor(FrameProcessor):
                             
                             enhanced_prompt = f"""{self.base_prompt}
 
-RELEVANT KNOWLEDGE FROM YOUR CONTENT:
+RELEVANT KNOWLEDGE:
 {kb_text}
 
-CRITICAL RULES: 
-1. Base your answer ONLY on the above knowledge.
-2. Keep responses SHORT (2-3 sentences) for voice conversation.
-3. Stay in character as Mitesh Khatri."""
+RULES: Base answer on above knowledge. Keep SHORT (2-3 sentences) for voice."""
                             
-                            # Update system message in context
                             for msg in self.llm_context.messages:
                                 if msg["role"] == "system":
                                     msg["content"] = enhanced_prompt
                                     break
                             
-                            logger.info(f"✅ KB INJECTED: {len(result.data)} relevant chunks found")
+                            logger.info(f"✅ KB INJECTED: {len(result.data)} chunks")
                         else:
-                            logger.info("ℹ️ No KB matches found, using base prompt")
+                            logger.info("ℹ️ No KB matches")
                     
                     except asyncio.TimeoutError:
-                        logger.warning("⏱️ KB search timed out (5s), using base prompt")
+                        logger.warning("⏱️ KB search timed out")
                     except Exception as e:
-                        logger.error(f"❌ KB search error: {e}")
-        
-        # Always push frame forward
-        await self.push_frame(frame, direction)
+                        logger.error(f"❌ KB error: {e}")
 
 # --- MAIN ---
 
