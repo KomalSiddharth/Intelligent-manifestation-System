@@ -1,6 +1,6 @@
 
 import { useState, useEffect, useRef } from 'react';
-import DailyIframe, { DailyCall } from '@daily-co/daily-js';
+import { Room, RoomEvent, Track, RemoteTrack, RemoteParticipant } from 'livekit-client';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Mic, MicOff, Phone } from 'lucide-react';
 
@@ -12,20 +12,19 @@ interface VoiceAssistantProps {
 
 export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps) {
     const [status, setStatus] = useState('Initializing...');
-    const [isMuted, setIsMuted] = useState(true); // ✅ Start muted!
+    const [isMuted, setIsMuted] = useState(true);
     const [isConnected, setIsConnected] = useState(false);
     const [isAISpeaking, setIsAISpeaking] = useState(false);
     const [isConnecting, setIsConnecting] = useState(false);
 
-    const callObjectRef = useRef<DailyCall | null>(null);
-
+    const roomRef = useRef<Room | null>(null);
     const audioRef = useRef<HTMLAudioElement>(null);
 
     // Cleanup function
     const cleanup = () => {
-        if (callObjectRef.current) {
-            callObjectRef.current.destroy();
-            callObjectRef.current = null;
+        if (roomRef.current) {
+            roomRef.current.disconnect();
+            roomRef.current = null;
         }
         setIsConnected(false);
         setIsAISpeaking(false);
@@ -38,7 +37,7 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             setIsConnecting(true);
             setStatus('Creating session...');
 
-            // 1. Call backend to create room
+            // 1. Call backend to create room and get token
             const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
             const response = await fetch(`${apiUrl}/start-session`, {
                 method: 'POST',
@@ -51,159 +50,115 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             const data = await response.json();
             const { room_url, token } = data;
 
-            setStatus('Joining room...');
+            setStatus('Connecting to LiveKit...');
 
-            // 2. Initialize Daily Call
-            const callObject = DailyIframe.createCallObject({
-                url: room_url,
-                token: token,
-                subscribeToTracksAutomatically: true
+            // 2. Initialize LiveKit Room
+            const room = new Room({
+                adaptiveStream: true,
+                dynacast: true,
             });
+            roomRef.current = room;
 
-            callObjectRef.current = callObject;
-
-            // Events
-            callObject
-                .on('joined-meeting', () => {
-                    console.log('✅ Joined meeting');
-                    setIsConnected(true);
-                    setIsConnecting(false);
-                    setStatus('Connected! Click mic to speak.');
-                    try {
-                        const result = callObject.setLocalAudio(false);
-                        if (result instanceof Promise) {
-                            result.catch(e => console.error("Initial mute error:", e));
-                        }
-                    } catch (e) {
-                        console.error("Initial mute error:", e);
-                    }
-                })
-                .on('left-meeting', () => {
-                    console.log('👋 Left meeting');
-                    cleanup();
-                })
-                .on('error', (e) => {
-                    console.error('Daily Error:', e);
-                    setStatus('Connection Error');
-                })
-                .on('participant-joined', (event) => {
-                    const name = event?.participant?.user_name || 'Someone';
-                    console.log('🤖 Participant joined:', name);
-                    if (name === 'Mitesh AI Coach') {
-                        setStatus('Mitesh is ready!');
-                    }
-                })
-                .on('track-started', (event) => {
-                    if (event?.participant && !event.participant.local && event.track?.kind === 'audio') {
-                        console.log('🔊 AI speaking');
+            // Handle track subscription
+            room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication, participant: RemoteParticipant) => {
+                if (track.kind === Track.Kind.Audio) {
+                    console.log('🔊 AI Track subscribed');
+                    if (audioRef.current) {
+                        track.attach(audioRef.current);
                         setIsAISpeaking(true);
                         setStatus('Mitesh is speaking...');
-
-                        // ✅ ATTACH AUDIO TRACK TO ELEMENT
-                        if (audioRef.current && event.track) {
-                            audioRef.current.srcObject = new MediaStream([event.track]);
-                            audioRef.current.play().catch(err => {
-                                console.warn("Auto-play blocked, wait for user gesture:", err);
-                                setStatus('Mitesh is speaking (Click MK to hear)');
-                            });
-                        }
                     }
-                })
-                .on('track-stopped', (event) => {
-                    if (event?.participant && !event.participant.local && event.track?.kind === 'audio') {
-                        console.log('🔇 AI stopped');
-                        setIsAISpeaking(false);
-                        setStatus(isMuted ? 'Click mic to speak' : 'Listening...');
-                    }
-                });
+                }
+            });
 
+            room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
+                if (track.kind === Track.Kind.Audio) {
+                    console.log('🔇 AI stopped');
+                    setIsAISpeaking(false);
+                    setStatus(isMuted ? 'Click mic to speak' : 'Listening...');
+                }
+            });
+
+            room.on(RoomEvent.Connected, () => {
+                console.log('✅ Connected to room');
+                setIsConnected(true);
+                setIsConnecting(false);
+                setStatus('Connected! Click mic to speak.');
+
+                // Ensure initial mute
+                room.localParticipant.setMicrophoneEnabled(false);
+                setIsMuted(true);
+            });
+
+            room.on(RoomEvent.Disconnected, () => {
+                console.log('👋 Disconnected');
+                cleanup();
+            });
+
+            room.on(RoomEvent.ParticipantConnected, (p) => {
+                console.log('🤖 Participant joined:', p.identity);
+                if (p.identity.startsWith('bot-')) {
+                    setStatus('Mitesh is ready!');
+                }
+            });
 
             // Join
-            await callObject.join();
+            await room.connect(room_url, token);
 
         } catch (e) {
-            console.error(e);
+            console.error('LiveKit Connection Error:', e);
             setStatus('Failed to connect');
             setIsConnecting(false);
         }
     };
 
     const toggleMute = async () => {
-        if (!callObjectRef.current) return;
+        if (!roomRef.current?.localParticipant) return;
 
         const newMutedState = !isMuted;
         setIsMuted(newMutedState);
 
         // Toggle mic
         try {
-            callObjectRef.current.setLocalAudio(!newMutedState);
+            await roomRef.current.localParticipant.setMicrophoneEnabled(!newMutedState);
+            if (newMutedState) {
+                setStatus('Mic muted. Click to speak.');
+            } else {
+                setStatus('Listening... Speak now!');
+            }
         } catch (e) {
             console.error("Failed to toggle mic:", e);
             setIsMuted(!newMutedState); // Revert
             return;
         }
-
-        // Update status
-        if (newMutedState) {
-            setStatus('Mic muted. Click to speak.');
-        } else {
-            setStatus('Listening... Speak now!');
-        }
     };
 
     const endCall = () => {
-        if (callObjectRef.current) {
-            callObjectRef.current.leave();
-        }
+        cleanup();
         onClose();
     };
-
-    // Lifecycle Debugging
-    useEffect(() => {
-        console.log("💎 [VOICE_ASSISTANT] Mounted");
-        return () => console.log("💎 [VOICE_ASSISTANT] Unmounting!");
-    }, []);
 
     useEffect(() => {
         if (isOpen && !isConnected && !isConnecting) {
             startVoiceSession();
         } else if (!isOpen && isConnected) {
-            // Only cleanup if we are explicitly closing the dialog
             cleanup();
         }
-
-        return () => {
-            // NOTE: We don't call cleanup() here anymore to prevent 
-            // disconnections during minor parent re-renders.
-            // cleanup() is handled by isOpen toggle or explicit endCall.
-        };
-    }, [isOpen, isConnected, isConnecting]);
+    }, [isOpen]);
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-
             <DialogContent className="sm:max-w-md bg-gray-900 text-white border-gray-800" aria-describedby="voice-assistant-description">
                 <DialogTitle className="sr-only">Voice Assistant</DialogTitle>
                 <div id="voice-assistant-description" className="sr-only">
-                    Voice Assistant Interface for Mitesh Khatri AI
+                    Voice Assistant Interface for Mitesh Khatri AI using LiveKit
                 </div>
 
-                {/* ✅ HIDDEN AUDIO ELEMENT */}
                 <audio ref={audioRef} autoPlay style={{ display: 'none' }} />
 
                 <div className="flex flex-col items-center gap-6 py-8">
-
                     {/* Avatar */}
-                    <div
-                        className="relative cursor-pointer group"
-                        onClick={() => {
-                            if (audioRef.current && isAISpeaking) {
-                                console.log("🔘 Force playing audio...");
-                                audioRef.current.play().catch(e => console.error("Force play failed:", e));
-                            }
-                        }}
-                        title={isAISpeaking ? "Click to force play audio" : ""}
-                    >
+                    <div className="relative cursor-pointer group">
                         <div className="w-32 h-32 rounded-full bg-gradient-to-br from-red-500 to-purple-600 flex items-center justify-center group-hover:scale-105 transition-transform duration-300">
                             <span className="text-4xl font-bold text-white uppercase">{userId.substring(0, 2)}</span>
                         </div>
@@ -216,7 +171,6 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                             <div className="absolute inset-0 rounded-full border-4 border-blue-500 animate-pulse opacity-50" />
                         )}
                     </div>
-
 
                     {/* Status Text */}
                     <div className="text-center space-y-2">

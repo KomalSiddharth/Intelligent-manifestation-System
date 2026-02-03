@@ -9,6 +9,7 @@ import string
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
+from livekit import api
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -28,11 +29,14 @@ CORS(app, resources={
 })
 
 
-DAILY_API_KEY = os.getenv("DAILY_API_KEY")
+LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
+LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
+LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 
-if not DAILY_API_KEY:
-    print("❌ ERROR: DAILY_API_KEY not found in .env")
-    sys.exit(1)
+if not all([LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL]):
+    print("❌ ERROR: LiveKit credentials missing in .env")
+    # Not exiting here to allow other parts of the app to run/debug if needed, 
+    # but actual sessions will fail.
 
 def generate_room_name(user_id):
     """Generate a unique room name"""
@@ -42,69 +46,42 @@ def generate_room_name(user_id):
 
 @app.route('/start-session', methods=['POST'])
 def start_session():
-    """Create Daily.co room and spawn voice worker"""
+    """Generate LiveKit token and spawn voice worker"""
     
     try:
         data = request.json
-        user_id = data.get('user_id', 'anonymous-user')
+        user_id = data.get('user_id', 'anonymous-' + ''.join(random.choices(string.ascii_lowercase, k=4)))
         
         print(f"📞 Creating voice session for user: {user_id}")
         
         # Generate unique room name
         room_name = generate_room_name(user_id)
         
-        # Create Daily.co room
-        response = requests.post(
-            "https://api.daily.co/v1/rooms",
-            headers={
-                "Authorization": f"Bearer {DAILY_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "name": room_name,
-                "privacy": "private",
-                "properties": {
-                    "max_participants": 2,
-                    "enable_chat": False,
-                    "enable_screenshare": False,
-                    "start_video_off": True,
-                    "start_audio_off": False,
-                    "exp": int(time.time()) + 3600  # 1 hour expiry
-                }
-            }
-        )
-        
-        if response.status_code != 200:
-            print(f"❌ Daily API Error: {response.text}")
-            return jsonify({"error": "Failed to create room", "details": response.text}), 500
-            
-        room_data = response.json()
-        room_url = room_data['url']
-        
-        print(f"✅ Room created: {room_url}")
-        
-        # Create meeting token
-        token_res = requests.post(
-            "https://api.daily.co/v1/meeting-tokens",
-            headers={
-                "Authorization": f"Bearer {DAILY_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "properties": {
-                    "room_name": room_name,
-                    "is_owner": True
-                }
-            }
-        )
-        
-        if token_res.status_code != 200:
-            print(f"❌ Token Error: {token_res.text}")
-            return jsonify({"error": "Failed to create token", "details": token_res.text}), 500
+        # Create LiveKit Access Token for the USER
+        user_token_manager = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        user_token_manager.with_identity(user_id)
+        user_token_manager.with_name("User")
+        user_token_manager.with_grants(api.VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=True,
+            can_subscribe=True
+        ))
+        user_token = user_token_manager.to_jwt()
 
-        token = token_res.json().get('token')
+        # Create LiveKit Access Token for the BOT
+        bot_token_manager = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        bot_token_manager.with_identity(f"bot-{user_id[:8]}")
+        bot_token_manager.with_name("Mitesh AI Coach")
+        bot_token_manager.with_grants(api.VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=True,
+            can_subscribe=True
+        ))
+        bot_token = bot_token_manager.to_jwt()
         
-        print(f"✅ Token created")
+        print(f"✅ Tokens generated for room: {room_name}")
         
         # ✅ Spawn voice worker subprocess with EXPLICIT LOG PIPING
         print("🚀 Spawning voice worker...", flush=True)
@@ -112,8 +89,8 @@ def start_session():
             [
                 sys.executable,
                 "voice_worker.py",
-                room_url,
-                token,
+                LIVEKIT_URL,
+                bot_token,
                 user_id
             ],
             cwd=os.path.dirname(os.path.abspath(__file__)),
@@ -135,8 +112,9 @@ def start_session():
         
         return jsonify({
             "success": True,
-            "room_url": room_url,
-            "token": token
+            "room_url": LIVEKIT_URL,
+            "room_name": room_name,
+            "token": user_token
         })
 
     except Exception as e:
@@ -164,7 +142,7 @@ if __name__ == '__main__':
     print("=" * 60)
     print(f"📍 Port: 5000")
     print(f"🐍 Python: {sys.executable}")
-    print(f"🔑 Daily.co API Key: {'✅ Found' if DAILY_API_KEY else '❌ Missing'}")
+    print(f"🔑 LiveKit API Key: {'✅ Found' if LIVEKIT_API_KEY else '❌ Missing'}")
     print("=" * 60)
     
     port = int(os.getenv("PORT", 5000))

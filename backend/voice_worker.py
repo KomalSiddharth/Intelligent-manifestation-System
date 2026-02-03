@@ -22,7 +22,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.transports.daily.transport import DailyTransport, DailyParams
+from pipecat.transports.livekit import LiveKitTransport, LiveKitParams
 from pipecat.processors.frame_processor import FrameProcessor
 
 # Try to import KB dependencies
@@ -120,10 +120,10 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
             logger.info("✅ KB Service connected")
         except: pass
 
-    # Transport
-    transport = DailyTransport(
+    # Transport: LiveKit
+    transport = LiveKitTransport(
         room_url, token, "Mitesh AI Coach",
-        DailyParams(
+        LiveKitParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             vad_analyzer=SileroVADAnalyzer()
@@ -161,12 +161,11 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
     runner = PipelineRunner()
     
-    @transport.event_handler("on_first_participant_joined")
-    async def on_join(transport, participant):
+    @transport.event_handler("on_participant_connected")
+    async def on_connect(transport, participant):
         await asyncio.sleep(1.2)
-        logger.info(f"👋 User joined. Sending greeting...")
+        logger.info(f"👋 User connected ({participant.identity}). Sending greeting...")
         try:
-            # Direct TextFrame to ensure audio is heard immediately
             await task.queue_frame(TextFrame("Hello! I'm Mitesh. How can I help you today?"))
         except Exception as e:
             logger.error(f"❌ Greeting failed: {e}")

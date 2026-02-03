@@ -8,5 +8,7 @@ openai>=1.74.0
 cartesia>=2.0.3
 onnxruntime>=1.20.1
 supabase>=2.3.4
-pipecat-ai[daily,cartesia,openai,silero]==0.0.100
+pipecat-ai[livekit,cartesia,openai,silero]==0.0.100
+livekit>=0.17.0
+livekit-api>=0.5.0
 gunicorn>=21.2.0
