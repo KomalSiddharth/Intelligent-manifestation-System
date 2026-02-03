@@ -12,7 +12,8 @@ if hasattr(sys.stdout, "reconfigure"):
 from pipecat.frames.frames import (
     EndFrame, StartFrame, TextFrame, TranscriptionFrame, Frame
 )
-from pipecat.pipeline.pipeline import Pipeline, ParallelPipeline
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.parallel_pipeline import ParallelPipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.services.openai.llm import OpenAILLMService
