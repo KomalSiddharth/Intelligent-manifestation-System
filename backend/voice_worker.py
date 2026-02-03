@@ -12,7 +12,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from pipecat.frames.frames import (
     EndFrame, StartFrame, TextFrame, TranscriptionFrame, Frame
 )
-from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.pipeline import Pipeline, ParallelPipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.services.openai.llm import OpenAILLMService
@@ -125,7 +125,6 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_enabled=True,
             vad_analyzer=SileroVADAnalyzer()
         )
     )
@@ -143,16 +142,17 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     # KB Processor
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
 
-    # Pipeline Model: Assistant aggregator BEFORE TTS to capture text
+    # Pipeline Model: Assistant aggregator BEFORE TTS    # Pipeline Model: Parallel branches for Voice and Memory
     pipeline = Pipeline([
         transport.input(),
         stt,
         kb_processor,
         aggregators.user(),
         llm,
-        aggregators.assistant(),
-        tts,
-        transport.output() # Sink at the end
+        ParallelPipeline([
+            Pipeline([tts, transport.output()]),
+            aggregators.assistant()
+        ])
     ])
 
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
