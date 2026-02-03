@@ -143,7 +143,8 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     # KB Processor
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
 
-    # Pipeline Model: Assistant aggregator BEFORE TTS    # Pipeline Model: Parallel branches for Voice and Memory
+    # Pipeline: Parallel branches for Voice (TTS) and Memory (Aggregator)
+    # The final transport.output() acts as a universal sink for all branches.
     pipeline = Pipeline([
         transport.input(),
         stt,
@@ -151,9 +152,10 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         aggregators.user(),
         llm,
         ParallelPipeline([
-            Pipeline([tts, transport.output()]),
+            tts,
             aggregators.assistant()
-        ])
+        ]),
+        transport.output()
     ])
 
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
