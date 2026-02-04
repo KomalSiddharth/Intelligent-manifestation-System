@@ -49,19 +49,20 @@ class GreetingTrigger(FrameProcessor):
         self.triggered = False
 
     async def process_frame(self, frame: Frame, direction):
-        # We push the frame first to let StartFrame propagate
+        # Log EVERYTHING for debugging
+        if not self.triggered:
+            logger.info(f"🧐 GreetingTrigger saw: {type(frame).__name__}")
+            
         await super().process_frame(frame, direction)
         
         if isinstance(frame, StartFrame) and not self.triggered:
             self.triggered = True
-            logger.info("✨ Pipeline Started: Triggering AI greeting via LLM Context...")
+            logger.info("✨ Pipeline MATCH: Triggering AI greeting via LLM Context...")
             
-            # The "Pipecat Way": Inject a system message and trigger the LLM
             self.context.add_message({
                 "role": "system", 
-                "content": "SAY IMMEDIATELY: 'Hello! I am Mitesh Khatri. I'm connected and ready to help you with your manifestation journey. How are you feeling today?'"
+                "content": "GREET THE USER IMMEDIATELY: 'Hello! I am Mitesh Khatri. I'm connected and ready to help you. How can I help you today?'"
             })
-            # Pushing an LLMContextFrame forces the LLM to generate a response RIGHT NOW.
             await self.push_frame(LLMContextFrame(self.context))
 
 class PipelineTracer(FrameProcessor):
@@ -75,6 +76,8 @@ class PipelineTracer(FrameProcessor):
             logger.info(f"⏳ [{self.tracer_name}] -> {type(frame).__name__}")
         elif isinstance(frame, StartFrame):
              logger.info(f"🚩 [{self.tracer_name}] -> StartFrame")
+        elif isinstance(frame, (EndFrame, Frame)): # Log others
+             logger.info(f"📦 [{self.tracer_name}] -> {type(frame).__name__}")
         await super().process_frame(frame, direction)
 
 # --- KNOWLEDGE BASE PROCESSOR ---
@@ -204,13 +207,13 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     pipeline = Pipeline([
         transport.input(),
         trace_input,
+        greeting_trigger, # Now after input/tracer
         stt,
         trace_post_stt,
         kb_processor,
         trace_post_kb,
         aggregators.user(),
         trace_post_agg,
-        greeting_trigger, # Injects greeting context if needed AFTER aggregation
         llm,
         trace_post_llm,
         tts,
@@ -219,12 +222,12 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         aggregators.assistant(),
     ])
 
-    # Disable idle timeout (0) to prevent watchdog from killing the session
+    # Using a very large number for idle_timeout to effectively disable it
     task = PipelineTask(
         pipeline, 
         params=PipelineParams(
             allow_interruptions=True,
-            idle_timeout=0 
+            idle_timeout=999999 
         )
     )
     runner = PipelineRunner()
@@ -233,7 +236,12 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        logger.info(f"👋 User joined ({participant_id}).")
+        logger.info(f"👋 User joined ({participant_id}). Queuing backup greeting...")
+        try:
+            # Failsafe: Queue a direct greeting if the trigger misses
+            await task.queue_frame(TextFrame("Hello there! I'm Mitesh Khatri. Welcome to the session."))
+        except Exception as e:
+            logger.error(f"❌ Backup greeting error: {e}")
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
