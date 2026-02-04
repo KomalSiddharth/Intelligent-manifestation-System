@@ -192,7 +192,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     # Monitoring & Triggers
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
-    greeting_trigger = GreetingTrigger(context, None) # Will set task later
+    greeting_trigger = GreetingTrigger(context)
     trace_input = PipelineTracer("Input")
     trace_post_stt = PipelineTracer("Post-STT")
     trace_post_kb = PipelineTracer("Post-KB")
