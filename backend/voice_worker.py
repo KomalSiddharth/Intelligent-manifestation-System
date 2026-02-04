@@ -43,10 +43,9 @@ logger.add(sys.stderr, level="INFO")
 
 class GreetingTrigger(FrameProcessor):
     """Triggers an initial greeting from the LLM on startup"""
-    def __init__(self, context, task):
+    def __init__(self, context):
         super().__init__()
         self.context = context
-        self.task = task
         self.triggered = False
 
     async def process_frame(self, frame: Frame, direction):
@@ -55,18 +54,15 @@ class GreetingTrigger(FrameProcessor):
         
         if isinstance(frame, StartFrame) and not self.triggered:
             self.triggered = True
-            logger.info("✨ Pipeline Started: Triggering AI greeting...")
-            # 1. Guarantee audio by queuing a direct TextFrame
-            # This goes to the START of the pipeline and will be caught by TTS
-            # even if the LLM is slow or the aggregator is buffering.
-            greeting_text = "Hello! I'm Mitesh Khatri. I'm connected and ready. How can I help you today?"
-            await self.task.queue_frame(TextFrame(greeting_text))
+            logger.info("✨ Pipeline Started: Triggering AI greeting via LLM Context...")
             
-            # 2. Update context so the AI remembers the greeting
+            # The "Pipecat Way": Inject a system message and trigger the LLM
             self.context.add_message({
-                "role": "assistant", 
-                "content": greeting_text
+                "role": "system", 
+                "content": "SAY IMMEDIATELY: 'Hello! I am Mitesh Khatri. I'm connected and ready to help you with your manifestation journey. How are you feeling today?'"
             })
+            # Pushing an LLMContextFrame forces the LLM to generate a response RIGHT NOW.
+            await self.push_frame(LLMContextFrame(self.context))
 
 class PipelineTracer(FrameProcessor):
     """Logs frame flow for debugging"""
@@ -205,9 +201,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     trace_post_tts = PipelineTracer("Post-TTS")
 
     # Pipeline: Highly robust and sequential for maximum reliability
-    # GreetingTrigger is AT THE START to catch the StartFrame immediately
     pipeline = Pipeline([
-        greeting_trigger,
         transport.input(),
         trace_input,
         stt,
@@ -216,6 +210,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         trace_post_kb,
         aggregators.user(),
         trace_post_agg,
+        greeting_trigger, # Injects greeting context if needed AFTER aggregation
         llm,
         trace_post_llm,
         tts,
@@ -224,8 +219,14 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         aggregators.assistant(),
     ])
 
-    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
-    greeting_trigger.task = task # Link task for queuing
+    # Disable idle timeout (0) to prevent watchdog from killing the session
+    task = PipelineTask(
+        pipeline, 
+        params=PipelineParams(
+            allow_interruptions=True,
+            idle_timeout=0 
+        )
+    )
     runner = PipelineRunner()
     
     # --- LiveKit Event Handlers ---

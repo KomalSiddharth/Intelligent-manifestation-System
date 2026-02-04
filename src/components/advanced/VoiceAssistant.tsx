@@ -70,11 +70,28 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication, participant: RemoteParticipant) => {
                 if (track.kind === Track.Kind.Audio) {
                     console.log('🔊 AI Track subscribed');
-                    if (audioRef.current) {
-                        track.attach(audioRef.current);
-                        setIsAISpeaking(true);
-                        setStatus('Mitesh is speaking...');
-                    }
+
+                    // Fail-safe attachment
+                    const attachTrack = () => {
+                        const audioElement = audioRef.current || document.getElementById('livekit-audio-sink') as HTMLAudioElement;
+                        if (audioElement) {
+                            track.attach(audioElement);
+                            setIsAISpeaking(true);
+                            setStatus('Mitesh is speaking...');
+                        } else {
+                            // Last resort: Create dynamic element
+                            console.warn('⚠️ Audio ref not ready, creating fallback sink');
+                            const fallback = document.createElement('audio');
+                            fallback.id = 'livekit-audio-sink-fallback';
+                            fallback.autoplay = true;
+                            document.body.appendChild(fallback);
+                            track.attach(fallback);
+                            setIsAISpeaking(true);
+                            setStatus('Mitesh is speaking...');
+                        }
+                    };
+
+                    attachTrack();
                 }
             });
 
