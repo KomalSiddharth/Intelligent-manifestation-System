@@ -39,6 +39,37 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
+# --- CUSTOM PROCESSORS ---
+
+class GreetingTrigger(FrameProcessor):
+    """Triggers an initial greeting from the LLM on startup"""
+    def __init__(self, context):
+        super().__init__()
+        self.context = context
+        self.triggered = False
+
+    async def process_frame(self, frame: Frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, StartFrame) and not self.triggered:
+            self.triggered = True
+            logger.info("✨ Startup: Triggering AI greeting...")
+            self.context.add_message({
+                "role": "system", 
+                "content": "GREET THE USER NOW. Say: 'Hello! I am Mitesh Khatri, your AI Coach. I'm connected and ready to assist you. How can I help you today?'"
+            })
+            await self.push_frame(LLMContextFrame(self.context))
+
+class PipelineTracer(FrameProcessor):
+    """Logs frame flow for debugging"""
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+    async def process_frame(self, frame: Frame, direction):
+        if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame)):
+            logger.info(f"⏳ [{self.name}] -> {type(frame).__name__}")
+        await super().process_frame(frame, direction)
+
 # --- KNOWLEDGE BASE PROCESSOR ---
 
 class KnowledgeBaseProcessor(FrameProcessor):
@@ -54,18 +85,19 @@ class KnowledgeBaseProcessor(FrameProcessor):
     async def _search_kb(self, text):
         """Helper method for KB search - resilient to casting errors"""
         try:
-            profile_id = self.user_id if len(self.user_id) > 30 else None
+            # ONLY pass profile_id if it's a valid UUID string (36 chars)
+            # This avoids the 'bigint to uuid' casting error in Supabase
+            profile_id = self.user_id if len(self.user_id) == 36 else None
             
             embedding_response = await self.openai.embeddings.create(
                 model="text-embedding-3-small",
                 input=text
             )
             
-            # Use strict types for RPC params to prevent casting ambiguity
             rpc_params = {
                 'query_embedding': embedding_response.data[0].embedding,
-                'match_threshold': float(0.35),
-                'match_count': int(3)
+                'match_threshold': 0.35,
+                'match_count': 3
             }
             if profile_id:
                 rpc_params['p_profile_id'] = profile_id
@@ -75,11 +107,7 @@ class KnowledgeBaseProcessor(FrameProcessor):
             )
             return result
         except Exception as e:
-            err_msg = str(e)
-            if "bigint to uuid" in err_msg:
-                logger.warning("⚠️ KB Schema mismatch detected (bigint vs uuid). This is a DB level issue, but bot will continue.")
-            else:
-                logger.error(f"❌ KB helper error: {e}")
+            logger.warning(f"⚠️ KB search skipped due to error (likely schema mismatch): {e}")
             return None
 
     async def process_frame(self, frame: Frame, direction):
@@ -151,21 +179,27 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
     # Context & Aggregators
-    base_prompt = "You are Mitesh Khatri, the world's no. 1 coach. Keep answers short."
+    base_prompt = "You are Mitesh Khatri, the world's no. 1 coach. Keep answers short and impactful."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # KB Processor
+    # Monitoring & Triggers
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
+    greeting_trigger = GreetingTrigger(context)
+    trace_post_llm = PipelineTracer("Post-LLM")
+    trace_post_tts = PipelineTracer("Post-TTS")
 
-    # Pipeline: Highly robust and sequential for maximum audio reliability
+    # Pipeline: Highly robust and sequential for maximum reliability
     pipeline = Pipeline([
         transport.input(),
         stt,
         kb_processor,
         aggregators.user(),
+        greeting_trigger, # Injects greeting context if needed
         llm,
+        trace_post_llm,   # Log if LLM produced anything
         tts,
+        trace_post_tts,   # Log if TTS produced audio frames
         transport.output(),
         aggregators.assistant(),
     ])
@@ -173,25 +207,15 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
     runner = PipelineRunner()
     
-    # --- Event Handlers ---
+    # --- LiveKit Event Handlers ---
 
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        logger.info(f"👋 User joined ({participant_id}). Triggering greeting...")
-        try:
-            # We add a "warm" message to the context and trigger the LLM
-            # This is more natural than a static TextFrame and bypasses aggregator stalls.
-            context.add_message({
-                "role": "system", 
-                "content": "The user has just joined. Greet them warmly as Mitesh Khatri and ask how you can help."
-            })
-            await task.queue_frames([LLMContextFrame(context)])
-        except Exception as e:
-            logger.error(f"❌ Greeting failed: {e}")
+        logger.info(f"👋 User joined ({participant_id}).")
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        logger.info("✅ Bot joined the LiveKit room.")
+        logger.info("✅ Bot connected to LiveKit room.")
 
     await runner.run(task)
 
