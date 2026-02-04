@@ -144,7 +144,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     # Services
     stt = OpenAISTTService(api_key=openai_key)
-    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
+    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o")
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
     # Context & Aggregators
@@ -155,36 +155,48 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     # KB Processor
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
 
-    # Pipeline: Optimized for LiveKit and reliable greeting
-    # Structure: Input -> Processing -> Aggregation -> LLM -> TTS -> Output -> Record
+    # Pipeline: Highly robust structure for LiveKit
     pipeline = Pipeline([
         transport.input(),
         stt,
         kb_processor,
         aggregators.user(),
         llm,
-        tts,
+        ParallelPipeline([
+            tts,
+            aggregators.assistant()
+        ]),
         transport.output(),
-        aggregators.assistant(),
     ])
 
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
     runner = PipelineRunner()
     
+    # --- Event Handlers ---
+
+    # 1. Handle Greeting when User connects
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        await asyncio.sleep(2.0)
-        logger.info(f"👋 User connected. Triggering bot greeting...")
+        logger.info(f"👋 User joined ({participant_id}). Greeting now...")
         try:
-            # We inject the greeting directly into the context and push it to the pipeline
-            context.add_message({
-                "role": "assistant", 
-                "content": "Hello! I am Mitesh Khatri, your AI success coach. How it's going? How can I help you today?"
-            })
-            # Pushing an LLMContextFrame ensures the bot speaks immediately
-            await task.queue_frame(LLMContextFrame(context))
+            # We use a direct TextFrame for the absolute fastest response
+            await task.queue_frame(TextFrame("Hello! I'm Mitesh Khatri, your AI Coach. I'm ready to help you. What's on your mind?"))
+            # Also sync context so LLM knows what it just said
+            context.add_message({"role": "assistant", "content": "Hello! I'm Mitesh Khatri, your AI Coach. I'm ready to help you. What's on your mind?"})
         except Exception as e:
             logger.error(f"❌ Greeting failed: {e}")
+
+    # 2. Handle Greeting if User was ALREADY there when Bot joined
+    @transport.event_handler("on_connected")
+    async def on_connected(transport):
+        logger.info("✅ Bot joined the room.")
+        # Check for existing participants
+        participants = transport.get_participants()
+        if participants and len(participants) > 0:
+            logger.info("👥 User is already here. Sending initial greeting...")
+            await asyncio.sleep(1.0) # Small breath
+            await task.queue_frame(TextFrame("Hello! I'm Mitesh. I see you're already here. How can I help you?"))
+            context.add_message({"role": "assistant", "content": "Hello! I'm Mitesh. I see you're already here. How can I help you?"})
 
     await runner.run(task)
 

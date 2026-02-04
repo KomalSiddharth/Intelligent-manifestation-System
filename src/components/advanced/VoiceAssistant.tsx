@@ -38,7 +38,11 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             setStatus('Creating session...');
 
             // 1. Call backend to create room and get token
-            const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+            const rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+            const apiUrl = rawApiUrl.endsWith('/') ? rawApiUrl.slice(0, -1) : rawApiUrl;
+
+            console.log('📡 Requesting session from:', `${apiUrl}/start-session`);
+
             const response = await fetch(`${apiUrl}/start-session`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -46,7 +50,10 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                 body: JSON.stringify({ user_id: userId })
             });
 
-            if (!response.ok) throw new Error('Failed to start session');
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`API Error (${response.status}): ${errorText}`);
+            }
             const data = await response.json();
             const { room_url, token } = data;
 
