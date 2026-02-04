@@ -43,21 +43,30 @@ logger.add(sys.stderr, level="INFO")
 
 class GreetingTrigger(FrameProcessor):
     """Triggers an initial greeting from the LLM on startup"""
-    def __init__(self, context):
+    def __init__(self, context, task):
         super().__init__()
         self.context = context
+        self.task = task
         self.triggered = False
 
     async def process_frame(self, frame: Frame, direction):
+        # We push the frame first to let StartFrame propagate
         await super().process_frame(frame, direction)
+        
         if isinstance(frame, StartFrame) and not self.triggered:
             self.triggered = True
-            logger.info("✨ Startup: Triggering AI greeting...")
+            logger.info("✨ Pipeline Started: Triggering AI greeting...")
+            # 1. Guarantee audio by queuing a direct TextFrame
+            # This goes to the START of the pipeline and will be caught by TTS
+            # even if the LLM is slow or the aggregator is buffering.
+            greeting_text = "Hello! I'm Mitesh Khatri. I'm connected and ready. How can I help you today?"
+            await self.task.queue_frame(TextFrame(greeting_text))
+            
+            # 2. Update context so the AI remembers the greeting
             self.context.add_message({
-                "role": "system", 
-                "content": "GREET THE USER NOW. Say: 'Hello! I am Mitesh Khatri, your AI Coach. I'm connected and ready to assist you. How can I help you today?'"
+                "role": "assistant", 
+                "content": greeting_text
             })
-            await self.push_frame(LLMContextFrame(self.context))
 
 class PipelineTracer(FrameProcessor):
     """Logs frame flow for debugging"""
@@ -68,6 +77,8 @@ class PipelineTracer(FrameProcessor):
     async def process_frame(self, frame: Frame, direction):
         if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame)):
             logger.info(f"⏳ [{self.tracer_name}] -> {type(frame).__name__}")
+        elif isinstance(frame, StartFrame):
+             logger.info(f"🚩 [{self.tracer_name}] -> StartFrame")
         await super().process_frame(frame, direction)
 
 # --- KNOWLEDGE BASE PROCESSOR ---
@@ -185,26 +196,36 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     # Monitoring & Triggers
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
-    greeting_trigger = GreetingTrigger(context)
+    greeting_trigger = GreetingTrigger(context, None) # Will set task later
+    trace_input = PipelineTracer("Input")
+    trace_post_stt = PipelineTracer("Post-STT")
+    trace_post_kb = PipelineTracer("Post-KB")
+    trace_post_agg = PipelineTracer("Post-Agg")
     trace_post_llm = PipelineTracer("Post-LLM")
     trace_post_tts = PipelineTracer("Post-TTS")
 
     # Pipeline: Highly robust and sequential for maximum reliability
+    # GreetingTrigger is AT THE START to catch the StartFrame immediately
     pipeline = Pipeline([
+        greeting_trigger,
         transport.input(),
+        trace_input,
         stt,
+        trace_post_stt,
         kb_processor,
+        trace_post_kb,
         aggregators.user(),
-        greeting_trigger, # Injects greeting context if needed
+        trace_post_agg,
         llm,
-        trace_post_llm,   # Log if LLM produced anything
+        trace_post_llm,
         tts,
-        trace_post_tts,   # Log if TTS produced audio frames
+        trace_post_tts,
         transport.output(),
         aggregators.assistant(),
     ])
 
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+    greeting_trigger.task = task # Link task for queuing
     runner = PipelineRunner()
     
     # --- LiveKit Event Handlers ---
