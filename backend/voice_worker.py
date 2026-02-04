@@ -52,9 +52,8 @@ class KnowledgeBaseProcessor(FrameProcessor):
         self.last_transcript = ""
 
     async def _search_kb(self, text):
-        """Helper method for KB search"""
+        """Helper method for KB search - resilient to casting errors"""
         try:
-            # Only search if we have a valid UUID for the profile
             profile_id = self.user_id if len(self.user_id) > 30 else None
             
             embedding_response = await self.openai.embeddings.create(
@@ -62,11 +61,11 @@ class KnowledgeBaseProcessor(FrameProcessor):
                 input=text
             )
             
-            # Build search params dynamically to avoid type casting issues
+            # Use strict types for RPC params to prevent casting ambiguity
             rpc_params = {
                 'query_embedding': embedding_response.data[0].embedding,
-                'match_threshold': 0.35,
-                'match_count': 3
+                'match_threshold': float(0.35),
+                'match_count': int(3)
             }
             if profile_id:
                 rpc_params['p_profile_id'] = profile_id
@@ -76,7 +75,11 @@ class KnowledgeBaseProcessor(FrameProcessor):
             )
             return result
         except Exception as e:
-            logger.error(f"❌ KB helper error: {e}")
+            err_msg = str(e)
+            if "bigint to uuid" in err_msg:
+                logger.warning("⚠️ KB Schema mismatch detected (bigint vs uuid). This is a DB level issue, but bot will continue.")
+            else:
+                logger.error(f"❌ KB helper error: {e}")
             return None
 
     async def process_frame(self, frame: Frame, direction):
@@ -155,18 +158,16 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     # KB Processor
     kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
 
-    # Pipeline: Highly robust structure for LiveKit
+    # Pipeline: Highly robust and sequential for maximum audio reliability
     pipeline = Pipeline([
         transport.input(),
         stt,
         kb_processor,
         aggregators.user(),
         llm,
-        ParallelPipeline([
-            tts,
-            aggregators.assistant()
-        ]),
+        tts,
         transport.output(),
+        aggregators.assistant(),
     ])
 
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
@@ -174,29 +175,23 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     
     # --- Event Handlers ---
 
-    # 1. Handle Greeting when User connects
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        logger.info(f"👋 User joined ({participant_id}). Greeting now...")
+        logger.info(f"👋 User joined ({participant_id}). Triggering greeting...")
         try:
-            # We use a direct TextFrame for the absolute fastest response
-            await task.queue_frame(TextFrame("Hello! I'm Mitesh Khatri, your AI Coach. I'm ready to help you. What's on your mind?"))
-            # Also sync context so LLM knows what it just said
-            context.add_message({"role": "assistant", "content": "Hello! I'm Mitesh Khatri, your AI Coach. I'm ready to help you. What's on your mind?"})
+            # We add a "warm" message to the context and trigger the LLM
+            # This is more natural than a static TextFrame and bypasses aggregator stalls.
+            context.add_message({
+                "role": "system", 
+                "content": "The user has just joined. Greet them warmly as Mitesh Khatri and ask how you can help."
+            })
+            await task.queue_frames([LLMContextFrame(context)])
         except Exception as e:
             logger.error(f"❌ Greeting failed: {e}")
 
-    # 2. Handle Greeting if User was ALREADY there when Bot joined
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        logger.info("✅ Bot joined the room.")
-        # Check for existing participants
-        participants = transport.get_participants()
-        if participants and len(participants) > 0:
-            logger.info("👥 User is already here. Sending initial greeting...")
-            await asyncio.sleep(1.0) # Small breath
-            await task.queue_frame(TextFrame("Hello! I'm Mitesh. I see you're already here. How can I help you?"))
-            context.add_message({"role": "assistant", "content": "Hello! I'm Mitesh. I see you're already here. How can I help you?"})
+        logger.info("✅ Bot joined the LiveKit room.")
 
     await runner.run(task)
 
