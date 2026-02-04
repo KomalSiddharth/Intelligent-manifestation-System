@@ -61,13 +61,13 @@ class GreetingTrigger(FrameProcessor):
 
 class PipelineTracer(FrameProcessor):
     """Logs frame flow for debugging"""
-    def __init__(self, name):
+    def __init__(self, tracer_name):
         super().__init__()
-        self.name = name
+        self.tracer_name = tracer_name
 
     async def process_frame(self, frame: Frame, direction):
         if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame)):
-            logger.info(f"⏳ [{self.name}] -> {type(frame).__name__}")
+            logger.info(f"⏳ [{self.tracer_name}] -> {type(frame).__name__}")
         await super().process_frame(frame, direction)
 
 # --- KNOWLEDGE BASE PROCESSOR ---
