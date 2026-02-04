@@ -80,8 +80,7 @@ class KnowledgeBaseProcessor(FrameProcessor):
             return None
 
     async def process_frame(self, frame: Frame, direction):
-        """Standard Pipecat frame processing pattern"""
-        # CRITICAL: Call parent FIRST to ensure StartFrame sets internal state
+        """Modified to be non-blocking for the pipeline"""
         await super().process_frame(frame, direction)
         
         if isinstance(frame, TranscriptionFrame):
@@ -90,18 +89,24 @@ class KnowledgeBaseProcessor(FrameProcessor):
                 self.last_transcript = text
                 logger.info(f"🎤 USER: '{text}'")
                 
+                # Expert Move: Run the KB search in a background task
+                # This prevents the pipeline from stalling while waiting for Supabase
                 if self.supabase and self.openai:
-                    try:
-                        res = await asyncio.wait_for(self._search_kb(text), timeout=4.0)
-                        if res and res.data:
-                            kb_text = "\n".join([f"- {it.get('content','')}" for it in res.data])
-                            for msg in self.context.messages:
-                                if msg["role"] == "system":
-                                    msg["content"] = f"{self.base_prompt}\n\nContext:\n{kb_text}"
-                                    break
-                            logger.info("✅ KB Context injected")
-                    except Exception as e:
-                        logger.error(f"⚠️ KB search skipped: {e}")
+                    asyncio.create_task(self._update_context_from_kb(text))
+
+    async def _update_context_from_kb(self, text):
+        """Background task to update context without blocking pipeline"""
+        try:
+            res = await asyncio.wait_for(self._search_kb(text), timeout=5.0)
+            if res and res.data:
+                kb_text = "\n".join([f"- {it.get('content','')}" for it in res.data])
+                for msg in self.context.messages:
+                    if msg["role"] == "system":
+                        msg["content"] = f"{self.base_prompt}\n\nContext:\n{kb_text}"
+                        break
+                logger.info("✅ KB Context updated (Async)")
+        except Exception as e:
+            logger.error(f"⚠️ KB background update failed: {e}")
 
 # --- MAIN ---
 
@@ -169,16 +174,14 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
         await asyncio.sleep(2.0)
-        logger.info(f"👋 User connected ({participant_id}). Triggering LLM greeting...")
+        logger.info(f"👋 User connected. Triggering bot greeting...")
         try:
-            # Injecting a Context Frame ensures it bypasses the aggregator
-            # and makes the LLM speak immediately.
+            # We inject the greeting directly into the context and push it to the pipeline
             context.add_message({
                 "role": "assistant", 
-                "content": "Hello! I am Mitesh Khatri, your AI success coach. I'm ready to help you with your goals. How can I assist you today?"
+                "content": "Hello! I am Mitesh Khatri, your AI success coach. How it's going? How can I help you today?"
             })
-            await task.queue_frame(TranscriptionFrame("greeting", "", "bot"))
-            # We also send the context to the LLM to make sure it's in sync
+            # Pushing an LLMContextFrame ensures the bot speaks immediately
             await task.queue_frame(LLMContextFrame(context))
         except Exception as e:
             logger.error(f"❌ Greeting failed: {e}")
