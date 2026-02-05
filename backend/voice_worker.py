@@ -203,31 +203,24 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     trace_post_llm = PipelineTracer("Post-LLM")
     trace_post_tts = PipelineTracer("Post-TTS")
 
-    # Pipeline: Highly robust and sequential for maximum reliability
+    # Pipeline: BAREBONES ISOLATION MODE
+    # Purpose: Remove all complexity to verify if core audio flows.
     pipeline = Pipeline([
         transport.input(),
-        trace_input,
-        greeting_trigger, # Now after input/tracer
         stt,
-        trace_post_stt,
-        kb_processor,
-        trace_post_kb,
         aggregators.user(),
-        trace_post_agg,
         llm,
-        trace_post_llm,
         tts,
-        trace_post_tts,
         transport.output(),
         aggregators.assistant(),
     ])
 
-    # Using a very large number for idle_timeout to effectively disable it
+    # No idle timeout
     task = PipelineTask(
         pipeline, 
         params=PipelineParams(
             allow_interruptions=True,
-            idle_timeout=999999 
+            idle_timeout=0 
         )
     )
     runner = PipelineRunner()
@@ -236,16 +229,16 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        logger.info(f"👋 User joined ({participant_id}). Queuing backup greeting...")
+        logger.info(f"👋 User joined ({participant_id}). Sending barebones greeting...")
         try:
-            # Failsafe: Queue a direct greeting if the trigger misses
-            await task.queue_frame(TextFrame("Hello there! I'm Mitesh Khatri. Welcome to the session."))
+            # Absolute simplest greeting to verify TTS
+            await task.queue_frame(TextFrame("Hello, this is a test and I can hear you. How can I help?"))
         except Exception as e:
-            logger.error(f"❌ Backup greeting error: {e}")
+            logger.error(f"❌ Greeting error: {e}")
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        logger.info("✅ Bot connected to LiveKit room.")
+        logger.info("✅ Bot connected locally.")
 
     await runner.run(task)
 
