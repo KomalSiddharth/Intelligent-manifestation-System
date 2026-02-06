@@ -41,26 +41,28 @@ logger.add(sys.stderr, level="INFO")
 
 # --- CUSTOM PROCESSORS ---
 
-class PipelineTracer(FrameProcessor):
-    """Logs frame flow for debugging"""
-    def __init__(self, tracer_name):
+# Frame tracker for debugging
+class FrameLogger(FrameProcessor):
+    def __init__(self, label: str):
         super().__init__()
-        self.tracer_name = tracer_name
-        self._audio_logged = False
-
+        self.label = label
+        self.count = 0
+    
     async def process_frame(self, frame: Frame, direction):
-        # 🧪 v2.2-ULTRA-DIAGNOSTIC
+        self.count += 1
         frame_name = type(frame).__name__
         
-        if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame)):
-            logger.info(f"⏳ [{self.tracer_name}] -> {frame_name}")
-        elif isinstance(frame, StartFrame):
-             logger.info(f"🚩 [{self.tracer_name}] -> StartFrame")
-        elif "AudioRawFrame" in frame_name and not self._audio_logged:
-             # Only log the first audio frame to avoid spam
-             logger.info(f"🔊 [{self.tracer_name}] -> {frame_name} (Audio detected!)")
-             self._audio_logged = True
-             
+        # Log important frames
+        if isinstance(frame, (TextFrame, LLMContextFrame, TranscriptionFrame)):
+            logger.info(f"📝 [{self.label}] #{self.count} {frame_name}")
+            if isinstance(frame, TextFrame):
+                logger.info(f"   ↳ Text: '{frame.text[:50]}...'")
+        elif "AudioRawFrame" in frame_name:
+            if self.count % 100 == 1: # Only log every 100th audio frame to avoid spam
+                logger.info(f"🔊 [{self.label}] #{self.count} Audio Packet Flowing")
+        elif isinstance(frame, (StartFrame, EndFrame)):
+             logger.info(f"🚩 [{self.label}] #{self.count} {frame_name}")
+        
         await super().process_frame(frame, direction)
 
 # --- KNOWLEDGE BASE PROCESSOR ---
@@ -183,25 +185,18 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # Monitoring & Triggers
-    trace_input = PipelineTracer("Input")
-    trace_post_stt = PipelineTracer("Post-STT")
-    trace_post_agg = PipelineTracer("Post-Agg")
-    trace_post_llm = PipelineTracer("Post-LLM")
-    trace_post_tts = PipelineTracer("Post-TTS")
-
-    # Pipeline: v2.2-ULTRA-DIAGNOSTIC
+    # Pipeline: v3.0-FRAME-PATHFINDER
     pipeline = Pipeline([
         transport.input(),
-        trace_input,
+        FrameLogger("1-Input"),
         stt,
-        trace_post_stt,
+        FrameLogger("2-PostSTT"),
         aggregators.user(),
-        trace_post_agg,
+        FrameLogger("3-PostUserAgg"),
         llm,
-        trace_post_llm,
+        FrameLogger("4-PostLLM"),
         tts,
-        trace_post_tts,
+        FrameLogger("5-PostTTS"),
         transport.output(),
         aggregators.assistant(),
     ])
@@ -220,21 +215,27 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
-        # The logs showed participant is a string (id), not an object with .identity
-        participant_id = getattr(participant, "identity", str(participant))
-        logger.info(f"👋 [v2.2] User joined: {participant_id}. Stabilizing...")
-        await asyncio.sleep(3.0) 
-        logger.info("📤 Triggering Context Greeting...")
+        p_id = getattr(participant, "identity", str(participant))
+        logger.info(f"👋 [v3.0] USER JOINED: {p_id}")
+        
+        # Wait for user to fully connect
+        await asyncio.sleep(4.0)
+        
+        greeting_text = "Hello! I am Mitesh. This is a direct audio test. Can you hear me clearly?"
+        logger.info(f"📤 QUEUEING GREETING: '{greeting_text}'")
+        
+        # Send TextFrame DIRECTLY to task queue
+        # This will pass through ALL tracers and SERVICES
         try:
-            # Force context update and LLM trigger
-            context.add_message({
-                "role": "system", 
-                "content": "SAY IMMEDIATELY: 'Hello! I am Mitesh. I am finally connected. How are you today?'"
-            })
-            await task.queue_frame(LLMContextFrame(context))
-            logger.info("✅ Context Greeting Queued.")
+            await task.queue_frame(TextFrame(greeting_text))
+            logger.info("✅ GREETING FRAME QUEUED SUCCESSFULLY")
+            logger.info("🔍 Watch the tracers (1-5) below to see where it goes!")
         except Exception as e:
-            logger.error(f"❌ Greeting error: {e}")
+            logger.error(f"❌ FAILED TO QUEUE GREETING: {e}")
+
+    @transport.event_handler("on_connected")
+    async def on_connected(transport):
+        logger.info("🎉 BOT CONNECTED TO LIVEKIT")
 
     await runner.run(task)
 
