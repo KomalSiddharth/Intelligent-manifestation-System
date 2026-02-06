@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "4.1-NUCLEAR-TEST"
+VERSION = "4.2-OPENAI-DIAGNOSTIC"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -17,7 +17,7 @@ from pipecat.frames.frames import (
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
-from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.transports.livekit.transport import LiveKitTransport, LiveKitParams
 from pipecat.processors.frame_processor import FrameProcessor
@@ -53,14 +53,13 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 60)
-    logger.info(f"💣 {VERSION} 💣")
+    logger.info(f"🧪 {VERSION} 🧪")
     logger.info("=" * 60)
 
-    cartesia_key = os.getenv("CARTESIA_API_KEY")
-    voice_id = os.getenv("CARTESIA_VOICE_ID")
+    openai_key = os.getenv("OPENAI_API_KEY")
     
-    if not all([cartesia_key, voice_id]):
-        logger.error("❌ Missing Cartesia API Key or Voice ID")
+    if not openai_key:
+        logger.error("❌ Missing OpenAI API Key")
         return
 
     # Transport
@@ -72,11 +71,11 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # TTS Only
-    tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
+    # SWITCHING TO OPENAI TTS FOR STABILITY TEST
+    logger.info("🔊 Initializing OpenAI TTS Fallback...")
+    tts = OpenAITTSService(api_key=openai_key, voice="alloy")
 
     # Pipeline: NUCLEAR ISOLATION (TTS -> OUTPUT)
-    # We keep transport.input() just to keep the loop alive and log user joined events
     pipeline = Pipeline([
         transport.input(),
         FrameLogger("1-Pre-TTS"),
@@ -94,11 +93,10 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}. Testing audio in 3s...")
         await asyncio.sleep(3.0)
         
-        greeting = "Hello Mitesh! I am your AI. Testing audio flow directly through TTS. Can you hear me?"
+        greeting = "Testing OpenAI voice. If you hear this, then the LiveKit transport is working perfectly and we just need to fix Cartesia settings."
         logger.info(f"📤 QUEUEING GREETING: '{greeting}'")
         
         try:
-            # We queue twice for redundancy
             await task.queue_frame(TextFrame(greeting))
             logger.info("✅ GREETING QUEUED.")
         except Exception as e:
@@ -108,7 +106,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     async def on_connected(transport):
         logger.info(f"🎉 [{VERSION}] Connected to room")
 
-    logger.info("🏃 RUNNING NUCLEAR PIPELINE...")
+    logger.info("🏃 RUNNING DIAGNOSTIC PIPELINE...")
     await runner.run(task)
 
 if __name__ == "__main__":
