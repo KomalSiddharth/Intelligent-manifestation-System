@@ -169,12 +169,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     aggregators = LLMContextAggregatorPair(context)
 
     # Monitoring & Triggers
-    kb_processor = KnowledgeBaseProcessor(context, openai_client, user_id, base_prompt, supabase)
-    greeting_trigger = GreetingTrigger(context)
     trace_input = PipelineTracer("Input")
-    trace_post_stt = PipelineTracer("Post-STT")
-    trace_post_kb = PipelineTracer("Post-KB")
-    trace_post_agg = PipelineTracer("Post-Agg")
     trace_post_llm = PipelineTracer("Post-LLM")
     trace_post_tts = PipelineTracer("Post-TTS")
 
