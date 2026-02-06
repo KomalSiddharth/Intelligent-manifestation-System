@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "6.0-STABLE"
+VERSION = "7.0-RESILIENT-RESTORE"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -68,7 +68,7 @@ class FrameLogger(FrameProcessor):
     async def process_frame(self, frame: Frame, direction):
         self.count += 1
         if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame, StartFrame)):
-             logger.info(f"� [{self.label}] #{self.count} {type(frame).__name__}")
+             logger.info(f"🚩 [{self.label}] #{self.count} {type(frame).__name__}")
         elif isinstance(frame, AudioRawFrame) and self.count % 100 == 1:
              logger.info(f"🔊 [{self.label}] #{self.count} Audio Packet Flowing")
              
@@ -78,7 +78,7 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 60)
-    logger.info(f"🌟 {VERSION} 🌟")
+    logger.info(f"� {VERSION} �")
     logger.info("=" * 60)
 
     openai_key = os.getenv("OPENAI_API_KEY")
@@ -95,13 +95,13 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # Services (Using OpenAI for absolute stability)
+    # Services
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     tts = OpenAITTSService(api_key=openai_key, voice="alloy")
 
-    # Context
-    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief and encouraging (max 1-2 sentences). You are now connected and ready to help."
+    # Context & Aggregators
+    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
@@ -113,7 +113,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         transport.input(),
         stt,
         aggregators.user(),
-        gate, # Gate is after user agg to ensure everything waits for connection
+        gate,
         llm,
         FrameLogger("POST-LLM"),
         tts,
@@ -138,15 +138,18 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}. Greeting in 2s...")
         await asyncio.sleep(2.0)
         
-        greeting = "Hello! I am Mitesh. I am finally connected and ready to speak. How are you?"
+        greeting = "Hello! I am Mitesh. I am finally connected and ready to talk. Can you hear me?"
+        logger.info(f"📤 INJECTING GREETING DIRECTLY: '{greeting}'")
+        
         try:
-            # Inject directly as TextFrame to hit TTS immediately
-            await task.queue_frame(TextFrame(greeting))
-            logger.info("✅ GREETING QUEUED.")
+            # OPTION C: Inject directly into assistant aggregator to bypass all blockers
+            context.add_message({"role": "assistant", "content": greeting})
+            await aggregators.assistant().process_frame(TextFrame(greeting), None)
+            logger.info("✅ GREETING TRIGGERED SUCCESSFULLY.")
         except Exception as e:
-            logger.error(f"❌ QUEUE ERROR: {e}")
+            logger.error(f"❌ TRIGGER FAILED: {e}")
 
-    logger.info("🏃 RUNNING STABLE PIPELINE...")
+    logger.info("🏃 STARTING RESILIENT PIPELINE...")
     await runner.run(task)
 
 if __name__ == "__main__":
