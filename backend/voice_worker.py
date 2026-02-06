@@ -210,7 +210,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         trace_input,
         stt,
         trace_post_stt,
-        aggregators.user(),
+        aggregators.user(),  # Greeting will be injected AFTER this
         trace_post_agg,
         llm,
         trace_post_llm,
@@ -235,12 +235,18 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
         logger.info(f"👋 User joined ({participant_id}). Waiting for audio stabilization...")
-        # Give WebRTC a moment to establish tracks
         await asyncio.sleep(2.0) 
-        logger.info("📤 Sending isolation test greeting...")
+        logger.info("📤 Triggering AI greeting (Aggregator Bypass)...")
         try:
-            # Simple test greeting
-            await task.queue_frame(TextFrame("This is Mitesh. I am in isolation mode and I can hear you. How is your day going?"))
+            # Expert Fix: Instead of TextFrame at start, push LLMContextFrame to the LLM
+            # This forces the LLM to 'awaken' and generate voice output immediately.
+            context.add_message({
+                "role": "assistant", 
+                "content": "Hello! I am Mitesh. I am in isolation mode and I can hear you. How can I help you with your journey today?"
+            })
+            # This frame goes to the LLM and triggers the TTS path instantly
+            await task.queue_frame(LLMContextFrame(context))
+            logger.info("✅ Greeting Context Queued.")
         except Exception as e:
             logger.error(f"❌ Greeting failed: {e}")
 
