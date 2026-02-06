@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "4.2-OPENAI-DIAGNOSTIC"
+VERSION = "4.3-PIPELINE-FLOW"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -17,10 +17,9 @@ from pipecat.frames.frames import (
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
-from pipecat.services.openai.tts import OpenAITTSService
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.transports.livekit.transport import LiveKitTransport, LiveKitParams
 from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 
 # Load environment
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -53,14 +52,8 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 60)
-    logger.info(f"🧪 {VERSION} 🧪")
+    logger.info(f"📡 {VERSION} 📡")
     logger.info("=" * 60)
-
-    openai_key = os.getenv("OPENAI_API_KEY")
-    
-    if not openai_key:
-        logger.error("❌ Missing OpenAI API Key")
-        return
 
     # Transport
     transport = LiveKitTransport(
@@ -71,34 +64,30 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # SWITCHING TO OPENAI TTS FOR STABILITY TEST
-    logger.info("🔊 Initializing OpenAI TTS Fallback...")
-    tts = OpenAITTSService(api_key=openai_key, voice="alloy")
-
-    # Pipeline: NUCLEAR ISOLATION (TTS -> OUTPUT)
+    # NO AI SERVICES - JUST PURE PIPE
     pipeline = Pipeline([
         transport.input(),
-        FrameLogger("1-Pre-TTS"),
-        tts,
-        FrameLogger("2-Post-TTS"),
+        FrameLogger("1-ENTRY"),
+        FrameLogger("2-EXIT"),
         transport.output(),
     ])
 
-    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=0))
+    # Try setting idle_timeout to None to see if 0 is an issue
+    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=None))
     runner = PipelineRunner()
     
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
         p_id = getattr(participant, "identity", str(participant))
-        logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}. Testing audio in 3s...")
-        await asyncio.sleep(3.0)
+        logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}. Testing pipeline flow...")
+        await asyncio.sleep(2.0)
         
-        greeting = "Testing OpenAI voice. If you hear this, then the LiveKit transport is working perfectly and we just need to fix Cartesia settings."
-        logger.info(f"📤 QUEUEING GREETING: '{greeting}'")
+        test_msg = "PIPELINE FLOW TEST"
+        logger.info(f"📤 QUEUEING: '{test_msg}'")
         
         try:
-            await task.queue_frame(TextFrame(greeting))
-            logger.info("✅ GREETING QUEUED.")
+            await task.queue_frame(TextFrame(test_msg))
+            logger.info("✅ QUEUED.")
         except Exception as e:
             logger.error(f"❌ QUEUE FAILED: {e}")
 
@@ -106,7 +95,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     async def on_connected(transport):
         logger.info(f"🎉 [{VERSION}] Connected to room")
 
-    logger.info("🏃 RUNNING DIAGNOSTIC PIPELINE...")
+    logger.info("🏃 RUNNING FLOW TEST...")
     await runner.run(task)
 
 if __name__ == "__main__":
