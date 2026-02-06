@@ -41,29 +41,6 @@ logger.add(sys.stderr, level="INFO")
 
 # --- CUSTOM PROCESSORS ---
 
-class GreetingTrigger(FrameProcessor):
-    """Triggers an initial greeting from the LLM on startup"""
-    def __init__(self, context):
-        super().__init__()
-        self.context = context
-        self.triggered = False
-
-    async def process_frame(self, frame: Frame, direction):
-        await super().process_frame(frame, direction)
-        
-        if isinstance(frame, StartFrame) and not self.triggered:
-            self.triggered = True
-            logger.info("⚡ VERSION: 2.0-ULTRA-RESILIENT ⚡")
-            logger.info("✨ Pipeline Started: Triggering AI greeting via LLM Context...")
-            
-            # The "Pipecat Way": Inject a system message and trigger the LLM
-            # By pushing this AFTER the user aggregator, we bypass any VAD-based stalls.
-            self.context.add_message({
-                "role": "system", 
-                "content": "SAY IMMEDIATELY: 'Hello! I am Mitesh Khatri. I am connected and ready to help you. How are you feeling today?'"
-            })
-            await self.push_frame(LLMContextFrame(self.context))
-
 class PipelineTracer(FrameProcessor):
     """Logs frame flow for debugging"""
     def __init__(self, tracer_name):
@@ -71,12 +48,11 @@ class PipelineTracer(FrameProcessor):
         self.tracer_name = tracer_name
 
     async def process_frame(self, frame: Frame, direction):
+        # VERSION: v2.1-AGG-BYPASS
         if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame)):
             logger.info(f"⏳ [{self.tracer_name}] -> {type(frame).__name__}")
         elif isinstance(frame, StartFrame):
              logger.info(f"🚩 [{self.tracer_name}] -> StartFrame")
-        elif isinstance(frame, (EndFrame, Frame)): # Log others
-             logger.info(f"📦 [{self.tracer_name}] -> {type(frame).__name__}")
         await super().process_frame(frame, direction)
 
 # --- KNOWLEDGE BASE PROCESSOR ---
@@ -202,25 +178,20 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     trace_post_llm = PipelineTracer("Post-LLM")
     trace_post_tts = PipelineTracer("Post-TTS")
 
-    # Pipeline: PURE ISOLATION MODE
-    # Purpose: Prove that audio flows between LiveKit, STT, LLM, and TTS.
+    # Pipeline: TRULY BAREBONES ISOLATION
+    # No aggregators, no KB, no complex triggers.
     pipeline = Pipeline([
         transport.input(),
         trace_input,
         stt,
-        trace_post_stt,
-        aggregators.user(),
-        trace_post_agg,
-        greeting_trigger, # Injects greeting context AFTER user aggregator
         llm,
         trace_post_llm,
         tts,
         trace_post_tts,
         transport.output(),
-        aggregators.assistant(),
     ])
 
-    # Disable idle timeout to prevent watchdog from killing during silence
+    # Disable idle timeout
     task = PipelineTask(
         pipeline, 
         params=PipelineParams(
@@ -234,11 +205,15 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        logger.info(f"👋 User joined ({participant_id}). Greeting trigger will fire via Pipeline Start.")
-
-    @transport.event_handler("on_connected")
-    async def on_connected(transport):
-        logger.info("🎉 Bot connected to LiveKit. Core loop ready.")
+        logger.info(f"👋 [v2.1] User joined ({participant_id}). Queuing DIRECT greeting...")
+        await asyncio.sleep(2.0)
+        try:
+            # We bypass the LLM and send a TextFrame directly to the TTS
+            # This proves the TTS -> Transport -> User path is working.
+            await task.queue_frame(TextFrame("Hello, I am Mitesh. This is a direct audio test. Can you hear me?"))
+            logger.info("✅ Direct Greeting Queued.")
+        except Exception as e:
+            logger.error(f"❌ Direct Greeting Failed: {e}")
 
     await runner.run(task)
 
