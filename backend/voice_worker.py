@@ -203,19 +203,24 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     trace_post_llm = PipelineTracer("Post-LLM")
     trace_post_tts = PipelineTracer("Post-TTS")
 
-    # Pipeline: BAREBONES ISOLATION MODE
-    # Purpose: Remove all complexity to verify if core audio flows.
+    # Pipeline: PURE ISOLATION MODE
+    # Purpose: Prove that audio flows between LiveKit, STT, LLM, and TTS.
     pipeline = Pipeline([
         transport.input(),
+        trace_input,
         stt,
+        trace_post_stt,
         aggregators.user(),
+        trace_post_agg,
         llm,
+        trace_post_llm,
         tts,
+        trace_post_tts,
         transport.output(),
         aggregators.assistant(),
     ])
 
-    # No idle timeout
+    # Disable idle timeout to prevent watchdog from killing during silence
     task = PipelineTask(
         pipeline, 
         params=PipelineParams(
@@ -229,16 +234,19 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        logger.info(f"👋 User joined ({participant_id}). Sending barebones greeting...")
+        logger.info(f"👋 User joined ({participant_id}). Waiting for audio stabilization...")
+        # Give WebRTC a moment to establish tracks
+        await asyncio.sleep(2.0) 
+        logger.info("📤 Sending isolation test greeting...")
         try:
-            # Absolute simplest greeting to verify TTS
-            await task.queue_frame(TextFrame("Hello, this is a test and I can hear you. How can I help?"))
+            # Simple test greeting
+            await task.queue_frame(TextFrame("This is Mitesh. I am in isolation mode and I can hear you. How is your day going?"))
         except Exception as e:
-            logger.error(f"❌ Greeting error: {e}")
+            logger.error(f"❌ Greeting failed: {e}")
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        logger.info("✅ Bot connected locally.")
+        logger.info("🎉 Bot connected to LiveKit. Core loop ready.")
 
     await runner.run(task)
 
