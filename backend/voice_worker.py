@@ -4,13 +4,15 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
+VERSION = "4.0-FINAL-ISOLATION"
+
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 
 from pipecat.frames.frames import (
-    EndFrame, StartFrame, TextFrame, TranscriptionFrame, Frame, LLMContextFrame
+    EndFrame, StartFrame, TextFrame, TranscriptionFrame, Frame, LLMContextFrame, AudioRawFrame
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.parallel_pipeline import ParallelPipeline
@@ -25,15 +27,6 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.transports.livekit.transport import LiveKitTransport, LiveKitParams
 from pipecat.processors.frame_processor import FrameProcessor
 
-# Try to import KB dependencies
-try:
-    from supabase import create_client
-    from openai import AsyncOpenAI
-    KB_AVAILABLE = True
-except ImportError:
-    KB_AVAILABLE = False
-    logger.warning("⚠️ Supabase/OpenAI not available - KB disabled")
-
 # Load environment
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 logger.remove(0)
@@ -41,103 +34,56 @@ logger.add(sys.stderr, level="INFO")
 
 # --- CUSTOM PROCESSORS ---
 
-# Frame tracker for debugging
+class GreetingTrigger(FrameProcessor):
+    """Triggers an initial greeting from the LLM on pipeline startup"""
+    def __init__(self, context):
+        super().__init__()
+        self.context = context
+        self.triggered = False
+
+    async def process_frame(self, frame: Frame, direction):
+        await super().process_frame(frame, direction)
+        
+        if isinstance(frame, StartFrame) and not self.triggered:
+            self.triggered = True
+            logger.info(f"✨ [{VERSION}] Pipeline Started: Injecting AI greeting...")
+            
+            self.context.add_message({
+                "role": "system", 
+                "content": "SAY IMMEDIATELY: 'Hello! I am Mitesh Khatri. I am connected and ready to help you. How are you feeling today?'"
+            })
+            # Pushing LLMContextFrame triggers the LLM immediately
+            await self.push_frame(LLMContextFrame(self.context))
+
 class FrameLogger(FrameProcessor):
+    """Logs frame flow for debugging at high-resilience"""
     def __init__(self, label: str):
         super().__init__()
         self.label = label
         self.count = 0
+        self._audio_logged = False
     
     async def process_frame(self, frame: Frame, direction):
         self.count += 1
         frame_name = type(frame).__name__
         
-        # Log important frames
-        if isinstance(frame, (TextFrame, LLMContextFrame, TranscriptionFrame)):
+        if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame)):
             logger.info(f"📝 [{self.label}] #{self.count} {frame_name}")
-            if isinstance(frame, TextFrame):
-                logger.info(f"   ↳ Text: '{frame.text[:50]}...'")
-        elif "AudioRawFrame" in frame_name:
-            if self.count % 100 == 1: # Only log every 100th audio frame to avoid spam
-                logger.info(f"🔊 [{self.label}] #{self.count} Audio Packet Flowing")
-        elif isinstance(frame, (StartFrame, EndFrame)):
-             logger.info(f"🚩 [{self.label}] #{self.count} {frame_name}")
-        
+        elif isinstance(frame, StartFrame):
+             logger.info(f"🚩 [{self.label}] #{self.count} StartFrame")
+        elif isinstance(frame, AudioRawFrame) and not self._audio_logged:
+             logger.info(f"🔊 [{self.label}] #{self.count} Audio Flow Detected")
+             self._audio_logged = True
+             
         await super().process_frame(frame, direction)
-
-# --- KNOWLEDGE BASE PROCESSOR ---
-
-class KnowledgeBaseProcessor(FrameProcessor):
-    def __init__(self, context, openai_client, user_id, base_prompt, supabase_client):
-        super().__init__()
-        self.context = context
-        self.openai = openai_client
-        self.user_id = user_id
-        self.base_prompt = base_prompt
-        self.supabase = supabase_client
-        self.last_transcript = ""
-
-    async def _search_kb(self, text):
-        """Helper method for KB search - resilient to casting errors"""
-        try:
-            # ONLY pass profile_id if it's a valid UUID string (36 chars)
-            # This avoids the 'bigint to uuid' casting error in Supabase
-            profile_id = self.user_id if len(self.user_id) == 36 else None
-            
-            embedding_response = await self.openai.embeddings.create(
-                model="text-embedding-3-small",
-                input=text
-            )
-            
-            rpc_params = {
-                'query_embedding': embedding_response.data[0].embedding,
-                'match_threshold': 0.35,
-                'match_count': 3
-            }
-            if profile_id:
-                rpc_params['p_profile_id'] = profile_id
-
-            result = await asyncio.to_thread(
-                lambda: self.supabase.rpc('match_knowledge', rpc_params).execute()
-            )
-            return result
-        except Exception as e:
-            logger.warning(f"⚠️ KB search skipped due to error (likely schema mismatch): {e}")
-            return None
-
-    async def process_frame(self, frame: Frame, direction):
-        """Modified to be non-blocking for the pipeline"""
-        await super().process_frame(frame, direction)
-        
-        if isinstance(frame, TranscriptionFrame):
-            text = frame.text.strip()
-            if text and text != self.last_transcript and len(text) > 3:
-                self.last_transcript = text
-                logger.info(f"🎤 USER: '{text}'")
-                
-                # Expert Move: Run the KB search in a background task
-                # This prevents the pipeline from stalling while waiting for Supabase
-                if self.supabase and self.openai:
-                    asyncio.create_task(self._update_context_from_kb(text))
-
-    async def _update_context_from_kb(self, text):
-        """Background task to update context without blocking pipeline"""
-        try:
-            res = await asyncio.wait_for(self._search_kb(text), timeout=5.0)
-            if res and res.data:
-                kb_text = "\n".join([f"- {it.get('content','')}" for it in res.data])
-                for msg in self.context.messages:
-                    if msg["role"] == "system":
-                        msg["content"] = f"{self.base_prompt}\n\nContext:\n{kb_text}"
-                        break
-                logger.info("✅ KB Context updated (Async)")
-        except Exception as e:
-            logger.error(f"⚠️ KB background update failed: {e}")
 
 # --- MAIN ---
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
-    logger.info(f"🚀 Initializing Voice Worker: {room_url}")
+    logger.info("=" * 60)
+    logger.info(f"🚀 {VERSION} 🚀")
+    logger.info(f"📍 Room: {room_url}")
+    logger.info("=" * 60)
 
     # API Keys & Trace
     cartesia_key = os.getenv("CARTESIA_API_KEY")
@@ -149,19 +95,8 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info(f"🧪 [DEBUG] Cartesia Voice ID: {voice_id[:10]}..." if voice_id else "🧪 [DEBUG] Voice ID: ❌")
 
     if not all([cartesia_key, openai_key, voice_id]):
-        logger.error("❌ Missing required API keys or Voice ID. Stalling.")
+        logger.error("❌ ABORTING: Missing API keys")
         return
-
-    # KB Setup
-    supabase = None
-    openai_client = None
-    if KB_AVAILABLE:
-        try:
-            supabase = create_client(os.getenv("VITE_SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
-            openai_client = AsyncOpenAI(api_key=openai_key)
-            logger.info("✅ KB Service connected")
-        except Exception as e:
-            logger.warning(f"⚠️ KB Init failed: {e}")
 
     # Transport: LiveKit
     transport = LiveKitTransport(
@@ -174,34 +109,40 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     )
 
     # Services
-    logger.info("🎤 Initializing services...")
+    logger.info("🎤 Initializing AI Services...")
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o")
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
-    logger.info("✅ Services (STT/LLM/TTS) initialized")
+    logger.info("✅ Services (STT/LLM/TTS) Ready")
 
     # Context & Aggregators
-    base_prompt = "You are Mitesh Khatri, the world's no. 1 coach. Keep answers short and impactful."
+    base_prompt = "You are Mitesh Khatri, a world-class coach. Keep answers short (1-2 sentences)."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # Pipeline: v3.0-FRAME-PATHFINDER
+    # Monitors
+    greeting_trigger = GreetingTrigger(context)
+    trace_input = FrameLogger("1-Input")
+    trace_post_agg = FrameLogger("2-PostAgg")
+    trace_post_llm = FrameLogger("3-PostLLM")
+    trace_post_tts = FrameLogger("4-PostTTS")
+
+    # Pipeline: THE FINAL ISOLATION
     pipeline = Pipeline([
         transport.input(),
-        FrameLogger("1-Input"),
+        trace_input,
         stt,
-        FrameLogger("2-PostSTT"),
         aggregators.user(),
-        FrameLogger("3-PostUserAgg"),
+        trace_post_agg,
+        greeting_trigger, # Trigger fires AFTER user aggregator to bypass VAD stalls
         llm,
-        FrameLogger("4-PostLLM"),
+        trace_post_llm,
         tts,
-        FrameLogger("5-PostTTS"),
+        trace_post_tts,
         transport.output(),
         aggregators.assistant(),
     ])
 
-    # Disable idle timeout
     task = PipelineTask(
         pipeline, 
         params=PipelineParams(
@@ -211,34 +152,17 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     )
     runner = PipelineRunner()
     
-    # --- LiveKit Event Handlers ---
-
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
         p_id = getattr(participant, "identity", str(participant))
-        logger.info(f"👋 [v3.0] USER JOINED: {p_id}")
-        
-        # Wait for user to fully connect
-        await asyncio.sleep(4.0)
-        
-        greeting_text = "Hello! I am Mitesh. This is a direct audio test. Can you hear me clearly?"
-        logger.info(f"📤 QUEUEING GREETING: '{greeting_text}'")
-        
-        # Send TextFrame DIRECTLY to task queue
-        # This will pass through ALL tracers and SERVICES
-        try:
-            await task.queue_frame(TextFrame(greeting_text))
-            logger.info("✅ GREETING FRAME QUEUED SUCCESSFULLY")
-            logger.info("🔍 Watch the tracers (1-5) below to see where it goes!")
-        except Exception as e:
-            logger.error(f"❌ FAILED TO QUEUE GREETING: {e}")
+        logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}")
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        logger.info("🎉 BOT CONNECTED TO LIVEKIT")
+        logger.info(f"🎉 [{VERSION}] Bot connected to room")
 
+    logger.info("🏃 STARTING PIPELINE RUNNER...")
     await runner.run(task)
 
 if __name__ == "__main__":
     asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "anonymous"))
-
