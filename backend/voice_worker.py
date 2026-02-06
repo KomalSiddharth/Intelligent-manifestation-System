@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "4.3-PIPELINE-FLOW"
+VERSION = "5.0-RESILIENT-GATE"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -17,9 +17,10 @@ from pipecat.frames.frames import (
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
+from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.transports.livekit.transport import LiveKitTransport, LiveKitParams
 from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 
 # Load environment
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -27,6 +28,32 @@ logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
 # --- CUSTOM PROCESSORS ---
+
+class ConnectionGate(FrameProcessor):
+    """Prevents pipeline frames from hitting the transport until connected"""
+    def __init__(self):
+        super().__init__()
+        self._connected = False
+
+    def set_connected(self):
+        logger.info("🔓 [GATE] Signal Received: Transport Connected.")
+        self._connected = True
+
+    async def process_frame(self, frame: Frame, direction):
+        if isinstance(frame, StartFrame):
+            logger.info("⏳ [GATE] StartFrame detected. Waiting for connection handshake...")
+            # Wait up to 10 seconds for connection
+            for _ in range(20):
+                if self._connected:
+                    break
+                await asyncio.sleep(0.5)
+            
+            if not self._connected:
+                logger.warning("⚠️ [GATE] Connection timeout! Releasing frame anyway to avoid deadlock.")
+            else:
+                logger.info("🚀 [GATE] Releasing StartFrame to Pipeline.")
+        
+        await super().process_frame(frame, direction)
 
 class FrameLogger(FrameProcessor):
     def __init__(self, label: str):
@@ -52,8 +79,13 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 60)
-    logger.info(f"📡 {VERSION} 📡")
+    logger.info(f"🛡️ {VERSION} 🛡️")
     logger.info("=" * 60)
+
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not openai_key:
+        logger.error("❌ Missing OpenAI API Key")
+        return
 
     # Transport
     transport = LiveKitTransport(
@@ -64,38 +96,48 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # NO AI SERVICES - JUST PURE PIPE
+    # Diagnostic TTS
+    tts = OpenAITTSService(api_key=openai_key, voice="alloy")
+
+    # Gate & Tracers
+    gate = ConnectionGate()
+    trace_entry = FrameLogger("1-ENTRY")
+    trace_exit = FrameLogger("2-EXIT")
+
+    # Pipeline
     pipeline = Pipeline([
         transport.input(),
-        FrameLogger("1-ENTRY"),
-        FrameLogger("2-EXIT"),
+        gate,
+        trace_entry,
+        tts,
+        trace_exit,
         transport.output(),
     ])
 
-    # Try setting idle_timeout to None to see if 0 is an issue
-    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=None))
+    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=0))
     runner = PipelineRunner()
     
-    @transport.event_handler("on_first_participant_joined")
-    async def on_first_joined(transport, participant):
-        p_id = getattr(participant, "identity", str(participant))
-        logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}. Testing pipeline flow...")
-        await asyncio.sleep(2.0)
-        
-        test_msg = "PIPELINE FLOW TEST"
-        logger.info(f"📤 QUEUEING: '{test_msg}'")
-        
-        try:
-            await task.queue_frame(TextFrame(test_msg))
-            logger.info("✅ QUEUED.")
-        except Exception as e:
-            logger.error(f"❌ QUEUE FAILED: {e}")
+    # --- EVENT HANDLERS ---
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        logger.info(f"🎉 [{VERSION}] Connected to room")
+        logger.info(f"🎉 [{VERSION}] Transport Connected.")
+        gate.set_connected()
 
-    logger.info("🏃 RUNNING FLOW TEST...")
+    @transport.event_handler("on_first_participant_joined")
+    async def on_first_joined(transport, participant):
+        p_id = getattr(participant, "identity", str(participant))
+        logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}. Greeting in 3s...")
+        await asyncio.sleep(3.0)
+        
+        greeting = "Testing Resilient Gate. If you hear this, our race condition is fixed."
+        try:
+            await task.queue_frame(TextFrame(greeting))
+            logger.info("✅ GREETING QUEUED.")
+        except Exception as e:
+            logger.error(f"❌ QUEUE ERROR: {e}")
+
+    logger.info("🏃 STARTING RUNNER...")
     await runner.run(task)
 
 if __name__ == "__main__":
