@@ -49,19 +49,18 @@ class GreetingTrigger(FrameProcessor):
         self.triggered = False
 
     async def process_frame(self, frame: Frame, direction):
-        # Log EVERYTHING for debugging
-        if not self.triggered:
-            logger.info(f"🧐 GreetingTrigger saw: {type(frame).__name__}")
-            
         await super().process_frame(frame, direction)
         
         if isinstance(frame, StartFrame) and not self.triggered:
             self.triggered = True
-            logger.info("✨ Pipeline MATCH: Triggering AI greeting via LLM Context...")
+            logger.info("⚡ VERSION: 2.0-ULTRA-RESILIENT ⚡")
+            logger.info("✨ Pipeline Started: Triggering AI greeting via LLM Context...")
             
+            # The "Pipecat Way": Inject a system message and trigger the LLM
+            # By pushing this AFTER the user aggregator, we bypass any VAD-based stalls.
             self.context.add_message({
                 "role": "system", 
-                "content": "GREET THE USER IMMEDIATELY: 'Hello! I am Mitesh Khatri. I'm connected and ready to help you. How can I help you today?'"
+                "content": "SAY IMMEDIATELY: 'Hello! I am Mitesh Khatri. I am connected and ready to help you. How are you feeling today?'"
             })
             await self.push_frame(LLMContextFrame(self.context))
 
@@ -210,8 +209,9 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         trace_input,
         stt,
         trace_post_stt,
-        aggregators.user(),  # Greeting will be injected AFTER this
+        aggregators.user(),
         trace_post_agg,
+        greeting_trigger, # Injects greeting context AFTER user aggregator
         llm,
         trace_post_llm,
         tts,
@@ -234,21 +234,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     @transport.event_handler("on_participant_connected")
     async def on_connect(transport, participant_id):
-        logger.info(f"👋 User joined ({participant_id}). Waiting for audio stabilization...")
-        await asyncio.sleep(2.0) 
-        logger.info("📤 Triggering AI greeting (Aggregator Bypass)...")
-        try:
-            # Expert Fix: Instead of TextFrame at start, push LLMContextFrame to the LLM
-            # This forces the LLM to 'awaken' and generate voice output immediately.
-            context.add_message({
-                "role": "assistant", 
-                "content": "Hello! I am Mitesh. I am in isolation mode and I can hear you. How can I help you with your journey today?"
-            })
-            # This frame goes to the LLM and triggers the TTS path instantly
-            await task.queue_frame(LLMContextFrame(context))
-            logger.info("✅ Greeting Context Queued.")
-        except Exception as e:
-            logger.error(f"❌ Greeting failed: {e}")
+        logger.info(f"👋 User joined ({participant_id}). Greeting trigger will fire via Pipeline Start.")
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
