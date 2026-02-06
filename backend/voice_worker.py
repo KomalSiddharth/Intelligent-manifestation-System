@@ -46,13 +46,21 @@ class PipelineTracer(FrameProcessor):
     def __init__(self, tracer_name):
         super().__init__()
         self.tracer_name = tracer_name
+        self._audio_logged = False
 
     async def process_frame(self, frame: Frame, direction):
-        # VERSION: v2.1-AGG-BYPASS
+        # 🧪 v2.2-ULTRA-DIAGNOSTIC
+        frame_name = type(frame).__name__
+        
         if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame)):
-            logger.info(f"⏳ [{self.tracer_name}] -> {type(frame).__name__}")
+            logger.info(f"⏳ [{self.tracer_name}] -> {frame_name}")
         elif isinstance(frame, StartFrame):
              logger.info(f"🚩 [{self.tracer_name}] -> StartFrame")
+        elif "AudioRawFrame" in frame_name and not self._audio_logged:
+             # Only log the first audio frame to avoid spam
+             logger.info(f"🔊 [{self.tracer_name}] -> {frame_name} (Audio detected!)")
+             self._audio_logged = True
+             
         await super().process_frame(frame, direction)
 
 # --- KNOWLEDGE BASE PROCESSOR ---
@@ -129,13 +137,17 @@ class KnowledgeBaseProcessor(FrameProcessor):
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info(f"🚀 Initializing Voice Worker: {room_url}")
 
-    # API Keys
+    # API Keys & Trace
     cartesia_key = os.getenv("CARTESIA_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
     voice_id = os.getenv("CARTESIA_VOICE_ID")
     
+    logger.info(f"🧪 [DEBUG] Cartesia Key present: {'✅' if cartesia_key else '❌'}")
+    logger.info(f"🧪 [DEBUG] OpenAI Key present: {'✅' if openai_key else '❌'}")
+    logger.info(f"🧪 [DEBUG] Cartesia Voice ID: {voice_id[:10]}..." if voice_id else "🧪 [DEBUG] Voice ID: ❌")
+
     if not all([cartesia_key, openai_key, voice_id]):
-        logger.error("❌ Missing required API keys or Voice ID")
+        logger.error("❌ Missing required API keys or Voice ID. Stalling.")
         return
 
     # KB Setup
@@ -146,7 +158,8 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
             supabase = create_client(os.getenv("VITE_SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
             openai_client = AsyncOpenAI(api_key=openai_key)
             logger.info("✅ KB Service connected")
-        except: pass
+        except Exception as e:
+            logger.warning(f"⚠️ KB Init failed: {e}")
 
     # Transport: LiveKit
     transport = LiveKitTransport(
@@ -159,9 +172,11 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     )
 
     # Services
+    logger.info("🎤 Initializing services...")
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o")
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
+    logger.info("✅ Services (STT/LLM/TTS) initialized")
 
     # Context & Aggregators
     base_prompt = "You are Mitesh Khatri, the world's no. 1 coach. Keep answers short and impactful."
@@ -170,20 +185,25 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     # Monitoring & Triggers
     trace_input = PipelineTracer("Input")
+    trace_post_stt = PipelineTracer("Post-STT")
+    trace_post_agg = PipelineTracer("Post-Agg")
     trace_post_llm = PipelineTracer("Post-LLM")
     trace_post_tts = PipelineTracer("Post-TTS")
 
-    # Pipeline: TRULY BAREBONES ISOLATION
-    # No aggregators, no KB, no complex triggers.
+    # Pipeline: v2.2-ULTRA-DIAGNOSTIC
     pipeline = Pipeline([
         transport.input(),
         trace_input,
         stt,
+        trace_post_stt,
+        aggregators.user(),
+        trace_post_agg,
         llm,
         trace_post_llm,
         tts,
         trace_post_tts,
         transport.output(),
+        aggregators.assistant(),
     ])
 
     # Disable idle timeout
@@ -198,17 +218,21 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     
     # --- LiveKit Event Handlers ---
 
-    @transport.event_handler("on_participant_connected")
-    async def on_connect(transport, participant_id):
-        logger.info(f"👋 [v2.1] User joined ({participant_id}). Queuing DIRECT greeting...")
-        await asyncio.sleep(2.0)
+    @transport.event_handler("on_first_participant_joined")
+    async def on_first_joined(transport, participant):
+        logger.info(f"👋 [v2.2] User joined: {participant.identity}. Stabilizing...")
+        await asyncio.sleep(3.0) 
+        logger.info("📤 Triggering Context Greeting...")
         try:
-            # We bypass the LLM and send a TextFrame directly to the TTS
-            # This proves the TTS -> Transport -> User path is working.
-            await task.queue_frame(TextFrame("Hello, I am Mitesh. This is a direct audio test. Can you hear me?"))
-            logger.info("✅ Direct Greeting Queued.")
+            # Force context update and LLM trigger
+            context.add_message({
+                "role": "system", 
+                "content": "SAY IMMEDIATELY: 'Hello! I am Mitesh. I am finally connected. How are you today?'"
+            })
+            await task.queue_frame(LLMContextFrame(context))
+            logger.info("✅ Context Greeting Queued.")
         except Exception as e:
-            logger.error(f"❌ Direct Greeting Failed: {e}")
+            logger.error(f"❌ Greeting error: {e}")
 
     await runner.run(task)
 
