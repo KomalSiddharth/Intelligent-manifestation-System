@@ -220,7 +220,9 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
 
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
-        logger.info(f"👋 [v2.2] User joined: {participant.identity}. Stabilizing...")
+        # The logs showed participant is a string (id), not an object with .identity
+        participant_id = getattr(participant, "identity", str(participant))
+        logger.info(f"👋 [v2.2] User joined: {participant_id}. Stabilizing...")
         await asyncio.sleep(3.0) 
         logger.info("📤 Triggering Context Greeting...")
         try:
