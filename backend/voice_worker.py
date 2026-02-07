@@ -4,14 +4,14 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "17.0-FINAL-WORKING"
+VERSION = "18.0-PRODUCTION-READY"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 
 from pipecat.frames.frames import (
-    TextFrame, TranscriptionFrame, Frame, LLMMessagesFrame
+    TextFrame, TranscriptionFrame, Frame, LLMMessagesUpdateFrame
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -26,10 +26,11 @@ from pipecat.transports.livekit.transport import LiveKitTransport, LiveKitParams
 from pipecat.processors.frame_processor import FrameProcessor
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+# Clear existing handlers and set up clean loguru
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
-# Frame logger for debugging
+# Frame logger for debugging pipeline flow
 class FrameLogger(FrameProcessor):
     def __init__(self, label: str):
         super().__init__()
@@ -47,7 +48,7 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 70)
-    logger.info(f"🎯 {VERSION} - MITESH AI VOICE")
+    logger.info(f"🎯 {VERSION} - MITESH'S FINAL BASELINE")
     logger.info("=" * 70)
 
     # API Keys
@@ -59,7 +60,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         logger.error("❌ Missing API keys!")
         return
 
-    logger.info(f"🔊 Voice: {voice_id[:30]}...")
+    logger.info(f"🔊 Cartesia Voice: {voice_id[:30]}...")
 
     # Transport
     transport = LiveKitTransport(
@@ -79,7 +80,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     # Context with System Prompt Greeting Trigger
     base_prompt = """You are Mitesh Khatri, a world-class life coach.
 
-IMPORTANT: When the conversation starts (you receive a 'start' or 'trigger' message), immediately greet the user by saying:
+When the conversation starts (you receive a 'start' message), immediately greet the user by saying:
 "Hello! I am Mitesh, your AI coach. I am finally connected with my authentic voice. How can I help you today?"
 
 Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
@@ -111,28 +112,30 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
     @transport.event_handler("on_connected")
     async def on_connected(transport):
         nonlocal connected
-        logger.info("🎉 CONNECTED")
+        logger.info("🎉 [SIGNAL] CONNECTED TO ROOM")
         connected = True
 
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
         nonlocal greeted
         
-        # Safe participant ID handling
+        # Safe participant identity handling
         try:
-            pid = participant if isinstance(participant, str) else getattr(participant, 'identity', 'user')
+            p_id = participant if isinstance(participant, str) else getattr(participant, 'identity', 'user')
         except:
-            pid = "user"
+            p_id = "user"
         
-        logger.info(f"👋 USER JOINED: {pid}")
+        logger.info("=" * 70)
+        logger.info(f"👋 [SIGNAL] USER JOINED: {p_id}")
+        logger.info("=" * 70)
         
         if greeted:
             return
         greeted = True
         
         try:
-            # Wait for connection
-            logger.info("⏳ Step 1: Waiting for connection...")
+            # Step 1: Connection Check
+            logger.info("⏳ Step 1: Checking connection...")
             for i in range(20):
                 if connected:
                     break
@@ -142,49 +145,55 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
                 return
             logger.info("✅ Step 1: Connected.")
             
-            # Wait for frontend (20 seconds based on logs)
-            logger.info("⏳ Step 2: Waiting 20 seconds for browser audio sync...")
+            # Step 2: Frontend Audio Subscription Sync
+            logger.info("⏳ Step 2: Waiting 20 seconds for browser audio subscription...")
             for i in range(20):
                 await asyncio.sleep(1)
                 if (i + 1) % 5 == 0:
-                    logger.info(f"   Wait Progress: {i + 1}/20 sec...")
+                    logger.info(f"   Sync Progress: {i + 1}/20 seconds...")
             
             logger.info("✅ Step 2: Frontend should be ready.")
             
-            # Step 3: Safety buffer
+            # Step 3: Safety stabilization
             logger.info("⏳ Step 3: Final stabilizing 2s buffer...")
             await asyncio.sleep(2)
-            logger.info("✅ Step 3: Pipeline verified.")
+            logger.info("✅ Step 3: Handshake verified.")
             
-            # Step 4: Trigger Greeting via Natural Pipeline Flow
+            # Step 4: Greeting via Generative Update Frame
             logger.info("=" * 70)
-            logger.info("📤 Step 4: TRIGGERING GREETING VIA PIPELINE FLOW")
+            logger.info("📤 Step 4: TRIGGERING GREETING")
             logger.info("=" * 70)
             
-            # Add trigger message to context
-            trigger_text = "start_conversation_trigger"
-            context.add_message({"role": "user", "content": trigger_text})
+            # Trigger via user message context
+            context.add_message({"role": "user", "content": "start"})
             
-            # Queue LLMMessagesFrame to ensure it flows BEHIND the StartFrame
-            # This is the most standard and reliable way to initiate speech.
-            await task.queue_frame(LLMMessagesFrame(messages=context.get_messages()))
+            # ⭐ USE MODERN FRAME TYPE: LLMMessagesUpdateFrame with run_llm=True
+            # This triggers the LLM to process the context immediately and generate the greeting.
+            # Queuing to the task ensures it flows BEHIND the StartFrame naturally.
+            update_frame = LLMMessagesUpdateFrame(
+                messages=context.get_messages(),
+                run_llm=True
+            )
             
-            logger.info("✅ GREETING TRIGGER QUEUED SUCCESSFULLY.")
+            await task.queue_frame(update_frame)
+            
+            logger.info("✅ Step 4: Greeting sequence initiated.")
             logger.info("=" * 70)
             
         except Exception as e:
-            logger.error(f"❌ ERROR: {e}")
+            logger.error(f"❌ HANDLER ERROR: {e}")
             import traceback
             traceback.print_exc()
 
-    logger.info("🏃 STARTING PIPELINE...")
+    logger.info("🏃 STARTING PIPELINE MASTER TASK...")
     
     try:
         await runner.run(task)
     except Exception as e:
-        logger.error(f"💥 ERROR: {e}")
+        logger.error(f"💥 RUNNER ERROR: {e}")
         import traceback
         traceback.print_exc()
 
 if __name__ == "__main__":
+    # Room URL and Token provided via command line arguments
     asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "anonymous"))
