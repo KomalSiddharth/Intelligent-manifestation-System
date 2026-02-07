@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "8.0-SENIOR-STABLE"
+VERSION = "8.1-SENIOR-AUDIO-FIX"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -98,13 +98,13 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # Services (Restoring Cartesia for Cloned Voice)
+    # Services
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
     # Context & Aggregators
-    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected and using your authentic cloned voice."
+    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected and ready to help."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
@@ -142,15 +142,16 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         await asyncio.sleep(2.0)
         
         greeting = "Hello! I am Mitesh. My authentic voice is now restored and I am ready to help you. How can I support you today?"
-        logger.info(f"📤 INJECTING GREETING DIRECTLY: '{greeting}'")
+        logger.info(f"📤 INJECTING GREETING DIRECTLY TO TTS: '{greeting}'")
         
         try:
-            # OPTION C: Inject directly into assistant aggregator to bypass all blockers
+            # Sync context so AI remembers greeting
             context.add_message({"role": "assistant", "content": greeting})
-            await aggregators.assistant().process_frame(TextFrame(greeting), None)
-            logger.info("✅ GREETING TRIGGERED SUCCESSFULLY.")
+            # Inject directly into TTS to ensure audio is generated and sent to transport
+            await tts.process_frame(TextFrame(greeting), None)
+            logger.info("✅ GREETING SENT DIRECTLY TO TTS.")
         except Exception as e:
-            logger.error(f"❌ TRIGGER FAILED: {e}")
+            logger.error(f"❌ INJECTION FAILED: {e}")
 
     logger.info("🏃 STARTING SENIOR PIPELINE...")
     await runner.run(task)
