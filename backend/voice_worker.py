@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "9.0-ULTRA-STABLE"
+VERSION = "10.0-TRANSPORT-MASTER"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -34,7 +34,7 @@ logger.add(sys.stderr, level="INFO")
 # --- CUSTOM PROCESSORS ---
 
 class ConnectionGate(FrameProcessor):
-    """Prevents pipeline frames from hitting the transport until connected"""
+    """Holds EVERYTHING until transport is connected. The master switch."""
     def __init__(self):
         super().__init__()
         self._connected = False
@@ -44,37 +44,33 @@ class ConnectionGate(FrameProcessor):
         self._connected = True
 
     async def process_frame(self, frame: Frame, direction):
-        if isinstance(frame, StartFrame):
-            logger.info("⏳ [GATE] StartFrame detected. Waiting for connection handshake...")
-            # Wait up to 10 seconds for connection
-            for _ in range(20):
-                if self._connected:
-                    break
-                await asyncio.sleep(0.5)
-            
-            if not self._connected:
-                logger.warning("⚠️ [GATE] Connection timeout! Releasing frame anyway to avoid deadlock.")
-            else:
-                logger.info("🚀 [GATE] Releasing StartFrame to Pipeline.")
+        # We hold system frames too, especially StartFrame
+        if not self._connected:
+             if isinstance(frame, StartFrame):
+                logger.info("⏳ [GATE] StartFrame detected. Waiting for connection...")
+                while not self._connected:
+                    await asyncio.sleep(0.5)
+                logger.info("🚀 [GATE] Handshake confirmed. Releasing StartFrame.")
         
         await super().process_frame(frame, direction)
 
-class GreetingIniter(FrameProcessor):
-    """Triggers the first greeting as part of the pipeline flow to avoid race conditions"""
-    def __init__(self, greeting_text: str):
+class GreetingTrigger(FrameProcessor):
+    """Fires the greeting ONLY after the pipeline has officially started."""
+    def __init__(self, text: str):
         super().__init__()
-        self._greeting_text = greeting_text
-        self._greeting_sent = False
+        self._text = text
+        self._sent = False
 
     async def process_frame(self, frame: Frame, direction):
         await super().process_frame(frame, direction)
         
-        # After StartFrame passes through, we inject our greeting
-        if isinstance(frame, StartFrame) and not self._greeting_sent:
-            self._greeting_sent = True
-            logger.info(f"📤 [GREETING-INITER] StartFrame seen. Injecting greeting: '{self._greeting_text}'")
-            # We push a TextFrame forward to the LLM/TTS
-            await self.push_frame(TextFrame(self._greeting_text))
+        # We trigger on StartFrame AFTER it has been passed forward
+        # This ensures downstream (TTS) has received StartFrame and is ready.
+        if isinstance(frame, StartFrame) and not self._sent:
+            self._sent = True
+            logger.info(f"📤 [TRIGGER] Pipeline started. Injecting greeting: '{self._text}'")
+            # Push forward to LLM -> TTS
+            await self.push_frame(TextFrame(self._text))
 
 class FrameLogger(FrameProcessor):
     def __init__(self, label: str):
@@ -84,7 +80,7 @@ class FrameLogger(FrameProcessor):
     
     async def process_frame(self, frame: Frame, direction):
         self.count += 1
-        if isinstance(frame, (TextFrame, TranscriptionFrame, LLMContextFrame, StartFrame)):
+        if isinstance(frame, (TextFrame, TranscriptionFrame, StartFrame)):
              logger.info(f"🚩 [{self.label}] #{self.count} {type(frame).__name__}")
         elif isinstance(frame, AudioRawFrame) and self.count % 100 == 1:
              logger.info(f"🔊 [{self.label}] #{self.count} Audio Packet Flowing")
@@ -112,53 +108,50 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # Services (OpenAI focus for absolute stability)
+    # Services (Ultra-stable OpenAI stack)
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     tts = OpenAITTSService(api_key=openai_key, voice="alloy")
 
-    # Context & Aggregators
-    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected and ready to help."
+    # Context
+    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # Handshake & Initer
+    # Handshake Components
     gate = ConnectionGate()
-    greeting_text = "Hello! I am Mitesh. I am finally connected and ready to speak. How can I support you today?"
-    initer = GreetingIniter(greeting_text)
+    greeting = GreetingTrigger("Hello! I am Mitesh. I am finally connected and ready to support you. How are you feeling today?")
 
-    # Pipeline
+    # Pipeline: linear and clean
     pipeline = Pipeline([
         transport.input(),
+        gate,      # Hold everything for connection
+        greeting,  # Trigger greeting on StartFrame
         stt,
         aggregators.user(),
-        gate,
-        initer, # Greeting happens RIGHT after gate releases the switch
         llm,
-        FrameLogger("POST-LLM"),
         tts,
-        FrameLogger("POST-TTS"),
+        FrameLogger("EXIT"), # Final trace before transport
         transport.output(),
         aggregators.assistant(),
     ])
 
-    # Ultra high idle timeout to prevent premature stops
-    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=999999))
+    # Zero timeout (Infinite)
+    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=0))
     runner = PipelineRunner()
     
     # --- EVENT HANDLERS ---
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        logger.info(f"🎉 [{VERSION}] Connected to room.")
+        logger.info(f"🎉 [{VERSION}] Handshake Successful.")
         gate.set_connected()
 
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
-        p_id = getattr(participant, "identity", str(participant))
-        logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}.")
+        logger.info(f"👋 [{VERSION}] USER SEEN: {getattr(participant, 'identity', 'unknown')}")
 
-    logger.info("🏃 STARTING ULTRA-STABLE PIPELINE...")
+    logger.info("🏃 RUNNING TRANSPORT-MASTER PIPELINE...")
     await runner.run(task)
 
 if __name__ == "__main__":
