@@ -4,11 +4,11 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "15.0-PRODUCTION"
+VERSION = "15.1-PRODUCTION-FIXED"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffence=True)
+    sys.stderr.reconfigure(line_buffering=True)  # ✅ FIXED TYPO: line_buffering
 
 from pipecat.frames.frames import TextFrame, TranscriptionFrame, Frame
 from pipecat.pipeline.pipeline import Pipeline
@@ -44,7 +44,7 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 70)
-    logger.info(f"🎯 {VERSION} - MITESH AI VOICE ASSISTANT")
+    logger.info(f"🎯 {VERSION}")
     logger.info("=" * 70)
 
     # API Keys
@@ -56,7 +56,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         logger.error("❌ Missing API keys!")
         return
 
-    logger.info(f"🔊 Voice ID: {voice_id[:30]}...")
+    logger.info(f"🔊 Cartesia Voice: {voice_id[:30]}...")
 
     # Transport
     transport = LiveKitTransport(
@@ -74,12 +74,12 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
     # Context
-    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep answers SHORT (1-2 sentences max)."
+    base_prompt = "You are Mitesh Khatri, a life coach. Keep answers SHORT (1-2 sentences)."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
     # Pipeline
-    logger.info("🔧 Building pipeline...")
+    logger.info("🔧 Pipeline...")
     pipeline = Pipeline([
         transport.input(),
         stt,
@@ -115,9 +115,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         except:
             pid = "user"
         
-        logger.info("=" * 70)
         logger.info(f"👋 USER: {pid}")
-        logger.info("=" * 70)
         
         if greeted:
             return
@@ -125,7 +123,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         
         try:
             # Wait for connection
-            logger.info("⏳ Waiting for connection...")
+            logger.info("⏳ Connection check...")
             for i in range(20):
                 if connected:
                     break
@@ -138,7 +136,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
             logger.info("✅ Connected")
             
             # Wait for frontend (20 seconds based on logs)
-            logger.info("⏳ Waiting 20 sec for frontend...")
+            logger.info("⏳ Frontend sync (20 sec)...")
             for i in range(20):
                 await asyncio.sleep(1)
                 if (i + 1) % 5 == 0:
@@ -148,10 +146,9 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
             
             # Buffer
             await asyncio.sleep(2)
-            logger.info("✅ Ready to speak")
             
             # Greeting
-            greeting = "Hello! I am Mitesh, your AI coach. I am finally connected with my authentic voice. How can I help you today?"
+            greeting = "Hello! I am Mitesh. How can I help you today?"
             
             logger.info("=" * 70)
             logger.info(f"📤 GREETING: '{greeting}'")
@@ -160,11 +157,10 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
             # Add to context
             context.add_message({"role": "assistant", "content": greeting})
             
-            # ⭐ FIX: Queue to PIPELINE task, not direct TTS!
-            # This ensures the frame waits for the StartFrame to propagate.
+            # Queue to pipeline
             await task.queue_frame(TextFrame(greeting))
             
-            logger.info("✅ GREETING QUEUED TO PIPELINE")
+            logger.info("✅ QUEUED")
             logger.info("=" * 70)
             
         except Exception as e:
@@ -172,7 +168,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
             import traceback
             traceback.print_exc()
 
-    logger.info("🏃 STARTING PIPELINE...")
+    logger.info("🏃 STARTING...")
     
     try:
         await runner.run(task)
