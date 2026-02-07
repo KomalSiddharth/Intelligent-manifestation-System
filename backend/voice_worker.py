@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "8.1-SENIOR-AUDIO-FIX"
+VERSION = "9.0-ULTRA-STABLE"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -19,7 +19,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -59,6 +59,23 @@ class ConnectionGate(FrameProcessor):
         
         await super().process_frame(frame, direction)
 
+class GreetingIniter(FrameProcessor):
+    """Triggers the first greeting as part of the pipeline flow to avoid race conditions"""
+    def __init__(self, greeting_text: str):
+        super().__init__()
+        self._greeting_text = greeting_text
+        self._greeting_sent = False
+
+    async def process_frame(self, frame: Frame, direction):
+        await super().process_frame(frame, direction)
+        
+        # After StartFrame passes through, we inject our greeting
+        if isinstance(frame, StartFrame) and not self._greeting_sent:
+            self._greeting_sent = True
+            logger.info(f"📤 [GREETING-INITER] StartFrame seen. Injecting greeting: '{self._greeting_text}'")
+            # We push a TextFrame forward to the LLM/TTS
+            await self.push_frame(TextFrame(self._greeting_text))
+
 class FrameLogger(FrameProcessor):
     def __init__(self, label: str):
         super().__init__()
@@ -78,15 +95,12 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 60)
-    logger.info(f"🌟 {VERSION} 🌟")
+    logger.info(f"🛡️ {VERSION} 🛡️")
     logger.info("=" * 60)
 
-    cartesia_key = os.getenv("CARTESIA_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
-    voice_id = os.getenv("CARTESIA_VOICE_ID")
-    
-    if not all([cartesia_key, openai_key, voice_id]):
-        logger.error("❌ Missing required API keys (Cartesia/OpenAI)")
+    if not openai_key:
+        logger.error("❌ Missing OpenAI API Key")
         return
 
     # Transport
@@ -98,18 +112,20 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # Services
+    # Services (OpenAI focus for absolute stability)
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
-    tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
+    tts = OpenAITTSService(api_key=openai_key, voice="alloy")
 
     # Context & Aggregators
     base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected and ready to help."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # Resilient Gate
+    # Handshake & Initer
     gate = ConnectionGate()
+    greeting_text = "Hello! I am Mitesh. I am finally connected and ready to speak. How can I support you today?"
+    initer = GreetingIniter(greeting_text)
 
     # Pipeline
     pipeline = Pipeline([
@@ -117,6 +133,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         stt,
         aggregators.user(),
         gate,
+        initer, # Greeting happens RIGHT after gate releases the switch
         llm,
         FrameLogger("POST-LLM"),
         tts,
@@ -125,7 +142,8 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         aggregators.assistant(),
     ])
 
-    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=0))
+    # Ultra high idle timeout to prevent premature stops
+    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=999999))
     runner = PipelineRunner()
     
     # --- EVENT HANDLERS ---
@@ -138,22 +156,9 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
         p_id = getattr(participant, "identity", str(participant))
-        logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}. Greeting in 2s...")
-        await asyncio.sleep(2.0)
-        
-        greeting = "Hello! I am Mitesh. My authentic voice is now restored and I am ready to help you. How can I support you today?"
-        logger.info(f"📤 INJECTING GREETING DIRECTLY TO TTS: '{greeting}'")
-        
-        try:
-            # Sync context so AI remembers greeting
-            context.add_message({"role": "assistant", "content": greeting})
-            # Inject directly into TTS to ensure audio is generated and sent to transport
-            await tts.process_frame(TextFrame(greeting), None)
-            logger.info("✅ GREETING SENT DIRECTLY TO TTS.")
-        except Exception as e:
-            logger.error(f"❌ INJECTION FAILED: {e}")
+        logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}.")
 
-    logger.info("🏃 STARTING SENIOR PIPELINE...")
+    logger.info("🏃 STARTING ULTRA-STABLE PIPELINE...")
     await runner.run(task)
 
 if __name__ == "__main__":
