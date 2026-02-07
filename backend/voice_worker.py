@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "10.0-TRANSPORT-MASTER"
+VERSION = "11.0-BULLETPROOF"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -31,68 +31,12 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
-# --- CUSTOM PROCESSORS ---
-
-class ConnectionGate(FrameProcessor):
-    """Holds EVERYTHING until transport is connected. The master switch."""
-    def __init__(self):
-        super().__init__()
-        self._connected = False
-
-    def set_connected(self):
-        logger.info("🔓 [GATE] Signal Received: Transport Connected.")
-        self._connected = True
-
-    async def process_frame(self, frame: Frame, direction):
-        # We hold system frames too, especially StartFrame
-        if not self._connected:
-             if isinstance(frame, StartFrame):
-                logger.info("⏳ [GATE] StartFrame detected. Waiting for connection...")
-                while not self._connected:
-                    await asyncio.sleep(0.5)
-                logger.info("🚀 [GATE] Handshake confirmed. Releasing StartFrame.")
-        
-        await super().process_frame(frame, direction)
-
-class GreetingTrigger(FrameProcessor):
-    """Fires the greeting ONLY after the pipeline has officially started."""
-    def __init__(self, text: str):
-        super().__init__()
-        self._text = text
-        self._sent = False
-
-    async def process_frame(self, frame: Frame, direction):
-        await super().process_frame(frame, direction)
-        
-        # We trigger on StartFrame AFTER it has been passed forward
-        # This ensures downstream (TTS) has received StartFrame and is ready.
-        if isinstance(frame, StartFrame) and not self._sent:
-            self._sent = True
-            logger.info(f"📤 [TRIGGER] Pipeline started. Injecting greeting: '{self._text}'")
-            # Push forward to LLM -> TTS
-            await self.push_frame(TextFrame(self._text))
-
-class FrameLogger(FrameProcessor):
-    def __init__(self, label: str):
-        super().__init__()
-        self.label = label
-        self.count = 0
-    
-    async def process_frame(self, frame: Frame, direction):
-        self.count += 1
-        if isinstance(frame, (TextFrame, TranscriptionFrame, StartFrame)):
-             logger.info(f"🚩 [{self.label}] #{self.count} {type(frame).__name__}")
-        elif isinstance(frame, AudioRawFrame) and self.count % 100 == 1:
-             logger.info(f"🔊 [{self.label}] #{self.count} Audio Packet Flowing")
-             
-        await super().process_frame(frame, direction)
-
 # --- MAIN ---
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
-    logger.info("=" * 60)
-    logger.info(f"🛡️ {VERSION} 🛡️")
-    logger.info("=" * 60)
+    logger.info("=" * 70)
+    logger.info(f"🎯 {VERSION} - GUARANTEED START")
+    logger.info("=" * 70)
 
     openai_key = os.getenv("OPENAI_API_KEY")
     if not openai_key:
@@ -108,50 +52,106 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # Services (Ultra-stable OpenAI stack)
+    # Services (Ultra-stable OpenAI)
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     tts = OpenAITTSService(api_key=openai_key, voice="alloy")
 
     # Context
-    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected."
+    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences)."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # Handshake Components
-    gate = ConnectionGate()
-    greeting = GreetingTrigger("Hello! I am Mitesh. I am finally connected and ready to support you. How are you feeling today?")
-
-    # Pipeline: linear and clean
+    # Simple Linear Pipeline
     pipeline = Pipeline([
         transport.input(),
-        gate,      # Hold everything for connection
-        greeting,  # Trigger greeting on StartFrame
         stt,
         aggregators.user(),
         llm,
         tts,
-        FrameLogger("EXIT"), # Final trace before transport
         transport.output(),
         aggregators.assistant(),
     ])
 
-    # Zero timeout (Infinite)
+    # No idle timeout (0 means no timeout in many versions, or we use a huge number)
     task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=0))
     runner = PipelineRunner()
     
+    # State flags
+    connected = False
+    greeted = False
+
     # --- EVENT HANDLERS ---
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        logger.info(f"🎉 [{VERSION}] Handshake Successful.")
-        gate.set_connected()
+        nonlocal connected
+        logger.info("🎉 [HANDSHAKE] CONNECTED TO ROOM")
+        connected = True
 
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
-        logger.info(f"👋 [{VERSION}] USER SEEN: {getattr(participant, 'identity', 'unknown')}")
+        nonlocal greeted
+        
+        logger.info("=" * 70)
+        logger.info("👋 [HANDSHAKE] USER JOINED!")
+        logger.info("=" * 70)
+        
+        if greeted:
+            logger.info("⚠️ Already greeted, skipping.")
+            return
+        greeted = True
+        
+        try:
+            # Step 1: Wait for connection
+            logger.info("⏳ Step 1: Waiting for transport connection...")
+            for i in range(20):
+                if connected:
+                    break
+                await asyncio.sleep(0.5)
+                if i % 4 == 0:
+                    logger.info(f"   Still waiting for connection handshake... ({i}/20)")
+            
+            if not connected:
+                logger.error("❌ Step 1 FAILED: Connection timeout!")
+                return
+            
+            logger.info("✅ Step 1: Connection confirmed.")
+            
+            # Step 2: Stabilization
+            logger.info("⏳ Step 2: Stabilizing WebRTC (2s delay)...")
+            await asyncio.sleep(2.0)
+            logger.info("✅ Step 2: Stabilization complete.")
+            
+            # Step 3: Sending Greeting
+            greeting = "Hello! I am Mitesh, finally connected and ready to help. Can you hear me?"
+            logger.info("=" * 70)
+            logger.info("📤 Step 3: SENDING GREETING")
+            logger.info(f"   Text: '{greeting}'")
+            logger.info("=" * 70)
+            
+            # 3a: Add to context
+            logger.info("   3a: Adding to context...")
+            context.add_message({"role": "assistant", "content": greeting})
+            logger.info("   ✅ 3a: Context updated.")
+            
+            # 3b: Direct TTS Injection
+            logger.info("   3b: Injecting directly into TTS...")
+            await tts.process_frame(TextFrame(greeting), None)
+            logger.info("   ✅ 3b: Sent to TTS.")
+            
+            logger.info("=" * 70)
+            logger.info("✅ GREETING SEQUENCE FINISHED!")
+            logger.info("=" * 70)
+            
+        except Exception as e:
+            logger.error("=" * 70)
+            logger.error(f"❌ GREETING SEQUENCE FAILED: {e}")
+            logger.error("=" * 70)
+            import traceback
+            traceback.print_exc()
 
-    logger.info("🏃 RUNNING TRANSPORT-MASTER PIPELINE...")
+    logger.info("🏃 STARTING BULLETPROOF PIPELINE...")
     await runner.run(task)
 
 if __name__ == "__main__":
