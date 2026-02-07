@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "11.0-BULLETPROOF"
+VERSION = "12.0-FRONTEND-SYNC"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -35,7 +35,7 @@ logger.add(sys.stderr, level="INFO")
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 70)
-    logger.info(f"🎯 {VERSION} - GUARANTEED START")
+    logger.info(f"🎯 {VERSION} - WAIT FOR FRONTEND AUDIO")
     logger.info("=" * 70)
 
     openai_key = os.getenv("OPENAI_API_KEY")
@@ -73,85 +73,61 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         aggregators.assistant(),
     ])
 
-    # No idle timeout (0 means no timeout in many versions, or we use a huge number)
+    # No idle timeout
     task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=0))
     runner = PipelineRunner()
     
     # State flags
-    connected = False
     greeted = False
-
+    
     # --- EVENT HANDLERS ---
 
     @transport.event_handler("on_connected")
     async def on_connected(transport):
-        nonlocal connected
-        logger.info("🎉 [HANDSHAKE] CONNECTED TO ROOM")
-        connected = True
+        logger.info("🎉 [SYNC] BOT CONNECTED TO ROOM.")
 
     @transport.event_handler("on_first_participant_joined")
     async def on_first_joined(transport, participant):
+        logger.info(f"👋 [SYNC] USER JOINED: {getattr(participant, 'identity', 'unknown')}. Waiting for audio track...")
+
+    @transport.event_handler("on_track_subscribed")
+    async def on_track_subscribed(transport, track, publication, participant):
         nonlocal greeted
         
-        logger.info("=" * 70)
-        logger.info("👋 [HANDSHAKE] USER JOINED!")
-        logger.info("=" * 70)
+        logger.info(f"🎵 [SYNC] TRACK SUBSCRIBED: {track.kind.name} from {getattr(participant, 'identity', 'unknown')}")
         
-        if greeted:
-            logger.info("⚠️ Already greeted, skipping.")
-            return
-        greeted = True
-        
-        try:
-            # Step 1: Wait for connection
-            logger.info("⏳ Step 1: Waiting for transport connection...")
-            for i in range(20):
-                if connected:
-                    break
-                await asyncio.sleep(0.5)
-                if i % 4 == 0:
-                    logger.info(f"   Still waiting for connection handshake... ({i}/20)")
-            
-            if not connected:
-                logger.error("❌ Step 1 FAILED: Connection timeout!")
+        # WE ONLY GREET WHEN THE BROWSER IS LISTENING TO AUDIO
+        if track.kind.name == "AUDIO":
+            if greeted:
+                logger.info("⚠️ Already greeted, skipping secondary track.")
                 return
-            
-            logger.info("✅ Step 1: Connection confirmed.")
-            
-            # Step 2: Stabilization
-            logger.info("⏳ Step 2: Stabilizing WebRTC (2s delay)...")
-            await asyncio.sleep(2.0)
-            logger.info("✅ Step 2: Stabilization complete.")
-            
-            # Step 3: Sending Greeting
-            greeting = "Hello! I am Mitesh, finally connected and ready to help. Can you hear me?"
-            logger.info("=" * 70)
-            logger.info("📤 Step 3: SENDING GREETING")
-            logger.info(f"   Text: '{greeting}'")
-            logger.info("=" * 70)
-            
-            # 3a: Add to context
-            logger.info("   3a: Adding to context...")
-            context.add_message({"role": "assistant", "content": greeting})
-            logger.info("   ✅ 3a: Context updated.")
-            
-            # 3b: Direct TTS Injection
-            logger.info("   3b: Injecting directly into TTS...")
-            await tts.process_frame(TextFrame(greeting), None)
-            logger.info("   ✅ 3b: Sent to TTS.")
+            greeted = True
             
             logger.info("=" * 70)
-            logger.info("✅ GREETING SEQUENCE FINISHED!")
+            logger.info("✅ SUCCESS: FRONTEND IS NOW LISTENING!")
             logger.info("=" * 70)
             
-        except Exception as e:
-            logger.error("=" * 70)
-            logger.error(f"❌ GREETING SEQUENCE FAILED: {e}")
-            logger.error("=" * 70)
-            import traceback
-            traceback.print_exc()
+            try:
+                # Give 2 seconds for WebRTC audio buffer to clear
+                logger.info("⏳ Stabilizing audio (2s)...")
+                await asyncio.sleep(2.0)
+                
+                greeting = "Hello! I am Mitesh. I am finally connected and I can hear that you are listening. How can I support you today?"
+                logger.info(f"📤 GREETING: '{greeting}'")
+                
+                # Context sync
+                context.add_message({"role": "assistant", "content": greeting})
+                
+                # Direct Injection to ensure it goes out IMMEDIATELY
+                await tts.process_frame(TextFrame(greeting), None)
+                logger.info("✅ GREETING SENT TO TRANSPORT.")
+                
+            except Exception as e:
+                logger.error(f"❌ GREETING TRIGGER FAILED: {e}")
+                import traceback
+                traceback.print_exc()
 
-    logger.info("🏃 STARTING BULLETPROOF PIPELINE...")
+    logger.info("🏃 STARTING FRONTEND-SYNC PIPELINE...")
     await runner.run(task)
 
 if __name__ == "__main__":
