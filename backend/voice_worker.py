@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "19.0-ULTIMATE"
+VERSION = "20.0-PRODUCTION-FINAL"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
@@ -48,7 +48,7 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 70)
-    logger.info(f"🎯 {VERSION} - THE FINAL STABLE PUSH")
+    logger.info(f"🎯 {VERSION} - THE EVENT-DRIVEN SYNC")
     logger.info("=" * 70)
 
     # API Keys
@@ -89,15 +89,14 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
     aggregators = LLMContextAggregatorPair(context)
 
     # Pipeline
-    # ⭐ RELOCATED AGGREGATORS for better context capture
-    logger.info("🔧 Building high-performance pipeline...")
+    logger.info("🔧 Building reactive pipeline...")
     pipeline = Pipeline([
         transport.input(),
         stt,
         FrameLogger("STT"),
         aggregators.user(),
         llm,
-        aggregators.assistant(),  # Sync context BEFORE audio generation
+        aggregators.assistant(),
         FrameLogger("LLM"),
         tts,
         FrameLogger("TTS"),
@@ -108,7 +107,9 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True, idle_timeout=0))
     runner = PipelineRunner()
     
+    # State flags
     connected = False
+    audio_track_subscribed = False
     greeted = False
     
     @transport.event_handler("on_connected")
@@ -133,7 +134,6 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
         
         if greeted:
             return
-        greeted = True
         
         try:
             # Step 1: Connection Check
@@ -147,47 +147,74 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
                 return
             logger.info("✅ Step 1: Connected.")
             
-            # Step 2: Extended Frontend Audio Subscription Sync
-            # ⭐ Increased to 30s to solve Clock Starvation (v18.0 took 23s)
-            logger.info("⏳ Step 2: Waiting 30s for browser audio subscription (Clock Sync)...")
-            for i in range(30):
+            # Step 2: Reactive Audio Track Subscription Wait
+            # ⭐ v20.0 FIX: Wait for ACTUAL event instead of timer
+            logger.info("⏳ Step 2: Waiting for ACTUAL audio track subscription...")
+            for i in range(60):  # Wait up to 60 seconds
+                if audio_track_subscribed:
+                    logger.info(f"✅ Step 2: Audio track subscribed after {i} seconds")
+                    break
                 await asyncio.sleep(1)
-                if (i + 1) % 5 == 0:
-                    logger.info(f"   Sync Progress: {i + 1}/30 seconds...")
+                if (i + 1) % 10 == 0:
+                    logger.info(f"   Still waiting for frontend subscriber... {i + 1}/60 sec")
             
-            logger.info("✅ Step 2: Frontend audio sync satisfied.")
+            if not audio_track_subscribed:
+                logger.error("❌ Step 2 FAILED: Audio track subscription timeout!")
+                return
             
-            # Step 3: Final stabilization
+            logger.info("✅ Step 2: Frontend confirmed ready to receive audio.")
+            
+            # Step 3: Final stabilization buffer
             logger.info("⏳ Step 3: Final stabilizing 2s buffer...")
             await asyncio.sleep(2)
             logger.info("✅ Step 3: Handshake verified.")
             
-            # Step 4: Greeting via Generative Update Frame
-            logger.info("=" * 70)
-            logger.info("📤 Step 4: TRIGGERING GREETING")
-            logger.info("=" * 70)
-            
-            # Trigger via user message context
-            context.add_message({"role": "user", "content": "start"})
-            
-            # Use modern non-deprecated trigger frame
-            update_frame = LLMMessagesUpdateFrame(
-                messages=context.get_messages(),
-                run_llm=True
-            )
-            
-            # Queue to task to follow StartFrame naturally
-            await task.queue_frame(update_frame)
-            
-            logger.info("✅ Step 4: Greeting sequence initiated.")
-            logger.info("=" * 70)
+            # Step 4: Greeting Trigger
+            if not greeted:
+                greeted = True
+                logger.info("=" * 70)
+                logger.info("📤 Step 4: TRIGGERING GREETING")
+                logger.info("=" * 70)
+                
+                # Trigger via user message context
+                context.add_message({"role": "user", "content": "start"})
+                
+                # Use modern trigger frame
+                update_frame = LLMMessagesUpdateFrame(
+                    messages=context.get_messages(),
+                    run_llm=True
+                )
+                
+                # Queue to task
+                await task.queue_frame(update_frame)
+                
+                logger.info("✅ Step 4: Greeting sequence initiated.")
+                logger.info("=" * 70)
             
         except Exception as e:
             logger.error(f"❌ HANDLER ERROR: {e}")
             import traceback
             traceback.print_exc()
 
-    logger.info("🏃 STARTING PIPELINE...")
+    # ⭐ NEW EVENT HANDLER WRAPPER: Monitor incoming track subscriptions
+    # This captures the moment the browser actually starts receiving the bot's audio.
+    original_on_track_subscribed = transport._async_on_track_subscribed
+    
+    async def wrapped_on_track_subscribed(track, publication, participant):
+        nonlocal audio_track_subscribed
+        
+        # Call the original Pipecat internal handler
+        await original_on_track_subscribed(track, publication, participant)
+        
+        # Log and set our flag
+        logger.info(f"🎵 [EVENT] Audio track subscribed: {track.kind} from {participant.identity}")
+        audio_track_subscribed = True
+        logger.info("✅ [EVENT] AUDIO TRACK SUBSCRIPTION CONFIRMED!")
+    
+    # Monkey-patch the internal handler to react to the subscription event
+    transport._async_on_track_subscribed = wrapped_on_track_subscribed
+
+    logger.info("🏃 STARTING PIPELINE MASTER TASK...")
     
     try:
         await runner.run(task)
