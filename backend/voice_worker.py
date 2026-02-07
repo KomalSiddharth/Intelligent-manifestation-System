@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "7.0-RESILIENT-RESTORE"
+VERSION = "8.0-SENIOR-STABLE"
 
 # Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
@@ -19,7 +19,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -78,12 +78,15 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 60)
-    logger.info(f"� {VERSION} �")
+    logger.info(f"🌟 {VERSION} 🌟")
     logger.info("=" * 60)
 
+    cartesia_key = os.getenv("CARTESIA_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        logger.error("❌ Missing OpenAI API Key")
+    voice_id = os.getenv("CARTESIA_VOICE_ID")
+    
+    if not all([cartesia_key, openai_key, voice_id]):
+        logger.error("❌ Missing required API keys (Cartesia/OpenAI)")
         return
 
     # Transport
@@ -95,13 +98,13 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         )
     )
 
-    # Services
+    # Services (Restoring Cartesia for Cloned Voice)
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
-    tts = OpenAITTSService(api_key=openai_key, voice="alloy")
+    tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
     # Context & Aggregators
-    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected."
+    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences). You are now connected and using your authentic cloned voice."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
@@ -138,7 +141,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         logger.info(f"👋 [{VERSION}] USER JOINED: {p_id}. Greeting in 2s...")
         await asyncio.sleep(2.0)
         
-        greeting = "Hello! I am Mitesh. I am finally connected and ready to talk. Can you hear me?"
+        greeting = "Hello! I am Mitesh. My authentic voice is now restored and I am ready to help you. How can I support you today?"
         logger.info(f"📤 INJECTING GREETING DIRECTLY: '{greeting}'")
         
         try:
@@ -149,7 +152,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         except Exception as e:
             logger.error(f"❌ TRIGGER FAILED: {e}")
 
-    logger.info("🏃 STARTING RESILIENT PIPELINE...")
+    logger.info("🏃 STARTING SENIOR PIPELINE...")
     await runner.run(task)
 
 if __name__ == "__main__":
