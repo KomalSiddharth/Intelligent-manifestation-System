@@ -4,11 +4,11 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "15.1-PRODUCTION-FIXED"
+VERSION = "16.0-WORKING"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)  # ✅ FIXED TYPO: line_buffering
+    sys.stderr.reconfigure(line_buffering=True)
 
 from pipecat.frames.frames import TextFrame, TranscriptionFrame, Frame
 from pipecat.pipeline.pipeline import Pipeline
@@ -38,25 +38,24 @@ class FrameLogger(FrameProcessor):
         if isinstance(frame, TextFrame):
             logger.info(f"📝 [{self.label}] Text: '{frame.text[:40]}'...")
         elif isinstance(frame, TranscriptionFrame):
-            logger.info(f"🎤 [{self.label}] User: '{frame.text}'")
+            logger.info(f"🎤 [{self.label}] Transcription: '{frame.text}'")
         
         await super().process_frame(frame, direction)
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 70)
-    logger.info(f"🎯 {VERSION}")
+    logger.info(f"🎯 {VERSION} - MITESH AI VOICE")
     logger.info("=" * 70)
 
-    # API Keys
     openai_key = os.getenv("OPENAI_API_KEY")
     cartesia_key = os.getenv("CARTESIA_API_KEY")
     voice_id = os.getenv("CARTESIA_VOICE_ID")
     
     if not all([openai_key, cartesia_key, voice_id]):
-        logger.error("❌ Missing API keys!")
+        logger.error("❌ Missing keys!")
         return
 
-    logger.info(f"🔊 Cartesia Voice: {voice_id[:30]}...")
+    logger.info(f"🔊 Voice: {voice_id[:30]}...")
 
     # Transport
     transport = LiveKitTransport(
@@ -74,7 +73,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
     # Context
-    base_prompt = "You are Mitesh Khatri, a life coach. Keep answers SHORT (1-2 sentences)."
+    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep answers SHORT (1-2 sentences max)."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
@@ -109,7 +108,6 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     async def on_first_joined(transport, participant):
         nonlocal greeted
         
-        # Safe participant ID handling
         try:
             pid = participant if isinstance(participant, str) else getattr(participant, 'identity', 'user')
         except:
@@ -122,45 +120,43 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         greeted = True
         
         try:
-            # Wait for connection
             logger.info("⏳ Connection check...")
             for i in range(20):
                 if connected:
                     break
                 await asyncio.sleep(0.5)
-            
             if not connected:
                 logger.error("❌ Timeout")
                 return
             
             logger.info("✅ Connected")
             
-            # Wait for frontend (20 seconds based on logs)
             logger.info("⏳ Frontend sync (20 sec)...")
             for i in range(20):
                 await asyncio.sleep(1)
                 if (i + 1) % 5 == 0:
-                    logger.info(f"   {i + 1}/20...")
+                    logger.info(f"   {i + 1}/20")
             
-            logger.info("✅ Frontend ready")
-            
-            # Buffer
+            logger.info("✅ Ready")
             await asyncio.sleep(2)
             
-            # Greeting
             greeting = "Hello! I am Mitesh. How can I help you today?"
             
             logger.info("=" * 70)
             logger.info(f"📤 GREETING: '{greeting}'")
             logger.info("=" * 70)
             
-            # Add to context
+            # Sync context first
             context.add_message({"role": "assistant", "content": greeting})
             
-            # Queue to pipeline
-            await task.queue_frame(TextFrame(greeting))
+            # ⭐ FIX: DIRECT INJECTION INTO GENERATIVE PATH
+            logger.info("🎯 Injecting via LLM processor to bypass input bottlenecks...")
             
-            logger.info("✅ QUEUED")
+            # In Pipecat, calling push_frame on a processor sends it to the NEXT in line.
+            # We push to llm, so it goes to TTS -> Transport.Output.
+            await llm.push_frame(TextFrame(greeting))
+            
+            logger.info("✅ INJECTION COMPLETE")
             logger.info("=" * 70)
             
         except Exception as e:
