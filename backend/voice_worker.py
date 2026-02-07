@@ -4,90 +4,118 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "13.0-FINAL-TIMED"
+VERSION = "14.0-CARTESIA-FULL"
 
-# Ensure logs are flushed immediately
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 
-from pipecat.frames.frames import (
-    EndFrame, StartFrame, TextFrame, TranscriptionFrame, Frame, LLMContextFrame, AudioRawFrame
-)
+from pipecat.frames.frames import TextFrame, TranscriptionFrame, Frame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.transports.livekit.transport import LiveKitTransport, LiveKitParams
+from pipecat.processors.frame_processor import FrameProcessor
 
-# Load environment
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
-# --- MAIN ---
+# Frame logger for debugging
+class FrameLogger(FrameProcessor):
+    def __init__(self, label: str):
+        super().__init__()
+        self.label = label
+        self.count = 0
+    
+    async def process_frame(self, frame: Frame, direction):
+        self.count += 1
+        if isinstance(frame, TextFrame):
+            logger.info(f"📝 [{self.label}] TextFrame: '{frame.text[:40]}'...")
+        elif isinstance(frame, TranscriptionFrame):
+            logger.info(f"🎤 [{self.label}] Transcription: '{frame.text}'")
+        
+        await super().process_frame(frame, direction)
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 70)
-    logger.info(f"🎯 {VERSION} - GUARANTEED AUDIO WITH TIMING")
+    logger.info(f"🎯 {VERSION} - MITESH'S VOICE + FULL CONVERSATION")
     logger.info("=" * 70)
 
+    # API Keys
     openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        logger.error("❌ Missing OpenAI API Key")
+    cartesia_key = os.getenv("CARTESIA_API_KEY")
+    voice_id = os.getenv("CARTESIA_VOICE_ID")
+    
+    if not all([openai_key, cartesia_key, voice_id]):
+        logger.error("❌ Missing API keys!")
+        logger.error(f"   OpenAI: {'✅' if openai_key else '❌'}")
+        logger.error(f"   Cartesia: {'✅' if cartesia_key else '❌'}")
+        logger.error(f"   Voice ID: {'✅' if voice_id else '❌'}")
         return
 
     # Transport
-    logger.info("🔌 Initializing Transport...")
+    logger.info("🔌 Transport...")
     transport = LiveKitTransport(
         room_url, token, "Mitesh AI Coach",
         LiveKitParams(
+            audio_in_enabled=True,
             audio_out_enabled=True,
             vad_analyzer=SileroVADAnalyzer()
         )
     )
 
-    # Services (Ultra-stable OpenAI stack)
-    logger.info("🎤 STT | 🧠 LLM | 🔊 TTS (Setting up stable OpenAI)...")
+    # Services
+    logger.info("🎤 STT: OpenAI Whisper")
     stt = OpenAISTTService(api_key=openai_key)
+    
+    logger.info("🧠 LLM: GPT-4o-mini")
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
-    tts = OpenAITTSService(api_key=openai_key, voice="alloy")
+    
+    logger.info(f"🔊 TTS: Cartesia (Mitesh's Voice)")
+    logger.info(f"   Voice ID: {voice_id[:30]}...")
+    tts = CartesiaTTSService(
+        api_key=cartesia_key,
+        voice_id=voice_id
+    )
 
     # Context
-    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep your answers brief (max 2 sentences)."
+    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep answers SHORT (1-2 sentences max)."
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # Simple Linear Pipeline (No custom gates, just standard flow)
+    # Pipeline
+    logger.info("🔧 Building pipeline...")
     pipeline = Pipeline([
         transport.input(),
         stt,
+        FrameLogger("AfterSTT"),
         aggregators.user(),
         llm,
+        FrameLogger("AfterLLM"),
         tts,
+        FrameLogger("AfterTTS"),
         transport.output(),
-        aggregators.assistant(),
+        aggregators.assistant()
     ])
+    logger.info("✅ Pipeline built")
 
-    # No idle timeout (0 ensures bot stays alive even during silence/wait)
-    task = PipelineTask(pipeline, params=PipelineParams(idle_timeout=0))
+    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
     runner = PipelineRunner()
     
-    # State flags
     connected = False
     greeted = False
     
-    # --- EVENT HANDLERS ---
-
     @transport.event_handler("on_connected")
     async def on_connected(transport):
         nonlocal connected
-        logger.info("🎉 [TIMED] BOT CONNECTED TO ROOM.")
+        logger.info("🎉 BOT CONNECTED")
         connected = True
 
     @transport.event_handler("on_first_participant_joined")
@@ -95,68 +123,75 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         nonlocal greeted
         
         logger.info("=" * 70)
-        logger.info(f"👋 [TIMED] USER JOINED: {getattr(participant, 'identity', 'unknown')}")
+        logger.info(f"👋 USER JOINED: {participant.identity}")
         logger.info("=" * 70)
         
         if greeted:
-            logger.info("⚠️ Already greeted, skipping.")
+            logger.info("⚠️ Already greeted")
             return
+        
         greeted = True
         
         try:
-            # Step 1: Connection Verification
-            logger.info("⏳ Step 1: Waiting for backend connection...")
-            for i in range(10):
+            # Wait for connection
+            logger.info("⏳ Step 1: Waiting for connection...")
+            for i in range(20):
                 if connected:
                     break
                 await asyncio.sleep(0.5)
             
             if not connected:
-                logger.error("❌ Step 1 FAILED: Bot not connected yet.")
+                logger.error("❌ Connection timeout!")
                 return
-            logger.info("✅ Step 1: Connected.")
-
-            # Step 2: Fixed Delay for Frontend Subscription (Senior Suggestion)
-            # Logs show ~16s gap, we wait 20s to be mathematically safe.
-            logger.info("⏳ Step 2: Waiting 20 seconds for browser audio subscription...")
+            
+            logger.info("✅ Step 1: Connected")
+            
+            # Wait for frontend audio subscription (based on logs: ~20 seconds)
+            logger.info("⏳ Step 2: Waiting for frontend audio (20 sec)...")
             for i in range(20):
                 await asyncio.sleep(1)
                 if (i + 1) % 5 == 0:
-                    logger.info(f"   Wait Progress: {i + 1}/20 seconds...")
+                    logger.info(f"   Progress: {i + 1}/20 seconds")
             
-            # Step 3: Safety Buffer
-            logger.info("⏳ Step 3: Final stabilizing 2s buffer...")
-            await asyncio.sleep(2.0)
-            logger.info("✅ Step 3: Readiness confirmed.")
+            logger.info("✅ Step 2: Frontend should be subscribed")
             
-            # Step 4: Final Greeting Delivery
-            greeting = "Hello! I am Mitesh, your AI coach. I am finally connected and I can hear that you are listening. How can I support you today?"
+            # Safety buffer
+            logger.info("⏳ Step 3: Safety buffer (2 sec)...")
+            await asyncio.sleep(2)
+            logger.info("✅ Step 3: Ready")
+            
+            # Send greeting
+            greeting = "Hello! I am Mitesh, your AI coach. How can I help you today?"
+            
             logger.info("=" * 70)
-            logger.info("📤 Step 4: SENDING GREETING NOW")
+            logger.info("📤 SENDING GREETING (Cartesia Voice)")
             logger.info(f"   Text: '{greeting}'")
             logger.info("=" * 70)
             
-            # Context sync
             context.add_message({"role": "assistant", "content": greeting})
-            logger.info("   ✅ 4a: Context updated.")
+            logger.info("   ✅ Context updated")
             
-            # Direct Service Injection (Bypasses any internal pipeline stalls)
             await tts.process_frame(TextFrame(greeting), None)
-            logger.info("   ✅ 4b: Sent to TTS.")
+            logger.info("   ✅ Sent to Cartesia TTS")
             
             logger.info("=" * 70)
-            logger.info("✅ GREETING SEQUENCE FINISHED - LISTEN FOR AUDIO!")
+            logger.info("✅ GREETING COMPLETE - LISTENING FOR YOUR QUESTIONS!")
             logger.info("=" * 70)
             
         except Exception as e:
-            logger.error("=" * 70)
-            logger.error(f"❌ GREETING SEQUENCE FAILED: {e}")
-            logger.error("=" * 70)
+            logger.error(f"❌ ERROR: {e}")
             import traceback
             traceback.print_exc()
 
-    logger.info("🏃 STARTING PIPELINE...")
-    await runner.run(task)
+    logger.info("🏃 STARTING...")
+    logger.info("=" * 70)
+    
+    try:
+        await runner.run(task)
+    except Exception as e:
+        logger.error(f"💥 ERROR: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "anonymous"))
