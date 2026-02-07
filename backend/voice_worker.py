@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "18.0-PRODUCTION-READY"
+VERSION = "19.0-ULTIMATE"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
@@ -48,7 +48,7 @@ class FrameLogger(FrameProcessor):
 
 async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 70)
-    logger.info(f"🎯 {VERSION} - MITESH'S FINAL BASELINE")
+    logger.info(f"🎯 {VERSION} - THE FINAL STABLE PUSH")
     logger.info("=" * 70)
 
     # API Keys
@@ -60,7 +60,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
         logger.error("❌ Missing API keys!")
         return
 
-    logger.info(f"🔊 Cartesia Voice: {voice_id[:30]}...")
+    logger.info(f"🔊 Authenticated Voice: {voice_id[:30]}...")
 
     # Transport
     transport = LiveKitTransport(
@@ -89,20 +89,22 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
     aggregators = LLMContextAggregatorPair(context)
 
     # Pipeline
-    logger.info("🔧 Building pipeline...")
+    # ⭐ RELOCATED AGGREGATORS for better context capture
+    logger.info("🔧 Building high-performance pipeline...")
     pipeline = Pipeline([
         transport.input(),
         stt,
         FrameLogger("STT"),
         aggregators.user(),
         llm,
+        aggregators.assistant(),  # Sync context BEFORE audio generation
         FrameLogger("LLM"),
         tts,
         FrameLogger("TTS"),
-        transport.output(),
-        aggregators.assistant()
+        transport.output()
     ])
 
+    # Allow interruptions but disable idle timeout to keep the pipeline alive during sync
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True, idle_timeout=0))
     runner = PipelineRunner()
     
@@ -135,26 +137,27 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
         
         try:
             # Step 1: Connection Check
-            logger.info("⏳ Step 1: Checking connection...")
+            logger.info("⏳ Step 1: Checking connection state...")
             for i in range(20):
                 if connected:
                     break
                 await asyncio.sleep(0.5)
             if not connected:
-                logger.error("❌ Step 1 FAILED: Timeout")
+                logger.error("❌ Step 1 FAILED: Signal connection timeout.")
                 return
             logger.info("✅ Step 1: Connected.")
             
-            # Step 2: Frontend Audio Subscription Sync
-            logger.info("⏳ Step 2: Waiting 20 seconds for browser audio subscription...")
-            for i in range(20):
+            # Step 2: Extended Frontend Audio Subscription Sync
+            # ⭐ Increased to 30s to solve Clock Starvation (v18.0 took 23s)
+            logger.info("⏳ Step 2: Waiting 30s for browser audio subscription (Clock Sync)...")
+            for i in range(30):
                 await asyncio.sleep(1)
                 if (i + 1) % 5 == 0:
-                    logger.info(f"   Sync Progress: {i + 1}/20 seconds...")
+                    logger.info(f"   Sync Progress: {i + 1}/30 seconds...")
             
-            logger.info("✅ Step 2: Frontend should be ready.")
+            logger.info("✅ Step 2: Frontend audio sync satisfied.")
             
-            # Step 3: Safety stabilization
+            # Step 3: Final stabilization
             logger.info("⏳ Step 3: Final stabilizing 2s buffer...")
             await asyncio.sleep(2)
             logger.info("✅ Step 3: Handshake verified.")
@@ -167,14 +170,13 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
             # Trigger via user message context
             context.add_message({"role": "user", "content": "start"})
             
-            # ⭐ USE MODERN FRAME TYPE: LLMMessagesUpdateFrame with run_llm=True
-            # This triggers the LLM to process the context immediately and generate the greeting.
-            # Queuing to the task ensures it flows BEHIND the StartFrame naturally.
+            # Use modern non-deprecated trigger frame
             update_frame = LLMMessagesUpdateFrame(
                 messages=context.get_messages(),
                 run_llm=True
             )
             
+            # Queue to task to follow StartFrame naturally
             await task.queue_frame(update_frame)
             
             logger.info("✅ Step 4: Greeting sequence initiated.")
@@ -185,7 +187,7 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
             import traceback
             traceback.print_exc()
 
-    logger.info("🏃 STARTING PIPELINE MASTER TASK...")
+    logger.info("🏃 STARTING PIPELINE...")
     
     try:
         await runner.run(task)
@@ -195,5 +197,4 @@ Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
         traceback.print_exc()
 
 if __name__ == "__main__":
-    # Room URL and Token provided via command line arguments
     asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "anonymous"))
