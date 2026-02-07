@@ -4,13 +4,15 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "16.0-WORKING"
+VERSION = "17.0-FINAL-WORKING"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
 
-from pipecat.frames.frames import TextFrame, TranscriptionFrame, Frame
+from pipecat.frames.frames import (
+    TextFrame, TranscriptionFrame, Frame, LLMMessagesFrame
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask, PipelineParams
@@ -27,6 +29,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
+# Frame logger for debugging
 class FrameLogger(FrameProcessor):
     def __init__(self, label: str):
         super().__init__()
@@ -38,7 +41,7 @@ class FrameLogger(FrameProcessor):
         if isinstance(frame, TextFrame):
             logger.info(f"📝 [{self.label}] Text: '{frame.text[:40]}'...")
         elif isinstance(frame, TranscriptionFrame):
-            logger.info(f"🎤 [{self.label}] Transcription: '{frame.text}'")
+            logger.info(f"🎤 [{self.label}] User said: '{frame.text}'")
         
         await super().process_frame(frame, direction)
 
@@ -47,12 +50,13 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info(f"🎯 {VERSION} - MITESH AI VOICE")
     logger.info("=" * 70)
 
+    # API Keys
     openai_key = os.getenv("OPENAI_API_KEY")
     cartesia_key = os.getenv("CARTESIA_API_KEY")
     voice_id = os.getenv("CARTESIA_VOICE_ID")
     
     if not all([openai_key, cartesia_key, voice_id]):
-        logger.error("❌ Missing keys!")
+        logger.error("❌ Missing API keys!")
         return
 
     logger.info(f"🔊 Voice: {voice_id[:30]}...")
@@ -72,13 +76,19 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
-    # Context
-    base_prompt = "You are Mitesh Khatri, a world-class life coach. Keep answers SHORT (1-2 sentences max)."
+    # Context with System Prompt Greeting Trigger
+    base_prompt = """You are Mitesh Khatri, a world-class life coach.
+
+IMPORTANT: When the conversation starts (you receive a 'start' or 'trigger' message), immediately greet the user by saying:
+"Hello! I am Mitesh, your AI coach. I am finally connected with my authentic voice. How can I help you today?"
+
+Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
+
     context = LLMContext([{"role": "system", "content": base_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
     # Pipeline
-    logger.info("🔧 Pipeline...")
+    logger.info("🔧 Building pipeline...")
     pipeline = Pipeline([
         transport.input(),
         stt,
@@ -108,55 +118,58 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
     async def on_first_joined(transport, participant):
         nonlocal greeted
         
+        # Safe participant ID handling
         try:
             pid = participant if isinstance(participant, str) else getattr(participant, 'identity', 'user')
         except:
             pid = "user"
         
-        logger.info(f"👋 USER: {pid}")
+        logger.info(f"👋 USER JOINED: {pid}")
         
         if greeted:
             return
         greeted = True
         
         try:
-            logger.info("⏳ Connection check...")
+            # Wait for connection
+            logger.info("⏳ Step 1: Waiting for connection...")
             for i in range(20):
                 if connected:
                     break
                 await asyncio.sleep(0.5)
             if not connected:
-                logger.error("❌ Timeout")
+                logger.error("❌ Step 1 FAILED: Timeout")
                 return
+            logger.info("✅ Step 1: Connected.")
             
-            logger.info("✅ Connected")
-            
-            logger.info("⏳ Frontend sync (20 sec)...")
+            # Wait for frontend (20 seconds based on logs)
+            logger.info("⏳ Step 2: Waiting 20 seconds for browser audio sync...")
             for i in range(20):
                 await asyncio.sleep(1)
                 if (i + 1) % 5 == 0:
-                    logger.info(f"   {i + 1}/20")
+                    logger.info(f"   Wait Progress: {i + 1}/20 sec...")
             
-            logger.info("✅ Ready")
+            logger.info("✅ Step 2: Frontend should be ready.")
+            
+            # Step 3: Safety buffer
+            logger.info("⏳ Step 3: Final stabilizing 2s buffer...")
             await asyncio.sleep(2)
+            logger.info("✅ Step 3: Pipeline verified.")
             
-            greeting = "Hello! I am Mitesh. How can I help you today?"
-            
+            # Step 4: Trigger Greeting via Natural Pipeline Flow
             logger.info("=" * 70)
-            logger.info(f"📤 GREETING: '{greeting}'")
+            logger.info("📤 Step 4: TRIGGERING GREETING VIA PIPELINE FLOW")
             logger.info("=" * 70)
             
-            # Sync context first
-            context.add_message({"role": "assistant", "content": greeting})
+            # Add trigger message to context
+            trigger_text = "start_conversation_trigger"
+            context.add_message({"role": "user", "content": trigger_text})
             
-            # ⭐ FIX: DIRECT INJECTION INTO GENERATIVE PATH
-            logger.info("🎯 Injecting via LLM processor to bypass input bottlenecks...")
+            # Queue LLMMessagesFrame to ensure it flows BEHIND the StartFrame
+            # This is the most standard and reliable way to initiate speech.
+            await task.queue_frame(LLMMessagesFrame(messages=context.get_messages()))
             
-            # In Pipecat, calling push_frame on a processor sends it to the NEXT in line.
-            # We push to llm, so it goes to TTS -> Transport.Output.
-            await llm.push_frame(TextFrame(greeting))
-            
-            logger.info("✅ INJECTION COMPLETE")
+            logger.info("✅ GREETING TRIGGER QUEUED SUCCESSFULLY.")
             logger.info("=" * 70)
             
         except Exception as e:
@@ -164,7 +177,7 @@ async def main(room_url: str, token: str, user_id: str = "anonymous"):
             import traceback
             traceback.print_exc()
 
-    logger.info("🏃 STARTING...")
+    logger.info("🏃 STARTING PIPELINE...")
     
     try:
         await runner.run(task)
