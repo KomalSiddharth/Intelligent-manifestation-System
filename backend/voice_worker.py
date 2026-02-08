@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "24.0-DAILY-FINAL-FIX"
+VERSION = "25.0-DIAGNOSTIC"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -12,7 +12,23 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 # Clean logging
 logger.remove()
 logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {level} | {message}")
+from pipecat.processors.frameworks.base_processor import BaseProcessor
+from pipecat.frames.frames import TextFrame, TranscriptionFrame, AudioRawFrame, EndFrame
 
+class PipelineLogger(BaseProcessor):
+    def __init__(self, prefix):
+        super().__init__()
+        self.prefix = prefix
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TextFrame):
+            logger.info(f"DEBUG [{self.prefix}] 📝 Text: {frame.text[:50]}")
+        elif isinstance(frame, TranscriptionFrame):
+            logger.info(f"DEBUG [{self.prefix}] 🎤 Transcript: {frame.text} (Final: {frame.user_final})")
+        elif isinstance(frame, EndFrame):
+            logger.info(f"DEBUG [{self.prefix}] 🏁 EndFrame received")
+        # Don't log AudioRawFrame to avoid spam
 
 async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 60)
@@ -58,7 +74,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
+            # vad_analyzer=SileroVADAnalyzer(), # Moved to aggregator
         )
     )
 
@@ -82,14 +98,19 @@ When you receive a greeting or "hello", introduce yourself warmly."""
 
     messages = [{"role": "system", "content": system_prompt}]
     context = LLMContext(messages)
-    aggregators = LLMContextAggregatorPair(context)
+    
+    # ⭐ VAD in Aggregator (Pipecat 0.0.101+ recommendation)
+    vad = SileroVADAnalyzer()
+    aggregators = LLMContextAggregatorPair(context, vad_analyzer=vad)
 
     # --- Pipeline ---
     pipeline = Pipeline([
         transport.input(),
         stt,
+        PipelineLogger("INPUT"), # Log after STT
         aggregators.user(),
         llm,
+        PipelineLogger("LLM"), # Log after LLM
         tts,
         transport.output(),
         aggregators.assistant(),
@@ -117,20 +138,18 @@ When you receive a greeting or "hello", introduce yourself warmly."""
         # Small delay for audio pipeline to stabilize
         await asyncio.sleep(1)
 
-        # ⭐ Trigger greeting via LLM (Modern Pipecat pattern)
-        # Add a fake "hello" from user to trigger LLM response
-        logger.info("📤 Triggering greeting via LLM...")
-        context.add_message({"role": "user", "content": "Hello, please introduce yourself"})
+        # ⭐ Trigger greeting
+        logger.info("📤 Triggering greeting...")
         
-        # Using LLMMessagesUpdateFrame fixes the deprecation warning
-        try:
-            from pipecat.frames.frames import LLMMessagesUpdateFrame
-            await task.queue_frames([LLMMessagesUpdateFrame(messages=context.get_messages(), run_llm=True)])
-        except ImportError:
-            # Fallback for older versions if needed
-            await task.queue_frames([LLMMessagesFrame(messages=context.get_messages())])
+        # 1. First, send a hardcoded TextFrame to verify audio out works immediately
+        # This bypasses LLM and goes straight to TTS
+        await task.queue_frames([TextFrame("Hello, I am ready to help you.")])
         
-        logger.info("✅ Greeting frame queued!")
+        # 2. Then, trigger LLM for a natural response
+        context.add_message({"role": "user", "content": "Introduce yourself briefly and ask how I'm doing."})
+        await task.queue_frames([LLMMessagesFrame(messages=context.get_messages())])
+        
+        logger.info("✅ Greeting frames queued!")
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
