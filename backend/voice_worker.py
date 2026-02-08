@@ -4,24 +4,18 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-# ⭐ VERSION 30: REVERT TO STABLE LOGIC
-VERSION = "30.0-REVERT-STABLE"
+# ⭐ VERSION 31: THE DIRECT AUDIO TEST
+VERSION = "31.0-DIRECT-AUDIO-TEST"
 
-# Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-# Clean logging
 logger.remove()
 logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {level} | {message}")
 
-
 async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
-    logger.info("=" * 60)
-    logger.info(f"🎯 {VERSION}")
-    logger.info(f"🏠 Room: {room_url}")
-    logger.info("=" * 60)
+    logger.info(f"🎯 Starting {VERSION}")
 
-    from pipecat.frames.frames import TextFrame, EndFrame, LLMMessagesFrame
+    from pipecat.frames.frames import TextFrame, EndFrame, LLMMessagesUpdateFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineTask, PipelineParams
@@ -38,10 +32,10 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     voice_id = os.getenv("CARTESIA_VOICE_ID")
 
     if not all([openai_key, cartesia_key, voice_id]):
-        logger.error("❌ Missing API keys!")
+        logger.error("❌ API Keys missing!")
         return
 
-    # --- Transport (VAD wapas transport mein) ---
+    # --- Transport (Stable configuration) ---
     transport = DailyTransport(
         room_url,
         token,
@@ -49,25 +43,20 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
+            vad_analyzer=SileroVADAnalyzer()
         )
     )
 
-    # --- AI Services ---
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
+    # Cartesia service setup
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
-    # --- Conversation Context ---
-    system_prompt = """You are Mitesh Khatri, a world-class life coach. 
-    You speak mostly in Hindi mixed with English (Hinglish). 
-    Keep responses very short and encouraging."""
-
-    messages = [{"role": "system", "content": system_prompt}]
-    context = LLMContext(messages)
+    # Context setup
+    system_prompt = "You are Mitesh Khatri. Respond in short Hinglish sentences."
+    context = LLMContext([{"role": "system", "content": system_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # --- Pipeline ---
     pipeline = Pipeline([
         transport.input(),
         stt,
@@ -78,54 +67,41 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         aggregators.assistant(),
     ])
 
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            allow_interruptions=True,
-            enable_metrics=True,
-        )
-    )
+    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
 
-    # --- Event Handlers ---
     @transport.event_handler("on_participant_joined")
     async def on_participant_joined(transport, participant):
-        # Hamara bot hi join hota hai pehle, use ignore karein
         if participant.get("info", {}).get("userName") == "Mitesh AI Coach":
             return
             
-        logger.info(f"👋 User joined ({participant['id']}). Waiting for audio...")
+        logger.info(f"👋 User {participant['id']} joined.")
         
-        # Room stability ke liye 3-4 second ka wait
-        await asyncio.sleep(4)
+        # Room connection ke liye wait
+        await asyncio.sleep(5)
         
-        # Trigger greeting (Wapas purana reliable Frame)
-        logger.info("📤 Triggering greeting message...")
+        # ⭐ TEST 1: Direct Audio Output (Bypasses LLM/Context)
+        # Agar ye sunai diya, toh Cartesia/API Key bilkul sahi hai.
+        logger.info("📤 Sending DIRECT TextFrame Greeting...")
+        await task.queue_frames([TextFrame("Namaste! Main Mitesh Khatri hoon. Kya aap mujhe sun sakte hain?")])
+        
+        # TEST 2: Trigger LLM (Standard pattern)
+        await asyncio.sleep(2)
+        logger.info("📤 Triggering LLM Response...")
         await task.queue_frames([
-            LLMMessagesFrame(messages=[
-                {"role": "user", "content": "Hello Mitesh, I am here. Please introduce yourself and start the coaching session."}
-            ])
+            LLMMessagesUpdateFrame(messages=[
+                {"role": "user", "content": "I am here. Please start."}
+            ], run_llm=True)
         ])
-        logger.info("✅ Greeting triggered!")
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
-        logger.info("👋 User left. Session ending.")
         await task.queue_frame(EndFrame())
 
-    @transport.event_handler("on_call_state_updated")
-    async def on_call_state_updated(transport, state):
-        if state == "left":
-            await task.queue_frame(EndFrame())
-
-    # --- Run ---
     runner = PipelineRunner()
     try:
         await runner.run(task)
     except Exception as e:
-        logger.error(f"💥 Pipeline failure: {e}")
-    finally:
-        logger.info(f"🏁 Bot session closed.")
-
+        logger.error(f"💥 Error: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
