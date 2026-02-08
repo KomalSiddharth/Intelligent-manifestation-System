@@ -29,7 +29,7 @@ class FrameLogger(FrameProcessor):
         
         await super().process_frame(frame, direction)
 
-VERSION = "25.0-DAILY-PRODUCTION"
+VERSION = "26.0-DAILY-PRODUCTION"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -55,11 +55,8 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     from pipecat.services.openai.stt import OpenAISTTService
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.services.cartesia.tts import CartesiaTTSService
-    from pipecat.processors.aggregators.llm_context import (
-        LLMContext, 
-        LLMUserContextAggregator, 
-        LLMAssistantContextAggregator
-    )
+    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+    from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.transports.daily.transport import DailyTransport, DailyParams
 
@@ -76,6 +73,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     vad = SileroVADAnalyzer()
 
     # --- Transport ---
+    # Moving VAD back to transport for maximum stability (Pipecat 0.0.101 legacy support)
     transport = DailyTransport(
         room_url,
         token,
@@ -83,7 +81,9 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            # vad_analyzer must NOT be here anymore
+            vad_enabled=True,
+            vad_analyzer=vad,
+            vad_audio_passthrough=True,
         )
     )
 
@@ -92,16 +92,15 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
-    # --- Context & Aggregators ---
-    system_prompt = """You are Mitesh Khatri, a world-class life coach.
-    Speak naturally in Hinglish. Keep responses under 2 sentences.
-    Greeting: "Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?" """
+    # --- System Prompt ---
+    system_prompt = """You are Mitesh Khatri, a world-class life coach and motivational speaker.
+    You speak naturally in Hinglish (Hindi + English). 
+    Keep all your responses under 2 sentences.
+    
+    Greet the user with: "Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?" """
     
     context = LLMContext([{"role": "system", "content": system_prompt}])
-    
-    # Modern aggregator pattern to fix deprecation warning
-    user_aggregator = LLMUserContextAggregator(context, vad_analyzer=vad)
-    assistant_aggregator = LLMAssistantContextAggregator(context)
+    aggregators = LLMContextAggregatorPair(context)
 
     # --- Pipeline ---
     pipeline = Pipeline([
@@ -109,13 +108,13 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         FrameLogger("Mic In"),
         stt,                     # 2. Audio -> Text
         FrameLogger("STT Out"),
-        user_aggregator,         # 3. Text -> Context (with VAD)
-        llm,                     # 4. Context -> Response
+        aggregators.user(),      # 3. Aggregation
+        llm,                     # 4. LLM
         FrameLogger("LLM Out"),
-        assistant_aggregator,    # 5. Response -> Context
-        tts,                     # 6. Response -> Audio
+        tts,                     # 5. TTS
         FrameLogger("TTS Out"),
-        transport.output(),      # 7. Audio Out
+        transport.output(),      # 6. Audio Out
+        aggregators.assistant(), # 7. Store bot's context
     ])
 
     task = PipelineTask(
@@ -129,9 +128,9 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     # --- Event Handlers ---
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
-        logger.info(f"👋 User joined! Preparing greeting...")
-        # Direct greeting trigger
-        await task.queue_frames([TextFrame("Hi Mitesh, please introduce yourself and greet the user.")])
+        logger.info(f"👋 User joined! Triggering greeting...")
+        # Direct Text greeting for maximum reliability
+        await task.queue_frames([TextFrame("Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?")])
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
@@ -152,6 +151,8 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         await runner.run(task)
     except Exception as e:
         logger.error(f"💥 Pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         logger.info(f"🏁 Bot session ended")
 
