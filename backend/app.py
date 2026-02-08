@@ -84,7 +84,7 @@ def create_daily_token(room_name, participant_name, is_owner=False):
                 "room_name": room_name,
                 "user_name": participant_name,
                 "is_owner": is_owner,
-                "exp": time.time() + 3600,  # Token expires in 1 hour
+                # Removed 'exp' to avoid clock drift issues - Daily will use default
                 "enable_screenshare": False,
                 "start_video_off": True,
                 "start_audio_off": False,

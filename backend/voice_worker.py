@@ -4,7 +4,26 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "21.0-DAILY-PRODUCTION"
+from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.frames.frames import (
+    TextFrame, EndFrame, AudioRawFrame, TranscriptionFrame, LLMMessagesUpdateFrame
+)
+
+# Custom Logger to see frames
+class FrameLogger(FrameProcessor):
+    def __init__(self, label: str):
+        super().__init__()
+        self.label = label
+    
+    async def process_frame(self, frame, direction):
+        if isinstance(frame, TextFrame):
+            logger.info(f"📝 [{self.label}] Text: {frame.text[:50]}...")
+        elif isinstance(frame, TranscriptionFrame):
+            logger.info(f"🎤 [{self.label}] Transcription: {frame.text}")
+        
+        await super().process_frame(frame, direction)
+
+VERSION = "23.0-DAILY-PRODUCTION"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -24,8 +43,6 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info("=" * 60)
 
     # --- Import heavy modules here (not at top level) ---
-    # This avoids loading ML models until a call actually starts
-    from pipecat.frames.frames import TextFrame, EndFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineTask, PipelineParams
@@ -54,24 +71,18 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
         )
     )
 
+    # VAD Analyzer
+    vad = SileroVADAnalyzer()
+
     # --- AI Services ---
     stt = OpenAISTTService(api_key=openai_key)
+    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
+    tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
-    llm = OpenAILLMService(
-        api_key=openai_key,
-        model="gpt-4o-mini"
-    )
-
-    tts = CartesiaTTSService(
-        api_key=cartesia_key,
-        voice_id=voice_id,
-    )
-
-    # --- Conversation Context ---
+    # --- System Prompt ---
     system_prompt = """You are Mitesh Khatri, a world-class life coach and motivational speaker.
 
 Your personality:
@@ -86,24 +97,28 @@ When greeting someone for the first time, say:
 
 IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, not text chat."""
 
+    # --- Context & Aggregators ---
     context = LLMContext([{"role": "system", "content": system_prompt}])
-    aggregators = LLMContextAggregatorPair(context)
+    aggregators = LLMContextAggregatorPair(context, vad_analyzer=vad)
 
     # --- Pipeline ---
     pipeline = Pipeline([
         transport.input(),       # Receive audio from user's mic
-        stt,                     # Speech-to-Text (OpenAI Whisper)
-        aggregators.user(),      # Add user's message to context
-        llm,                     # LLM generates response (GPT-4o-mini)
-        tts,                     # Text-to-Speech (Cartesia)
-        transport.output(),      # Send audio back to user's speaker
-        aggregators.assistant(), # Add bot's response to context
+        stt,                     # Speech-to-Text
+        FrameLogger("STT Out"),
+        aggregators.user(),      # Handles VAD & Aggregation
+        llm,                     # Generating response
+        FrameLogger("LLM Out"),
+        aggregators.assistant(), # Aggregates bot's text response
+        tts,                     # Text-to-Speech
+        FrameLogger("TTS Out"),
+        transport.output(),      # Send audio back
     ])
 
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
-            allow_interruptions=True,  # User can interrupt the bot
+            allow_interruptions=True,
             enable_metrics=True,
         )
     )
@@ -112,11 +127,8 @@ IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, n
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
         """Trigger greeting when user joins the room"""
-        participant_name = getattr(participant, 'info', {})
         logger.info(f"👋 User joined! Triggering greeting...")
-
-        # Queue greeting - this is the CORRECT way in Pipecat
-        # Just send a TextFrame through the pipeline starting from TTS
+        # Queueing a TextFrame to the LLM to trigger a context-aware response or just speech
         await task.queue_frames([TextFrame("Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?")])
 
     @transport.event_handler("on_participant_left")
@@ -133,8 +145,7 @@ IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, n
             await task.queue_frame(EndFrame())
 
     # --- Run ---
-    # NOTE: handle_sigint=False is critical because we run this in a background thread.
-    # Signal handlers (SIGINT) can only be set in the main thread.
+    # handle_sigint=False is critical because we run this in a background thread.
     runner = PipelineRunner(handle_sigint=False)
 
     logger.info("🏃 Starting pipeline...")
@@ -148,7 +159,7 @@ IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, n
         logger.info(f"🏁 Bot session ended for {user_id}")
 
 
-# For standalone testing (not used in production)
+# For standalone testing
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python voice_worker.py <room_url> <token> [user_id]")
