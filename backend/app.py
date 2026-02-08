@@ -29,7 +29,7 @@ CORS(app, resources={
 })
 
 # Daily.co Configuration
-DAILY_API_KEY = os.getenv("DAILY_API_KEY")
+DAILY_API_KEY = os.getenv("DAILY_API_KEY", "").strip()
 DAILY_API_URL = "https://api.daily.co/v1"
 
 if not DAILY_API_KEY:
@@ -93,9 +93,12 @@ def create_daily_token(room_name, participant_name, is_owner=False):
     )
 
     if response.status_code != 200:
+        print(f"❌ Daily token creation failed for {participant_name}: {response.text}")
         raise Exception(f"Daily token creation failed: {response.text}")
 
-    return response.json()["token"]
+    token = response.json()["token"]
+    print(f"✅ Token created for {participant_name}: {token[:10]}...")
+    return token
 
 
 def run_bot_in_background(room_url, bot_token, user_id):

@@ -54,9 +54,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_enabled=True,
             vad_analyzer=SileroVADAnalyzer(),
-            vad_audio_passthrough=True,
         )
     )
 
@@ -135,7 +133,9 @@ IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, n
             await task.queue_frame(EndFrame())
 
     # --- Run ---
-    runner = PipelineRunner()
+    # NOTE: handle_sigint=False is critical because we run this in a background thread.
+    # Signal handlers (SIGINT) can only be set in the main thread.
+    runner = PipelineRunner(handle_sigint=False)
 
     logger.info("🏃 Starting pipeline...")
     try:
