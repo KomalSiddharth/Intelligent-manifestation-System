@@ -12,10 +12,10 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 # Clean logging
 logger.remove()
 logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {level} | {message}")
-from pipecat.processors.frameworks.base_processor import BaseProcessor
+from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.frames.frames import TextFrame, TranscriptionFrame, AudioRawFrame, EndFrame
 
-class PipelineLogger(BaseProcessor):
+class PipelineLogger(FrameProcessor):
     def __init__(self, prefix):
         super().__init__()
         self.prefix = prefix
