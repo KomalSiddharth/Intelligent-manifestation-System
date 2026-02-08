@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "25.0-DIAGNOSTIC"
+VERSION = "26.0-DIAGNOSTIC-STABLE"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -74,7 +74,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            # vad_analyzer=SileroVADAnalyzer(), # Moved to aggregator
+            vad_analyzer=SileroVADAnalyzer(),
         )
     )
 
@@ -99,9 +99,8 @@ When you receive a greeting or "hello", introduce yourself warmly."""
     messages = [{"role": "system", "content": system_prompt}]
     context = LLMContext(messages)
     
-    # ⭐ VAD in Aggregator (Pipecat 0.0.101+ recommendation)
-    vad = SileroVADAnalyzer()
-    aggregators = LLMContextAggregatorPair(context, vad_analyzer=vad)
+    # ⭐ Using standard constructor (vad_analyzer moved back to transport to fix TypeError)
+    aggregators = LLMContextAggregatorPair(context)
 
     # --- Pipeline ---
     pipeline = Pipeline([
@@ -141,13 +140,12 @@ When you receive a greeting or "hello", introduce yourself warmly."""
         # ⭐ Trigger greeting
         logger.info("📤 Triggering greeting...")
         
-        # 1. First, send a hardcoded TextFrame to verify audio out works immediately
-        # This bypasses LLM and goes straight to TTS
-        await task.queue_frames([TextFrame("Hello, I am ready to help you.")])
+        # 1. Send immediate text to bypass LLM and test TTS
+        await task.queue_frames([TextFrame("Hi there! Mitesh here. How can I help you today?")])
         
-        # 2. Then, trigger LLM for a natural response
-        context.add_message({"role": "user", "content": "Introduce yourself briefly and ask how I'm doing."})
-        await task.queue_frames([LLMMessagesFrame(messages=context.get_messages())])
+        # 2. Trigger LLM for context
+        from pipecat.frames.frames import LLMMessagesUpdateFrame
+        await task.queue_frames([LLMMessagesUpdateFrame(messages=context.get_messages(), run_llm=True)])
         
         logger.info("✅ Greeting frames queued!")
 
