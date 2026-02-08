@@ -7,33 +7,35 @@ from dotenv import load_dotenv
 
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.frames.frames import (
-    TextFrame, EndFrame, AudioRawFrame, TranscriptionFrame, LLMMessagesUpdateFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+    TextFrame, EndFrame, AudioRawFrame, TranscriptionFrame, LLMMessagesUpdateFrame
 )
 
-# Deep Trace Logger
-class DeepFrameLogger(FrameProcessor):
+# Deep Trace Logger to find the "Black Hole"
+class DeepTraceLogger(FrameProcessor):
     def __init__(self, label: str):
         super().__init__()
         self.label = label
-        self.audio_count = 0
     
     async def process_frame(self, frame, direction):
-        if isinstance(frame, TextFrame):
-            logger.info(f"📝 [{self.label}] Text: {frame.text[:50]}...")
-        elif isinstance(frame, TranscriptionFrame):
-            logger.info(f"🎤 [{self.label}] Transcription: {frame.text}")
-        elif isinstance(frame, LLMMessagesUpdateFrame):
-            logger.info(f"🔄 [{self.label}] Context Update")
-        elif isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame)):
-            logger.info(f"🗣️ [{self.label}] {type(frame).__name__}")
-        elif isinstance(frame, AudioRawFrame):
-            self.audio_count += 1
-            if self.audio_count % 500 == 0:
-                logger.info(f"🔊 [{self.label}] {self.audio_count} audio chunks")
+        # Log almost everything to see what's flowing
+        frame_type = type(frame).__name__
+        
+        if isinstance(frame, AudioRawFrame):
+            # Only log audio chunks occasionally to avoid spam
+            if getattr(self, "audio_count", 0) % 500 == 0:
+                logger.info(f"🔊 [{self.label}] Audio frame flowing...")
+            self.audio_count = getattr(self, "audio_count", 0) + 1
+        else:
+            if isinstance(frame, TextFrame):
+                logger.info(f"📝 [{self.label}] {frame_type}: {frame.text[:50]}")
+            elif isinstance(frame, TranscriptionFrame):
+                logger.info(f"🎤 [{self.label}] {frame_type}: {frame.text}")
+            else:
+                logger.info(f"🔍 [{self.label}] Frame: {frame_type}")
         
         await super().process_frame(frame, direction)
 
-VERSION = "28.0-DAILY-PRODUCTION"
+VERSION = "29.0-DAILY-PRODUCTION"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -59,8 +61,11 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     from pipecat.services.openai.stt import OpenAISTTService
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.services.cartesia.tts import CartesiaTTSService
-    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.llm_context import (
+        LLMContext, 
+        LLMUserAggregator, 
+        LLMAssistantAggregator
+    )
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.transports.daily.transport import DailyTransport, DailyParams
 
@@ -70,26 +75,26 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     voice_id = os.getenv("CARTESIA_VOICE_ID")
 
     if not all([openai_key, cartesia_key, voice_id]):
-        logger.error("❌ Missing AI API keys!")
+        logger.error("❌ Missing AI API keys! Check .env")
         return
 
     # VAD Analyzer
     vad = SileroVADAnalyzer()
 
     # --- Transport ---
-    # Reverting to transport-level VAD which is proven to work in 0.0.101
+    # following depolarization warning: vad_enabled removed, vad_analyzer NOT here
     transport = DailyTransport(
         room_url,
         token,
         "Mitesh AI Coach",
         DailyParams(
             audio_in_enabled=True,
-            audio_out_enabled=True,
-            vad_enabled=True,
-            vad_analyzer=vad,
-            vad_audio_passthrough=True,
+            audio_out_enabled=False, # We don't want Daily to manage audio out, we use transport.output()
+            camera_out_enabled=False,
         )
     )
+    # Manual fix for transport output
+    transport.set_params(DailyParams(audio_out_enabled=True))
 
     # --- AI Services ---
     stt = OpenAISTTService(api_key=openai_key)
@@ -98,28 +103,29 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
 
     # --- System Prompt ---
     system_prompt = """You are Mitesh Khatri, a world-class life coach. 
-    You speak naturally in Hinglish (Hindi + English). 
-    Keep all your responses under 2 sentences.
-    
-    When you start, greet the user with: "Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?" """
+    Speak naturally in Hinglish. Keep responses under 2 sentences.
+    Greeting: "Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?" """
     
     context = LLMContext([{"role": "system", "content": system_prompt}])
-    aggregators = LLMContextAggregatorPair(context)
+    
+    # Using the exact names suggested by the warning
+    user_aggregator = LLMUserAggregator(context, vad_analyzer=vad)
+    assistant_aggregator = LLMAssistantAggregator(context)
 
     # --- Pipeline ---
     pipeline = Pipeline([
-        transport.input(),       # In
-        DeepFrameLogger("1-Mic"),
-        stt,                     # Mic -> Text
-        DeepFrameLogger("2-STT"),
-        aggregators.user(),      # Text -> Context
-        DeepFrameLogger("3-Aggregator"),
-        llm,                     # Context -> Response
-        DeepFrameLogger("4-LLM"),
-        tts,                     # Response -> Audio
-        DeepFrameLogger("5-TTS"),
-        transport.output(),      # Out
-        aggregators.assistant(), # Store Response in Context
+        transport.input(),       # 1. In
+        DeepTraceLogger("IN"),
+        stt,                     # 2. STT
+        DeepTraceLogger("STT"),
+        user_aggregator,         # 3. Aggregator (with VAD)
+        DeepTraceLogger("AGG"),
+        llm,                     # 4. LLM
+        DeepTraceLogger("LLM"),
+        tts,                     # 5. TTS
+        DeepTraceLogger("TTS"),
+        transport.output(),      # 6. Out
+        assistant_aggregator,    # 7. Store bot's context
     ])
 
     task = PipelineTask(
@@ -133,9 +139,9 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     # --- Event Handlers ---
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
-        logger.info(f"👋 User joined! Triggering greeting...")
-        # Direct trigger: Send a prompt to the LLM to introduce itself
-        await task.queue_frames([LLMMessagesUpdateFrame(messages=[{"role": "user", "content": "Please introduce yourself."}])])
+        logger.info(f"👋 User joined! Preparing greeting...")
+        # Direct Text greeting to jumpstart the pipeline
+        await task.queue_frames([TextFrame("Hi Mitesh, please introduce yourself and greet the user.")])
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
