@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "22.0-DAILY-MULTIPROCESS"
+VERSION = "23.0-DAILY-STABLE"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -41,10 +41,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         logger.error("❌ Missing API keys!")
         return
 
-    # VAD analyzer — created separately, will pass to aggregator
-    vad_analyzer = SileroVADAnalyzer()
-
-    # Transport — NO vad params here (deprecated in 0.0.101)
+    # Transport — VAD in transport shows deprecation warning but WORKS
     transport = DailyTransport(
         room_url,
         token,
@@ -52,6 +49,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            vad_analyzer=SileroVADAnalyzer(),
         )
     )
 
@@ -77,8 +75,8 @@ IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, n
 
     context = LLMContext([{"role": "system", "content": system_prompt}])
 
-    # Pass VAD analyzer to aggregator (the NEW correct way in 0.0.101)
-    aggregators = LLMContextAggregatorPair(context, vad_analyzer=vad_analyzer)
+    # Pass context only to aggregator
+    aggregators = LLMContextAggregatorPair(context)
 
     pipeline = Pipeline([
         transport.input(),
