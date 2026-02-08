@@ -23,7 +23,7 @@ class FrameLogger(FrameProcessor):
         
         await super().process_frame(frame, direction)
 
-VERSION = "23.0-DAILY-PRODUCTION"
+VERSION = "24.0-DAILY-PRODUCTION"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -42,7 +42,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info(f"👤 User: {user_id}")
     logger.info("=" * 60)
 
-    # --- Import heavy modules here (not at top level) ---
+    # --- Import heavy modules here ---
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineTask, PipelineParams
@@ -60,8 +60,11 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     voice_id = os.getenv("CARTESIA_VOICE_ID")
 
     if not all([openai_key, cartesia_key, voice_id]):
-        logger.error("❌ Missing API keys! Check OPENAI_API_KEY, CARTESIA_API_KEY, CARTESIA_VOICE_ID")
+        logger.error("❌ Missing API keys!")
         return
+
+    # VAD Analyzer
+    vad = SileroVADAnalyzer()
 
     # --- Transport (Daily.co) ---
     transport = DailyTransport(
@@ -71,11 +74,9 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            vad_analyzer=vad,
         )
     )
-
-    # VAD Analyzer
-    vad = SileroVADAnalyzer()
 
     # --- AI Services ---
     stt = OpenAISTTService(api_key=openai_key)
@@ -95,18 +96,18 @@ Your personality:
 When greeting someone for the first time, say:
 "Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?"
 
-IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, not text chat."""
+IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation."""
 
     # --- Context & Aggregators ---
     context = LLMContext([{"role": "system", "content": system_prompt}])
-    aggregators = LLMContextAggregatorPair(context, vad_analyzer=vad)
+    aggregators = LLMContextAggregatorPair(context)
 
     # --- Pipeline ---
     pipeline = Pipeline([
         transport.input(),       # Receive audio from user's mic
         stt,                     # Speech-to-Text
         FrameLogger("STT Out"),
-        aggregators.user(),      # Handles VAD & Aggregation
+        aggregators.user(),      # Handles Aggregation
         llm,                     # Generating response
         FrameLogger("LLM Out"),
         aggregators.assistant(), # Aggregates bot's text response
@@ -128,13 +129,13 @@ IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, n
     async def on_first_participant_joined(transport, participant):
         """Trigger greeting when user joins the room"""
         logger.info(f"👋 User joined! Triggering greeting...")
-        # Queueing a TextFrame to the LLM to trigger a context-aware response or just speech
-        await task.queue_frames([TextFrame("Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?")])
+        # Send a fake user message to trigger the greeting via LLM naturally
+        await task.queue_frames([LLMMessagesUpdateFrame(messages=[{"role": "user", "content": "Hello, Mitesh!"}])])
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
         """Cleanup when user leaves"""
-        logger.info(f"👋 User left (reason: {reason}). Ending bot...")
+        logger.info(f"👋 User left. Ending bot...")
         await task.queue_frame(EndFrame())
 
     @transport.event_handler("on_call_state_updated")
@@ -145,7 +146,6 @@ IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, n
             await task.queue_frame(EndFrame())
 
     # --- Run ---
-    # handle_sigint=False is critical because we run this in a background thread.
     runner = PipelineRunner(handle_sigint=False)
 
     logger.info("🏃 Starting pipeline...")
@@ -162,7 +162,7 @@ IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, n
 # For standalone testing
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python voice_worker.py <room_url> <token> [user_id]")
+        print("Usage: python voice_worker.py <room_url> <token>")
         sys.exit(1)
 
     asyncio.run(run_bot(
