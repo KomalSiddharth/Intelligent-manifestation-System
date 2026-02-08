@@ -4,7 +4,7 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "21.0-DAILY-PRODUCTION"
+VERSION = "22.0-DAILY-MULTIPROCESS"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -41,6 +41,10 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         logger.error("❌ Missing API keys!")
         return
 
+    # VAD analyzer — created separately, will pass to aggregator
+    vad_analyzer = SileroVADAnalyzer()
+
+    # Transport — NO vad params here (deprecated in 0.0.101)
     transport = DailyTransport(
         room_url,
         token,
@@ -48,16 +52,15 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
-            vad_audio_passthrough=True,
         )
     )
 
+    # AI Services
     stt = OpenAISTTService(api_key=openai_key)
     llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
+    # Conversation Context
     system_prompt = """You are Mitesh Khatri, a world-class life coach and motivational speaker.
 
 Your personality:
@@ -73,7 +76,9 @@ When greeting someone for the first time, say:
 IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, not text chat."""
 
     context = LLMContext([{"role": "system", "content": system_prompt}])
-    aggregators = LLMContextAggregatorPair(context)
+
+    # Pass VAD analyzer to aggregator (the NEW correct way in 0.0.101)
+    aggregators = LLMContextAggregatorPair(context, vad_analyzer=vad_analyzer)
 
     pipeline = Pipeline([
         transport.input(),
