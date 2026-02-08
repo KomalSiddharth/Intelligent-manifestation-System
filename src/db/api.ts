@@ -364,25 +364,20 @@ export const moveContentToFolder = async (id: string, folderId: string | null): 
   }
 };
 export const getContentItems = async (folderId?: string, profileId?: string): Promise<ContentItem[]> => {
-  try {
-    const { data, error } = await supabase.functions.invoke('admin-data', {
-      body: {
-        action: 'get_content',
-        folderId: folderId || null,
-        profileId: profileId === 'all' ? null : (profileId || null)
-      }
-    });
+  const { data, error } = await supabase.functions.invoke('admin-data', {
+    body: {
+      action: 'get_content',
+      folderId: folderId || null,
+      profileId: profileId === 'all' ? null : (profileId || null)
+    }
+  });
 
-    if (error) throw error;
+  if (error) throw error;
 
-    return (data.data || []).map((item: any) => ({
-      ...item,
-      uploaded_at: item.uploaded_at || item.created_at,
-    }));
-  } catch (err) {
-    console.error("Error fetching content via Edge Function:", err);
-    return [];
-  }
+  return (data.data || []).map((item: any) => ({
+    ...item,
+    uploaded_at: item.uploaded_at || item.created_at,
+  }));
 };
 
 export const deleteContentItem = async (id: string): Promise<void> => {
@@ -572,22 +567,17 @@ export const trackSocialSource = async (url: string, platform: string, profileId
 
 // Audience Users API
 export const getAudienceUsers = async (status?: string, _profileId?: string): Promise<AudienceUser[]> => {
-  try {
-    const { data, error } = await supabase.functions.invoke('admin-data', {
-      body: {
-        action: 'get_audience',
-        status: status === 'all' ? null : (status || null),
-        profileId: _profileId === 'all' ? null : (_profileId || null),
-        limit: 5000 // Set high limit for now
-      }
-    });
+  const { data, error } = await supabase.functions.invoke('admin-data', {
+    body: {
+      action: 'get_audience',
+      status: status === 'all' ? null : (status || null),
+      profileId: _profileId === 'all' ? null : (_profileId || null),
+      limit: 5000 // Set high limit for now
+    }
+  });
 
-    if (error) throw error;
-    return (data.data as AudienceUser[]) || [];
-  } catch (err) {
-    console.error("Error fetching audience via Edge Function:", err);
-    return [];
-  }
+  if (error) throw error;
+  return (data.data as AudienceUser[]) || [];
 };
 
 

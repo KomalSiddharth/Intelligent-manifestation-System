@@ -117,11 +117,19 @@ When you receive a greeting or "hello", introduce yourself warmly."""
         # Small delay for audio pipeline to stabilize
         await asyncio.sleep(1)
 
-        # ⭐ Trigger greeting via LLM (correct Pipecat pattern)
+        # ⭐ Trigger greeting via LLM (Modern Pipecat pattern)
         # Add a fake "hello" from user to trigger LLM response
         logger.info("📤 Triggering greeting via LLM...")
         context.add_message({"role": "user", "content": "Hello, please introduce yourself"})
-        await task.queue_frames([LLMMessagesFrame(messages=context.get_messages())])
+        
+        # Using LLMMessagesUpdateFrame fixes the deprecation warning
+        try:
+            from pipecat.frames.frames import LLMMessagesUpdateFrame
+            await task.queue_frames([LLMMessagesUpdateFrame(messages=context.get_messages(), run_llm=True)])
+        except ImportError:
+            # Fallback for older versions if needed
+            await task.queue_frames([LLMMessagesFrame(messages=context.get_messages())])
+        
         logger.info("✅ Greeting frame queued!")
 
     @transport.event_handler("on_participant_left")

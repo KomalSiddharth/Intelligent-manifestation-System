@@ -14,19 +14,29 @@ serve(async (req) => {
     }
 
     try {
+        const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
+        const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+
+        console.log(`[Admin Data] Starting... URL: ${SUPABASE_URL.slice(0, 15)}... Key: ${SERVICE_ROLE_KEY.slice(0, 10)}...`);
+
+        if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
+            throw new Error("Missing Supabase environment variables in Edge Function");
+        }
+
         const supabaseClient = createClient(
-            Deno.env.get('SUPABASE_URL') ?? '',
-            Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+            SUPABASE_URL,
+            SERVICE_ROLE_KEY,
             {
                 global: {
-                    headers: { Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}` },
+                    headers: { Authorization: `Bearer ${SERVICE_ROLE_KEY}` },
                 },
             }
         )
 
-        const { action, limit = 5000, offset = 0, profileId, status, folderId } = await req.json()
+        const body = await req.json().catch(() => ({}));
+        const { action, limit = 5000, offset = 0, profileId, status, folderId } = body;
 
-        console.log(`[Admin Data] Request: ${action}`, { limit, offset, profileId })
+        console.log(`[Admin Data] Action: ${action}`, { limit, offset, profileId, folderId, status });
 
         let result;
 
