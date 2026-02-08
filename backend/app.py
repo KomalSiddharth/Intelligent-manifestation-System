@@ -1,25 +1,25 @@
-
 import os
 import sys
 import time
-import requests
-import subprocess
+import asyncio
+import threading
 import random
 import string
+import aiohttp
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-from livekit import api
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 app = Flask(__name__)
 
-# ✅ CORS Configuration - CRITICAL FOR PRODUCTION!
+# CORS Configuration
 CORS(app, resources={
     r"/*": {
-        "origins": "*",  # Allow all for robustness in production, though you can restrict to frontend URL later
+        "origins": "*",  # TODO: Replace with your frontend domain in production
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"],
         "expose_headers": ["Content-Type", "Authorization"],
@@ -28,91 +28,154 @@ CORS(app, resources={
     }
 })
 
+# Daily.co Configuration
+DAILY_API_KEY = os.getenv("DAILY_API_KEY")
+DAILY_API_URL = "https://api.daily.co/v1"
 
-LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
-LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
-LIVEKIT_URL = os.getenv("LIVEKIT_URL")
+if not DAILY_API_KEY:
+    print("❌ ERROR: DAILY_API_KEY missing in .env")
 
-if not all([LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL]):
-    print("❌ ERROR: LiveKit credentials missing in .env")
-    # Not exiting here to allow other parts of the app to run/debug if needed, 
-    # but actual sessions will fail.
+# Track active sessions for cleanup
+active_sessions = {}
+MAX_CONCURRENT_CALLS = 50  # Safety limit
 
-def generate_room_name(user_id):
-    """Generate a unique room name"""
+
+def create_daily_room():
+    """Create a temporary Daily.co room via REST API"""
     timestamp = int(time.time())
     random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    return f"voice-{user_id[:8]}-{timestamp}-{random_suffix}"
+    room_name = f"voice-{timestamp}-{random_suffix}"
+
+    response = requests.post(
+        f"{DAILY_API_URL}/rooms",
+        headers={
+            "Authorization": f"Bearer {DAILY_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "name": room_name,
+            "privacy": "private",
+            "properties": {
+                "exp": time.time() + 3600,  # Room expires in 1 hour
+                "max_participants": 2,       # User + Bot only
+                "enable_chat": False,
+                "enable_knocking": False,
+                "eject_at_room_exp": True,   # Auto-kick when room expires
+            }
+        }
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Daily room creation failed: {response.text}")
+
+    return response.json()
+
+
+def create_daily_token(room_name, participant_name, is_owner=False):
+    """Create a meeting token for a participant"""
+    response = requests.post(
+        f"{DAILY_API_URL}/meeting-tokens",
+        headers={
+            "Authorization": f"Bearer {DAILY_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "properties": {
+                "room_name": room_name,
+                "user_name": participant_name,
+                "is_owner": is_owner,
+                "exp": time.time() + 3600,  # Token expires in 1 hour
+                "enable_screenshare": False,
+                "start_video_off": True,
+                "start_audio_off": False,
+            }
+        }
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Daily token creation failed: {response.text}")
+
+    return response.json()["token"]
+
+
+def run_bot_in_background(room_url, bot_token, user_id):
+    """Run the voice worker bot in a background thread with its own event loop"""
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Import here to avoid loading heavy ML models at startup
+            from voice_worker import run_bot
+            loop.run_until_complete(run_bot(room_url, bot_token, user_id))
+        except Exception as e:
+            print(f"❌ Bot error for {user_id}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+        finally:
+            loop.close()
+            # Cleanup session tracking
+            if user_id in active_sessions:
+                del active_sessions[user_id]
+                print(f"🧹 Session cleaned up for {user_id}", flush=True)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return thread
+
 
 @app.route('/start-session', methods=['POST'])
 def start_session():
-    """Generate LiveKit token and spawn voice worker"""
-    
+    """Create Daily.co room and spawn voice bot"""
     try:
         data = request.json
         user_id = data.get('user_id', 'anonymous-' + ''.join(random.choices(string.ascii_lowercase, k=4)))
-        
+
         print(f"📞 Creating voice session for user: {user_id}")
-        
-        # Generate unique room name
-        room_name = generate_room_name(user_id)
-        
-        # Create LiveKit Access Token for the USER
-        user_token_manager = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        user_token_manager.with_identity(user_id)
-        user_token_manager.with_name("User")
-        user_token_manager.with_grants(api.VideoGrants(
-            room_join=True,
-            room=room_name,
-            can_publish=True,
-            can_subscribe=True
-        ))
-        user_token = user_token_manager.to_jwt()
 
-        # Create LiveKit Access Token for the BOT
-        bot_token_manager = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-        bot_token_manager.with_identity(f"bot-{user_id[:8]}")
-        bot_token_manager.with_name("Mitesh AI Coach")
-        bot_token_manager.with_grants(api.VideoGrants(
-            room_join=True,
-            room=room_name,
-            can_publish=True,
-            can_subscribe=True
-        ))
-        bot_token = bot_token_manager.to_jwt()
-        
-        print(f"✅ Tokens generated for room: {room_name}")
-        
-        # ✅ Spawn voice worker subprocess with EXPLICIT LOG PIPING
-        print("🚀 Spawning voice worker...", flush=True)
-        worker_process = subprocess.Popen(
-            [
-                sys.executable,
-                "voice_worker.py",
-                LIVEKIT_URL,
-                bot_token,
-                user_id
-            ],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, # Merge stderr into stdout
-            bufsize=1,
-            universal_newlines=True
-        )
+        # Safety check: concurrent call limit
+        if len(active_sessions) >= MAX_CONCURRENT_CALLS:
+            return jsonify({
+                "success": False,
+                "error": "Server busy. Please try again later."
+            }), 503
 
-        # Thread to read and print worker logs so they appear in Railway
-        import threading
-        def pipe_logs(process):
-            for line in iter(process.stdout.readline, ""):
-                print(f"[WORKER] {line}", end="", flush=True)
-        
-        threading.Thread(target=pipe_logs, args=(worker_process,), daemon=True).start()
-        
-        print(f"✅ Voice worker spawned successfully (PID: {worker_process.pid})", flush=True)
-        
+        # Check if user already has an active session
+        if user_id in active_sessions:
+            return jsonify({
+                "success": False,
+                "error": "You already have an active call. Please end it first."
+            }), 409
+
+        # 1. Create Daily.co room
+        room_data = create_daily_room()
+        room_url = room_data["url"]
+        room_name = room_data["name"]
+        print(f"✅ Room created: {room_name} → {room_url}")
+
+        # 2. Create token for USER
+        user_token = create_daily_token(room_name, f"user-{user_id[:8]}")
+        print(f"✅ User token created")
+
+        # 3. Create token for BOT
+        bot_token = create_daily_token(room_name, "Mitesh AI Coach", is_owner=True)
+        print(f"✅ Bot token created")
+
+        # 4. Spawn bot in background thread (NOT subprocess!)
+        bot_thread = run_bot_in_background(room_url, bot_token, user_id)
+
+        # Track session
+        active_sessions[user_id] = {
+            "room_name": room_name,
+            "room_url": room_url,
+            "thread": bot_thread,
+            "started_at": time.time()
+        }
+
+        print(f"✅ Bot spawned for room: {room_name}", flush=True)
+
         return jsonify({
             "success": True,
-            "room_url": LIVEKIT_URL,
+            "room_url": room_url,
             "room_name": room_name,
             "token": user_token
         })
@@ -121,11 +184,40 @@ def start_session():
         print(f"❌ Error creating session: {e}", flush=True)
         import traceback
         traceback.print_exc()
-
         return jsonify({
             "success": False,
             "error": str(e)
         }), 500
+
+
+@app.route('/end-session', methods=['POST'])
+def end_session():
+    """Cleanup a voice session"""
+    try:
+        data = request.json
+        user_id = data.get('user_id', '')
+
+        if user_id in active_sessions:
+            session = active_sessions[user_id]
+            room_name = session["room_name"]
+
+            # Delete the Daily room (forces disconnection)
+            try:
+                requests.delete(
+                    f"{DAILY_API_URL}/rooms/{room_name}",
+                    headers={"Authorization": f"Bearer {DAILY_API_KEY}"}
+                )
+                print(f"🗑️ Room deleted: {room_name}")
+            except Exception as e:
+                print(f"⚠️ Room deletion failed: {e}")
+
+            del active_sessions[user_id]
+
+        return jsonify({"success": True})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -133,18 +225,20 @@ def health():
     return jsonify({
         "status": "healthy",
         "service": "voice-backend",
+        "active_calls": len(active_sessions),
+        "max_calls": MAX_CONCURRENT_CALLS,
         "timestamp": int(time.time())
     })
 
+
 if __name__ == '__main__':
     print("=" * 60)
-    print("🚀 Mitesh AI Voice Backend Starting...")
+    print("🚀 Mitesh AI Voice Backend (Daily.co) Starting...")
     print("=" * 60)
-    print(f"📍 Port: 5000")
-    print(f"🐍 Python: {sys.executable}")
-    print(f"🔑 LiveKit API Key: {'✅ Found' if LIVEKIT_API_KEY else '❌ Missing'}")
+    print(f"🔑 Daily API Key: {'✅ Found' if DAILY_API_KEY else '❌ Missing'}")
+    print(f"📊 Max Concurrent Calls: {MAX_CONCURRENT_CALLS}")
     print("=" * 60)
-    
+
     port = int(os.getenv("PORT", 5000))
     print(f"🚀 Starting on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)

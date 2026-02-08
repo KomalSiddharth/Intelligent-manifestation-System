@@ -4,224 +4,158 @@ import sys
 from loguru import logger
 from dotenv import load_dotenv
 
-VERSION = "20.0-PRODUCTION-FINAL"
+VERSION = "21.0-DAILY-PRODUCTION"
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
-
-from pipecat.frames.frames import (
-    TextFrame, TranscriptionFrame, Frame, LLMMessagesUpdateFrame
-)
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask, PipelineParams
-from pipecat.services.openai.stt import OpenAISTTService
-from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.cartesia.tts import CartesiaTTSService
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.transports.livekit.transport import LiveKitTransport, LiveKitParams
-from pipecat.processors.frame_processor import FrameProcessor
-
+# Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
-# Clear existing handlers and set up clean loguru
-logger.remove(0)
-logger.add(sys.stderr, level="INFO")
 
-# Frame logger for debugging pipeline flow
-class FrameLogger(FrameProcessor):
-    def __init__(self, label: str):
-        super().__init__()
-        self.label = label
-        self.count = 0
-    
-    async def process_frame(self, frame: Frame, direction):
-        self.count += 1
-        if isinstance(frame, TextFrame):
-            logger.info(f"📝 [{self.label}] Text: '{frame.text[:40]}'...")
-        elif isinstance(frame, TranscriptionFrame):
-            logger.info(f"🎤 [{self.label}] User said: '{frame.text}'")
-        
-        await super().process_frame(frame, direction)
+# Clean logging
+logger.remove()
+logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {level} | {message}")
 
-async def main(room_url: str, token: str, user_id: str = "anonymous"):
-    logger.info("=" * 70)
-    logger.info(f"🎯 {VERSION} - THE EVENT-DRIVEN SYNC")
-    logger.info("=" * 70)
 
-    # API Keys
+async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
+    """Main bot function — called from app.py's background thread"""
+
+    logger.info("=" * 60)
+    logger.info(f"🎯 {VERSION}")
+    logger.info(f"🏠 Room: {room_url}")
+    logger.info(f"👤 User: {user_id}")
+    logger.info("=" * 60)
+
+    # --- Import heavy modules here (not at top level) ---
+    # This avoids loading ML models until a call actually starts
+    from pipecat.frames.frames import TextFrame, EndFrame
+    from pipecat.pipeline.pipeline import Pipeline
+    from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.pipeline.task import PipelineTask, PipelineParams
+    from pipecat.services.openai.stt import OpenAISTTService
+    from pipecat.services.openai.llm import OpenAILLMService
+    from pipecat.services.cartesia.tts import CartesiaTTSService
+    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.transports.daily.transport import DailyTransport, DailyParams
+
+    # --- Validate API Keys ---
     openai_key = os.getenv("OPENAI_API_KEY")
     cartesia_key = os.getenv("CARTESIA_API_KEY")
     voice_id = os.getenv("CARTESIA_VOICE_ID")
-    
+
     if not all([openai_key, cartesia_key, voice_id]):
-        logger.error("❌ Missing API keys!")
+        logger.error("❌ Missing API keys! Check OPENAI_API_KEY, CARTESIA_API_KEY, CARTESIA_VOICE_ID")
         return
 
-    logger.info(f"🔊 Authenticated Voice: {voice_id[:30]}...")
-
-    # Transport
-    transport = LiveKitTransport(
-        room_url, token, "Mitesh AI Coach",
-        LiveKitParams(
+    # --- Transport (Daily.co) ---
+    transport = DailyTransport(
+        room_url,
+        token,
+        "Mitesh AI Coach",
+        DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_analyzer=SileroVADAnalyzer()
+            vad_enabled=True,
+            vad_analyzer=SileroVADAnalyzer(),
+            vad_audio_passthrough=True,
         )
     )
 
-    # Services
+    # --- AI Services ---
     stt = OpenAISTTService(api_key=openai_key)
-    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
-    tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
-    # Context with System Prompt Greeting Trigger
-    base_prompt = """You are Mitesh Khatri, a world-class life coach.
+    llm = OpenAILLMService(
+        api_key=openai_key,
+        model="gpt-4o-mini"
+    )
 
-When the conversation starts (you receive a 'start' message), immediately greet the user by saying:
-"Hello! I am Mitesh, your AI coach. I am finally connected with my authentic voice. How can I help you today?"
+    tts = CartesiaTTSService(
+        api_key=cartesia_key,
+        voice_id=voice_id,
+    )
 
-Then, keep all your subsequent answers SHORT (1-2 sentences maximum)."""
+    # --- Conversation Context ---
+    system_prompt = """You are Mitesh Khatri, a world-class life coach and motivational speaker.
 
-    context = LLMContext([{"role": "system", "content": base_prompt}])
+Your personality:
+- Warm, empathetic, and encouraging
+- You speak in a mix of Hindi and English (Hinglish) naturally
+- You give practical, actionable advice
+- You keep responses SHORT (2-3 sentences max for voice conversation)
+- You ask follow-up questions to understand the person better
+
+When greeting someone for the first time, say:
+"Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?"
+
+IMPORTANT: Keep ALL responses under 3 sentences. This is a voice conversation, not text chat."""
+
+    context = LLMContext([{"role": "system", "content": system_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
-    # Pipeline
-    logger.info("🔧 Building reactive pipeline...")
+    # --- Pipeline ---
     pipeline = Pipeline([
-        transport.input(),
-        stt,
-        FrameLogger("STT"),
-        aggregators.user(),
-        llm,
-        aggregators.assistant(),
-        FrameLogger("LLM"),
-        tts,
-        FrameLogger("TTS"),
-        transport.output()
+        transport.input(),       # Receive audio from user's mic
+        stt,                     # Speech-to-Text (OpenAI Whisper)
+        aggregators.user(),      # Add user's message to context
+        llm,                     # LLM generates response (GPT-4o-mini)
+        tts,                     # Text-to-Speech (Cartesia)
+        transport.output(),      # Send audio back to user's speaker
+        aggregators.assistant(), # Add bot's response to context
     ])
 
-    # Allow interruptions but disable idle timeout to keep the pipeline alive during sync
-    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True, idle_timeout=0))
-    runner = PipelineRunner()
-    
-    # State flags
-    connected = False
-    audio_track_subscribed = False
-    greeted = False
-    
-    @transport.event_handler("on_connected")
-    async def on_connected(transport):
-        nonlocal connected
-        logger.info("🎉 [SIGNAL] CONNECTED TO ROOM")
-        connected = True
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            allow_interruptions=True,  # User can interrupt the bot
+            enable_metrics=True,
+        )
+    )
 
+    # --- Event Handlers ---
     @transport.event_handler("on_first_participant_joined")
-    async def on_first_joined(transport, participant):
-        nonlocal greeted
-        
-        # Safe participant identity handling
-        try:
-            p_id = participant if isinstance(participant, str) else getattr(participant, 'identity', 'user')
-        except:
-            p_id = "user"
-        
-        logger.info("=" * 70)
-        logger.info(f"👋 [SIGNAL] USER JOINED: {p_id}")
-        logger.info("=" * 70)
-        
-        if greeted:
-            return
-        
-        try:
-            # Step 1: Connection Check
-            logger.info("⏳ Step 1: Checking connection state...")
-            for i in range(20):
-                if connected:
-                    break
-                await asyncio.sleep(0.5)
-            if not connected:
-                logger.error("❌ Step 1 FAILED: Signal connection timeout.")
-                return
-            logger.info("✅ Step 1: Connected.")
-            
-            # Step 2: Reactive Audio Track Subscription Wait
-            # ⭐ v20.0 FIX: Wait for ACTUAL event instead of timer
-            logger.info("⏳ Step 2: Waiting for ACTUAL audio track subscription...")
-            for i in range(60):  # Wait up to 60 seconds
-                if audio_track_subscribed:
-                    logger.info(f"✅ Step 2: Audio track subscribed after {i} seconds")
-                    break
-                await asyncio.sleep(1)
-                if (i + 1) % 10 == 0:
-                    logger.info(f"   Still waiting for frontend subscriber... {i + 1}/60 sec")
-            
-            if not audio_track_subscribed:
-                logger.error("❌ Step 2 FAILED: Audio track subscription timeout!")
-                return
-            
-            logger.info("✅ Step 2: Frontend confirmed ready to receive audio.")
-            
-            # Step 3: Final stabilization buffer
-            logger.info("⏳ Step 3: Final stabilizing 2s buffer...")
-            await asyncio.sleep(2)
-            logger.info("✅ Step 3: Handshake verified.")
-            
-            # Step 4: Greeting Trigger
-            if not greeted:
-                greeted = True
-                logger.info("=" * 70)
-                logger.info("📤 Step 4: TRIGGERING GREETING")
-                logger.info("=" * 70)
-                
-                # Trigger via user message context
-                context.add_message({"role": "user", "content": "start"})
-                
-                # Use modern trigger frame
-                update_frame = LLMMessagesUpdateFrame(
-                    messages=context.get_messages(),
-                    run_llm=True
-                )
-                
-                # Queue to task
-                await task.queue_frame(update_frame)
-                
-                logger.info("✅ Step 4: Greeting sequence initiated.")
-                logger.info("=" * 70)
-            
-        except Exception as e:
-            logger.error(f"❌ HANDLER ERROR: {e}")
-            import traceback
-            traceback.print_exc()
+    async def on_first_participant_joined(transport, participant):
+        """Trigger greeting when user joins the room"""
+        participant_name = getattr(participant, 'info', {})
+        logger.info(f"👋 User joined! Triggering greeting...")
 
-    # ⭐ NEW EVENT HANDLER WRAPPER: Monitor incoming track subscriptions
-    # This captures the moment the browser actually starts receiving the bot's audio.
-    original_on_track_subscribed = transport._async_on_track_subscribed
-    
-    async def wrapped_on_track_subscribed(track, publication, participant):
-        nonlocal audio_track_subscribed
-        
-        # Call the original Pipecat internal handler
-        await original_on_track_subscribed(track, publication, participant)
-        
-        # Log and set our flag
-        logger.info(f"🎵 [EVENT] Audio track subscribed: {track.kind} from {participant.identity}")
-        audio_track_subscribed = True
-        logger.info("✅ [EVENT] AUDIO TRACK SUBSCRIPTION CONFIRMED!")
-    
-    # Monkey-patch the internal handler to react to the subscription event
-    transport._async_on_track_subscribed = wrapped_on_track_subscribed
+        # Queue greeting - this is the CORRECT way in Pipecat
+        # Just send a TextFrame through the pipeline starting from TTS
+        await task.queue_frames([TextFrame("Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?")])
 
-    logger.info("🏃 STARTING PIPELINE MASTER TASK...")
-    
+    @transport.event_handler("on_participant_left")
+    async def on_participant_left(transport, participant, reason):
+        """Cleanup when user leaves"""
+        logger.info(f"👋 User left (reason: {reason}). Ending bot...")
+        await task.queue_frame(EndFrame())
+
+    @transport.event_handler("on_call_state_updated")
+    async def on_call_state_updated(transport, state):
+        """Monitor call state"""
+        logger.info(f"📞 Call state: {state}")
+        if state == "left":
+            await task.queue_frame(EndFrame())
+
+    # --- Run ---
+    runner = PipelineRunner()
+
+    logger.info("🏃 Starting pipeline...")
     try:
         await runner.run(task)
     except Exception as e:
-        logger.error(f"💥 RUNNER ERROR: {e}")
+        logger.error(f"💥 Pipeline error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        logger.info(f"🏁 Bot session ended for {user_id}")
 
+
+# For standalone testing (not used in production)
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "anonymous"))
+    if len(sys.argv) < 3:
+        print("Usage: python voice_worker.py <room_url> <token> [user_id]")
+        sys.exit(1)
+
+    asyncio.run(run_bot(
+        sys.argv[1],
+        sys.argv[2],
+        sys.argv[3] if len(sys.argv) > 3 else "test-user"
+    ))
