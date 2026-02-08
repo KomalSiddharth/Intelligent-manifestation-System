@@ -22,14 +22,16 @@ class FrameLogger(FrameProcessor):
             logger.info(f"📝 [{self.label}] Text: {frame.text[:50]}...")
         elif isinstance(frame, TranscriptionFrame):
             logger.info(f"🎤 [{self.label}] Transcription: {frame.text}")
+        elif isinstance(frame, LLMMessagesUpdateFrame):
+            logger.info(f"🔄 [{self.label}] LLM Update Frame received")
         elif isinstance(frame, AudioRawFrame):
             self.audio_count += 1
-            if self.audio_count % 100 == 0:
-                logger.info(f"🔊 [{self.label}] Audio frames processed: {self.audio_count}")
+            if self.audio_count % 200 == 0: # Log less frequently
+                logger.info(f"🔊 [{self.label}] Audio chunks: {self.audio_count}")
         
         await super().process_frame(frame, direction)
 
-VERSION = "26.0-DAILY-PRODUCTION"
+VERSION = "27.0-DAILY-PRODUCTION"
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -73,7 +75,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     vad = SileroVADAnalyzer()
 
     # --- Transport ---
-    # Moving VAD back to transport for maximum stability (Pipecat 0.0.101 legacy support)
+    # Following deprecation advice: vad_enabled removed, vad_analyzer used
     transport = DailyTransport(
         room_url,
         token,
@@ -81,9 +83,7 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_enabled=True,
             vad_analyzer=vad,
-            vad_audio_passthrough=True,
         )
     )
 
@@ -93,35 +93,34 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     tts = CartesiaTTSService(api_key=cartesia_key, voice_id=voice_id)
 
     # --- System Prompt ---
-    system_prompt = """You are Mitesh Khatri, a world-class life coach and motivational speaker.
-    You speak naturally in Hinglish (Hindi + English). 
-    Keep all your responses under 2 sentences.
+    system_prompt = """You are Mitesh Khatri, a world-class life coach. 
+    You speak in Hinglish (Hindi + English). Keep all responses VERY SHORT (1-2 sentences).
     
-    Greet the user with: "Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?" """
+    Greet the user exactly with: "Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?" """
     
     context = LLMContext([{"role": "system", "content": system_prompt}])
     aggregators = LLMContextAggregatorPair(context)
 
     # --- Pipeline ---
     pipeline = Pipeline([
-        transport.input(),       # 1. User Audio In
-        FrameLogger("Mic In"),
-        stt,                     # 2. Audio -> Text
+        transport.input(),       # In
+        FrameLogger("Input"),
+        stt,                     # STT
         FrameLogger("STT Out"),
-        aggregators.user(),      # 3. Aggregation
-        llm,                     # 4. LLM
+        aggregators.user(),      # Aggregator User
+        llm,                     # LLM
         FrameLogger("LLM Out"),
-        tts,                     # 5. TTS
+        tts,                     # TTS
         FrameLogger("TTS Out"),
-        transport.output(),      # 6. Audio Out
-        aggregators.assistant(), # 7. Store bot's context
+        transport.output(),      # Out
+        aggregators.assistant(), # Aggregator Assistant
     ])
 
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
             allow_interruptions=True,
-            enable_metrics=True,
+            enable_metrics=False,
         )
     )
 
@@ -129,8 +128,8 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
         logger.info(f"👋 User joined! Triggering greeting...")
-        # Direct Text greeting for maximum reliability
-        await task.queue_frames([TextFrame("Namaste! Main hoon Mitesh, aapka AI life coach. Aaj main aapki kaise madad kar sakta hoon?")])
+        # Injected a Frame to LLM is more reliable for triggering speech in some Pipecat versions
+        await task.queue_frames([LLMMessagesUpdateFrame(messages=[{"role": "user", "content": "hello"}])])
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
