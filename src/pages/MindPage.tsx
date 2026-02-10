@@ -72,6 +72,7 @@ const MindPage = () => {
   }, []);
 
   useEffect(() => {
+    console.log('🔄 [MindPage] Tab/Section Change:', { activeTab, activeSection, selectedProfileId });
     if (selectedProfileId === null) return;
 
     fetchData();
@@ -87,7 +88,7 @@ const MindPage = () => {
           table: 'knowledge_sources'
         },
         (payload) => {
-          console.log('🔄 Realtime Update:', payload);
+          console.log('🔄 [MindPage] Realtime Update:', payload);
           fetchData();
         }
       )
@@ -96,7 +97,7 @@ const MindPage = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [selectedFolder, selectedProfileId]);
+  }, [selectedFolder, selectedProfileId, activeTab]);
 
   const initProfiles = async () => {
     try {
@@ -196,6 +197,7 @@ const MindPage = () => {
 
   const fetchData = async () => {
     try {
+      console.log('🔄 [MindPage] Fetching data for profile:', selectedProfileId, 'folder:', selectedFolder);
       setLoading(true);
       const [items, foldersList, failed, words] = await Promise.all([
         getContentItems(selectedFolder || undefined, selectedProfileId === 'all' ? undefined : (selectedProfileId || undefined)),
@@ -204,23 +206,19 @@ const MindPage = () => {
         getTotalWordCount(selectedProfileId || undefined),
       ]);
 
-      console.log('📦 Content items fetched:', items.length);
-      console.log('📂 Folders fetched:', foldersList.length);
-
-      console.log('📦 Content items fetched:', items.length, items);
+      console.log('📦 [MindPage] Content items fetched:', items.length);
+      console.log('📂 [MindPage] Folders fetched:', foldersList.length);
+      console.log('📊 [MindPage] Stats:', { failed, words });
 
       // Calculate total words from items as a robust fallback
       const calculatedWords = items.reduce((sum, item) => sum + (item.word_count || 0), 0);
-      console.log('📊 Calculated total words from items:', calculatedWords);
 
       setContentItems(items);
       setFolders(foldersList);
       setFailedCount(failed);
-
-      // Use words from backend if available, else calculated fallback
       setTotalWords(words > 0 ? words : calculatedWords);
     } catch (error) {
-      console.error('Error fetching content data:', error);
+      console.error('❌ [MindPage] Fetch error:', error);
       toast({
         title: 'Error',
         description: 'Failed to load content. Please try again.',

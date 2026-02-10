@@ -24,14 +24,18 @@ export interface UserIntegration {
 export const getMindProfiles = async () => {
   try {
     const { data: { user } } = await supabase.auth.getUser();
-    // STRICT ISOLATION: Only listen to verified user if logged in.
-    // If user is null, fallback to storedId (Guest Mode).
     const storedId = localStorage.getItem('chat_user_id');
     const userId = user?.id || storedId;
 
+    console.log('🔍 [getMindProfiles] User ID:', userId);
+
     const { data, error } = await supabase.rpc('get_admin_profiles');
     if (error) throw error;
-    return (data || []).filter((p: any) => !userId || p.user_id === userId || p.is_primary);
+
+    let profiles = (data || []).filter((p: any) => !userId || p.user_id === userId || p.is_primary);
+
+    console.log('📦 [getMindProfiles] Found:', profiles.length);
+    return profiles;
   } catch (err) {
     console.error("Error fetching profiles via RPC:", err);
     // Fallback with proper filtering
@@ -47,17 +51,19 @@ export const getMindProfiles = async () => {
     }
 
     const { data } = await query.order('is_primary', { ascending: false });
+    console.log('📦 [getMindProfiles] Fallback result:', data?.length);
     return data || [];
   }
 };
 
 export const getMindProfile = async (profileId?: string) => {
+  console.log('🔍 [getMindProfile] profileId:', profileId);
   try {
     const { data, error } = await supabase.rpc('get_admin_profile', { p_profile_id: profileId || null });
     if (error) throw error;
     // Handle RPC returning array or single object
     const profile = Array.isArray(data) ? data[0] : data;
-    console.log('📦 Fetched Mind Profile (RPC):', profileId, !!profile);
+    console.log('📦 [getMindProfile] (RPC):', profileId, !!profile);
     return profile;
   } catch (err) {
     console.error("Error fetching profile via RPC:", err);
@@ -69,7 +75,7 @@ export const getMindProfile = async (profileId?: string) => {
       query = query.eq('is_primary', true);
     }
     const { data } = await query.limit(1).maybeSingle();
-    console.log('📦 Fetched Mind Profile (Fallback):', profileId, !!data);
+    console.log('📦 [getMindProfile] (Fallback):', profileId, !!data);
     return data;
   }
 };
@@ -236,6 +242,7 @@ export const initiateGoogleDriveAuth = async (profileId: string) => {
 
 // Folders API
 export const getFolders = async (profileId?: string): Promise<Folder[]> => {
+  console.log('🔍 [getFolders] profileId:', profileId);
   let query = supabase
     .from('folders')
     .select('*')
@@ -251,6 +258,7 @@ export const getFolders = async (profileId?: string): Promise<Folder[]> => {
     console.error("Error fetching folders:", error);
     return [];
   }
+  console.log('📂 [getFolders] result:', data?.length);
   return data || [];
 };
 
@@ -364,6 +372,7 @@ export const moveContentToFolder = async (id: string, folderId: string | null): 
   }
 };
 export const getContentItems = async (folderId?: string, profileId?: string): Promise<ContentItem[]> => {
+  console.log('🔍 [getContentItems] folderId:', folderId, 'profileId:', profileId);
   const { data, error } = await supabase.functions.invoke('admin-data', {
     body: {
       action: 'get_content',
@@ -372,12 +381,18 @@ export const getContentItems = async (folderId?: string, profileId?: string): Pr
     }
   });
 
-  if (error) throw error;
+  if (error) {
+    console.error('❌ [getContentItems] Error:', error);
+    throw error;
+  }
 
-  return (data.data || []).map((item: any) => ({
+  const items = (data.data || []).map((item: any) => ({
     ...item,
     uploaded_at: item.uploaded_at || item.created_at,
   }));
+
+  console.log('📦 [getContentItems] result:', items.length);
+  return items;
 };
 
 export const deleteContentItem = async (id: string): Promise<void> => {
@@ -566,20 +581,24 @@ export const trackSocialSource = async (url: string, platform: string, profileId
 };
 
 // Audience Users API
-export const getAudienceUsers = async (status?: string, _profileId?: string): Promise<AudienceUser[]> => {
+export const getAudienceUsers = async (status?: string, profileId?: string): Promise<AudienceUser[]> => {
+  console.log('🔍 [getAudienceUsers] status:', status, 'profileId:', profileId);
   const { data, error } = await supabase.functions.invoke('admin-data', {
     body: {
       action: 'get_audience',
-      status: status === 'all' ? null : (status || null),
-      profileId: _profileId === 'all' ? null : (_profileId || null),
-      limit: 5000 // Set high limit for now
+      status: status || 'all',
+      profileId: profileId === 'all' ? null : (profileId || null)
     }
   });
 
-  if (error) throw error;
+  if (error) {
+    console.error('❌ [getAudienceUsers] Error:', error);
+    throw error;
+  }
+
+  console.log('📦 [getAudienceUsers] result:', data.data?.length);
   return (data.data as AudienceUser[]) || [];
 };
-
 
 export const getTotalUserCount = async (profileId?: string): Promise<number> => {
   try {

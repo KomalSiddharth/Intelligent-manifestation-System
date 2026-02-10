@@ -17,7 +17,7 @@ serve(async (req) => {
         const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
         const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 
-        console.log(`[Admin Data] Starting... URL: ${SUPABASE_URL.slice(0, 15)}... Key: ${SERVICE_ROLE_KEY.slice(0, 10)}...`);
+        console.log(`[Admin Data] Starting... Action: ${req.method}`);
 
         if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
             throw new Error("Missing Supabase environment variables in Edge Function");
@@ -33,14 +33,16 @@ serve(async (req) => {
             }
         )
 
+        // PARSE BODY ONCE
         const body = await req.json().catch(() => ({}));
-        const { action, limit = 5000, offset = 0, profileId, status, folderId } = body;
+        const { action, limit = 5000, offset = 0, profileId, status, folderId, userId, severity } = body;
 
-        console.log(`[Admin Data] Action: ${action}`, { limit, offset, profileId, folderId, status });
+        console.log(`[Admin Data] Action Identifier: ${action}`, { limit, offset, profileId, folderId, status, userId });
 
         let result;
 
         if (action === 'get_audience') {
+            console.log(`[get_audience] Fetching audience. profileId: ${profileId}, status: ${status}`);
             let query = supabaseClient
                 .from('audience_users')
                 .select('*', { count: 'exact' })
@@ -64,10 +66,12 @@ serve(async (req) => {
 
             const { data, count, error } = await query
             if (error) throw error
+            console.log(`[get_audience] Returning ${data?.length} users.`);
             result = { data, count }
         }
 
         else if (action === 'get_content') {
+            console.log(`[get_content] Fetching content. profileId: ${profileId}, folderId: ${folderId}`);
             // 1. Fetch Knowledge Sources (with batching to bypass 1000 row limit)
             const allKsItems = [];
             let hasMore = true;
@@ -109,13 +113,11 @@ serve(async (req) => {
 
             console.log(`[get_content] Fetched ${allKsItems.length} items from Knowledge Sources.`);
 
-            // 2. Fetch Content Items (Legacy) - Just get some to mix in if needed, or skip
-            // For simplicity/performance, we might just focus on KS if that's the main store now.
-            // But let's fetch a small batch to ensure we catch legacy stuff.
+            // 2. Fetch Content Items (Legacy)
             const { data: ciData, error: ciError } = await supabaseClient
                 .from('content_items')
                 .select('*')
-                .limit(100) // Restricted fetch for legacy
+                .limit(100)
 
             if (ciError) console.error("CI Error", ciError)
 
@@ -126,7 +128,7 @@ serve(async (req) => {
                 items.push({
                     id: item.id,
                     title: item.title,
-                    type: item.source_type || 'text', // Fallback for missing source_type
+                    type: item.source_type || 'text',
                     source_type: item.source_type || 'text',
                     word_count: item.word_count || 0,
                     file_url: item.source_url,
@@ -171,7 +173,7 @@ serve(async (req) => {
         }
 
         else if (action === 'get_profile') {
-            const { profileId } = await req.json()
+            console.log(`[get_profile] Fetching profile. profileId: ${profileId}`);
             let query = supabaseClient.from('mind_profile').select('*')
 
             if (profileId) {
@@ -186,6 +188,7 @@ serve(async (req) => {
         }
 
         else if (action === 'get_stats') {
+            console.log(`[get_stats] Fetching stats. profileId: ${profileId}`);
             // Get total counts
             const { count: userCount } = await supabaseClient
                 .from('audience_users')
@@ -196,7 +199,7 @@ serve(async (req) => {
                 .select('*', { count: 'exact', head: true })
 
             const { data: wordData } = await supabaseClient.rpc('get_total_knowledge_stats', {
-                p_profile_id: null
+                p_profile_id: profileId || null
             })
 
             result = {
@@ -207,7 +210,7 @@ serve(async (req) => {
         }
 
         else if (action === 'get_emotional_history') {
-            const { userId, limit = 50 } = await req.json()
+            console.log(`[get_emotional_history] Fetching history for user: ${userId}`);
             const { data, error } = await supabaseClient
                 .from('user_emotional_history')
                 .select('*')
@@ -220,7 +223,7 @@ serve(async (req) => {
         }
 
         else if (action === 'get_alerts') {
-            const { status = 'pending', severity } = await req.json()
+            console.log(`[get_alerts] Fetching alerts. status: ${status}, severity: ${severity}`);
             let query = supabaseClient
                 .from('admin_alerts')
                 .select('*, audience_users!inner(name, email)')

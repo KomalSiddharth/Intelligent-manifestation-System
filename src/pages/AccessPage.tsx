@@ -71,10 +71,10 @@ const AccessPage = () => {
   }, []);
 
   useEffect(() => {
-    if (selectedProfileId) {
-      fetchData();
-    }
-  }, [statusFilter, selectedProfileId]);
+    console.log('🔄 [AccessPage] Tab/Filter Change:', { activeSection, statusFilter, selectedProfileId });
+    if (selectedProfileId === undefined) return;
+    fetchData();
+  }, [statusFilter, selectedProfileId, activeSection]);
 
   useEffect(() => {
     filterUsers();
@@ -97,12 +97,13 @@ const AccessPage = () => {
 
   const fetchData = async () => {
     try {
+      console.log('🔄 [AccessPage] Fetching data for profile:', selectedProfileId, 'filter:', statusFilter);
       setLoading(true);
       const usersData = await getAudienceUsers(statusFilter, selectedProfileId === 'all' ? undefined : selectedProfileId);
-      console.log(`[ACCESS] Fetched ${usersData.length} users for filter: ${statusFilter}, Profile: ${selectedProfileId}`);
+      console.log('📦 [AccessPage] Audience users fetched:', usersData.length);
       setUsers(usersData);
     } catch (error) {
-      console.error('Error fetching users:', error);
+      console.error('❌ [AccessPage] Fetch error:', error);
       toast({
         title: 'Error',
         description: 'Failed to load users. Please try again.',
