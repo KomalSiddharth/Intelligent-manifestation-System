@@ -81,6 +81,9 @@ cmd /c "npx supabase functions deploy ingest-content --no-verify-jwt"
 Write-Host "Deploying 'chat-engine'..."
 cmd /c "npx supabase functions deploy chat-engine --no-verify-jwt"
 
+Write-Host "Deploying 'admin-data'..."
+cmd /c "npx supabase functions deploy admin-data --no-verify-jwt"
+
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host "   Repair Complete!                       " -ForegroundColor Green
