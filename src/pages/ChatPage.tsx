@@ -446,6 +446,34 @@ const ChatPage = () => {
             // Generate ID for assistant message upfront to link with backend metrics
             const assistantMessageId = crypto.randomUUID();
 
+            // Get feature flags - Database first (permanent), localStorage as fallback
+            let featureFlags = {};
+
+            try {
+                // Try to get from database first (authoritative source)
+                if (selectedProfile?.id) {
+                    const { data: profileData } = await supabase
+                        .from('mind_profile')
+                        .select('feature_flags')
+                        .eq('id', selectedProfile.id)
+                        .single();
+
+                    if (profileData?.feature_flags) {
+                        featureFlags = profileData.feature_flags;
+                        console.log('✅ Feature flags loaded from database:', featureFlags);
+                    }
+                }
+            } catch (err) {
+                console.warn('⚠️ Could not load feature flags from database, using localStorage:', err);
+            }
+
+            // Fallback to localStorage if database fetch failed
+            if (Object.keys(featureFlags).length === 0) {
+                const featureFlagsStr = localStorage.getItem('advanced_features_enabled');
+                featureFlags = featureFlagsStr ? JSON.parse(featureFlagsStr) : {};
+                console.log('📦 Feature flags loaded from localStorage:', featureFlags);
+            }
+
             const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat-engine`, {
                 method: 'POST',
                 headers: {
@@ -457,10 +485,13 @@ const ChatPage = () => {
                     userId: chatUserId,
                     sessionId: sessionId,
                     profileId: selectedProfile?.id,
-                    assistantMessageId: assistantMessageId // Pass ID to backend
+                    assistantMessageId: assistantMessageId, // Pass ID to backend
+                    featureFlags: featureFlags // Pass feature flags to backend
                 }),
                 signal: signal
             });
+
+
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => null) || await response.text();

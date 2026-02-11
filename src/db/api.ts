@@ -177,6 +177,24 @@ export const updateMindProfile = async (profileUpdate: any, profileId?: string) 
   return data;
 };
 
+export const updateFeatureFlags = async (profileId: string, flags: Record<string, boolean>) => {
+  const { data, error } = await supabase
+    .from('mind_profile')
+    .update({
+      feature_flags: flags,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', profileId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error updating feature flags:", error);
+    throw error;
+  }
+  return data;
+};
+
 export const deleteMindProfile = async (profileId: string) => {
   const { error } = await supabase
     .from('mind_profile')

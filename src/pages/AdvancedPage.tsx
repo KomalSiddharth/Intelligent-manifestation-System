@@ -3,7 +3,6 @@ import MainLayout from '@/components/layout/MainLayout';
 import AdvancedSidebar from '@/components/advanced/AdvancedSidebar';
 import ActionsView from '@/components/advanced/sections/ActionsView';
 import AlertsView from '@/components/advanced/sections/AlertsView';
-import ProductsView from '@/components/advanced/sections/ProductsView';
 
 const AdvancedPage = () => {
   const [activeSection, setActiveSection] = useState('actions');
@@ -18,10 +17,8 @@ const AdvancedPage = () => {
 
         {activeSection === 'actions' && <ActionsView />}
         {activeSection === 'alerts' && <AlertsView />}
-        {activeSection === 'products' && <ProductsView />}
         {activeSection !== 'actions' &&
-          activeSection !== 'alerts' &&
-          activeSection !== 'products' && (
+          activeSection !== 'alerts' && (
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
               Section under development
             </div>

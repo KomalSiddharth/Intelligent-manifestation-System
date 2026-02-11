@@ -33,12 +33,21 @@ const MainLayout = ({ children }: MainLayoutProps) => {
           variant: 'default',
         });
       })
+      .on('broadcast', { event: 'reminder' }, (payload) => {
+        console.log('⏰ Reminder received:', payload);
+        toast({
+          title: payload.payload.title || '⏰ Reminder',
+          description: payload.payload.message,
+          variant: 'default',
+        });
+      })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, [toast]);
+
 
   const tabs = [
 

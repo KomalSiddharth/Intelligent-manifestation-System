@@ -1,4 +1,4 @@
-import { MessageSquare, Users, Radio, Settings as SettingsIcon, Globe, Phone, ExternalLink, MessageCircle } from 'lucide-react';
+import { MessageSquare, Users, Radio, Settings as SettingsIcon, Globe, MessageCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Link } from 'react-router-dom';
 
@@ -12,13 +12,11 @@ const AccessSidebar = ({ activeSection, onSectionChange }: AccessSidebarProps) =
         { id: 'users', label: 'Users', icon: Users },
         { id: 'conversations', label: 'Conversations', icon: MessageSquare },
         { id: 'broadcasts', label: 'Broadcasts', icon: Radio },
-        { id: 'engage-preferences', label: 'Engage Preferences', icon: SettingsIcon },
     ];
+
 
     const integrationSections = [
         { id: 'website', label: 'Website', icon: Globe },
-        { id: 'phone', label: 'Phone', icon: Phone },
-        { id: 'external', label: 'External', icon: ExternalLink },
     ];
 
     return (

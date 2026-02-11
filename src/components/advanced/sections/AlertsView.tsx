@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import {
     Table,
@@ -22,6 +21,7 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Search, Bell, Pencil, Trash2, ExternalLink } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface Alert {
     id: string;
@@ -33,7 +33,12 @@ interface Alert {
 
 const AlertsView = () => {
     const [searchQuery, setSearchQuery] = useState("");
-    const [alerts, setAlerts] = useState<Alert[]>([
+    const [featureStates, setFeatureStates] = useState<Record<string, boolean>>(() => {
+        const saved = localStorage.getItem('advanced_alerts_enabled');
+        return saved ? JSON.parse(saved) : {};
+    });
+
+    const [alerts] = useState<Alert[]>([
         {
             id: '1',
             subject: "When a user says 'remind me' in conversation",
@@ -56,6 +61,12 @@ const AlertsView = () => {
             lastMentioned: "September 19th, 2025"
         }
     ]);
+
+    const toggleAlert = (id: string, enabled: boolean) => {
+        const newState = { ...featureStates, [id]: enabled };
+        setFeatureStates(newState);
+        localStorage.setItem('advanced_alerts_enabled', JSON.stringify(newState));
+    };
 
     return (
         <div className="flex-1 flex flex-col min-h-0 bg-background overflow-auto">
@@ -124,21 +135,28 @@ const AlertsView = () => {
                                 <TableHead>Date Created</TableHead>
                                 <TableHead>Mentions</TableHead>
                                 <TableHead>Last Mentioned</TableHead>
+                                <TableHead>Enabled</TableHead>
                                 <TableHead className="text-right">Actions</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
                             {alerts.map((alert) => (
-                                <TableRow key={alert.id}>
+                                <TableRow key={alert.id} className={!featureStates[alert.id] ? "opacity-60" : ""}>
                                     <TableCell>
                                         <div className="flex items-center gap-2">
-                                            <Bell className="w-4 h-4 text-muted-foreground" />
+                                            <Bell className={cn("w-4 h-4", featureStates[alert.id] ? "text-orange-500" : "text-muted-foreground")} />
                                             <span className="font-medium">{alert.subject}</span>
                                         </div>
                                     </TableCell>
                                     <TableCell className="text-muted-foreground">{alert.dateCreated}</TableCell>
                                     <TableCell className="text-muted-foreground">{alert.mentions}</TableCell>
                                     <TableCell className="text-muted-foreground">{alert.lastMentioned}</TableCell>
+                                    <TableCell>
+                                        <Switch
+                                            checked={featureStates[alert.id] || false}
+                                            onCheckedChange={(enabled) => toggleAlert(alert.id, enabled)}
+                                        />
+                                    </TableCell>
                                     <TableCell className="text-right">
                                         <div className="flex items-center justify-end gap-2">
                                             <Dialog>

@@ -96,11 +96,6 @@ const AdvancedSidebar = ({
                             isActive={activeSection === 'alerts'}
                             onClick={() => onSectionChange('alerts')}
                         />
-                        <SidebarItem
-                            label="Products"
-                            isActive={activeSection === 'products'}
-                            onClick={() => onSectionChange('products')}
-                        />
                     </div>
                 </div>
             </ScrollArea>

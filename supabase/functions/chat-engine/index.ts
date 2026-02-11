@@ -144,7 +144,7 @@ serve(async (req) => {
                     if (profileId && profileId !== 'anonymous') {
                         const { data: profile, error: profileError } = await supabaseClient
                             .from('mind_profile')
-                            .select('user_id')
+                            .select('user_id, feature_flags')
                             .eq('id', profileId)
                             .single();
 
@@ -158,6 +158,8 @@ serve(async (req) => {
                             return new Response(JSON.stringify({ error: "Forbidden: You don't own this profile" }), { status: 403 });
                         }
                         console.log(`✅ [AUTH] Profile ownership verified: ${profileId}`);
+                        // Store feature flags in the request context for later use
+                        (requestBody as any).featureFlags = profile.feature_flags;
                     }
                 } else {
                     console.warn("⚠️ [AUTH] Invalid token, proceeding as anonymous:", error?.message);
@@ -1140,7 +1142,12 @@ PERSONALIZATION:
                             });
 
                             const intentData = JSON.parse(intentDetection.choices[0].message.content || "{}");
-                            if (intentData.isReminder && intentData.task) {
+
+                            // Check if reminders are enabled for this profile
+                            const currentFlags = (requestBody as any).featureFlags || {};
+                            const remindersEnabled = currentFlags['User-Requested Reminder'] !== false; // Enable by default if flag missing, but check title
+
+                            if (intentData.isReminder && intentData.task && remindersEnabled) {
                                 console.log("Reminder detected!", intentData);
                                 await supabaseClient.from('reminders').insert({
                                     user_id: chatUserId === 'anonymous' ? null : chatUserId,

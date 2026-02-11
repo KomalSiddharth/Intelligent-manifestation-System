@@ -28,6 +28,7 @@ import {
     Check
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Switch } from '@/components/ui/switch';
 import {
     Dialog,
     DialogContent,
@@ -48,7 +49,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
     getAudienceUsers,
     getAllConversations,
-    saveMessage
+    saveMessage,
+    getMindProfile,
+    updateFeatureFlags
 } from '@/db/api';
 import type { AudienceUser } from '@/types/types';
 import { formatDistanceToNow } from 'date-fns';
@@ -94,19 +97,38 @@ const TemplateCard = ({
     icon: Icon,
     title,
     description,
-    onClick
+    onClick,
+    enabled = false,
+    onToggle
 }: {
     icon: React.ElementType,
     title: string,
     description: string,
-    onClick?: () => void
+    onClick?: () => void,
+    enabled?: boolean,
+    onToggle?: (enabled: boolean) => void
 }) => (
     <div
-        className="border rounded-xl p-6 space-y-4 bg-card hover:border-primary/50 transition-colors cursor-pointer hover:shadow-sm"
+        className={cn(
+            "border rounded-xl p-6 space-y-4 bg-card hover:border-primary/50 transition-all cursor-pointer hover:shadow-sm relative group",
+            !enabled && "opacity-75 grayscale-[0.5]"
+        )}
         onClick={onClick}
     >
-        <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground">
-            <Icon className="w-4 h-4" />
+        <div className="flex items-start justify-between">
+            <div className={cn(
+                "w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground transition-colors",
+                enabled ? "bg-orange-50 text-orange-600" : "bg-muted"
+            )}>
+                <Icon className="w-4 h-4" />
+            </div>
+            <div onClick={(e) => e.stopPropagation()}>
+                <Switch
+                    checked={enabled}
+                    onCheckedChange={onToggle}
+                    className="data-[state=checked]:bg-orange-500"
+                />
+            </div>
         </div>
         <div className="space-y-1">
             <h3 className="font-medium">{title}</h3>
@@ -118,15 +140,34 @@ const TemplateCard = ({
 const DataCard = ({
     icon: Icon,
     title,
-    description
+    description,
+    enabled = false,
+    onToggle
 }: {
     icon: React.ElementType,
     title: string,
-    description: string
+    description: string,
+    enabled?: boolean,
+    onToggle?: (enabled: boolean) => void
 }) => (
-    <div className="border rounded-xl p-6 space-y-4 bg-card hover:border-primary/50 transition-colors cursor-pointer">
-        <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600">
-            <Icon className="w-4 h-4" />
+    <div className={cn(
+        "border rounded-xl p-6 space-y-4 bg-card hover:border-primary/50 transition-all cursor-pointer relative",
+        !enabled && "opacity-75 grayscale-[0.5]"
+    )}>
+        <div className="flex items-start justify-between">
+            <div className={cn(
+                "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
+                enabled ? "bg-emerald-50 text-emerald-600" : "bg-muted text-muted-foreground"
+            )}>
+                <Icon className="w-4 h-4" />
+            </div>
+            <div onClick={(e) => e.stopPropagation()}>
+                <Switch
+                    checked={enabled}
+                    onCheckedChange={onToggle}
+                    className="data-[state=checked]:bg-emerald-500"
+                />
+            </div>
         </div>
         <div className="space-y-1">
             <h3 className="font-medium">{title}</h3>
@@ -620,10 +661,94 @@ const BirthdayDialog = ({
 };
 
 const ActionsView = () => {
+
     const [personalContactOpen, setPersonalContactOpen] = useState(false);
     const [birthdayOpen, setBirthdayOpen] = useState(false);
 
+    // State for feature toggles
+    const [featureStates, setFeatureStates] = useState<Record<string, boolean>>(() => {
+        const saved = localStorage.getItem('advanced_features_enabled');
+        return saved ? JSON.parse(saved) : {};
+    });
+    const [profileId, setProfileId] = useState<string | null>(null);
 
+    // Load feature flags from database on mount
+    useEffect(() => {
+        const loadProfile = async () => {
+            try {
+                const profile = await getMindProfile();
+                if (profile) {
+                    setProfileId(profile.id);
+                    if (profile.feature_flags) {
+                        // Merge db flags with local storage, DB takes precedence
+                        const dbFlags = profile.feature_flags as Record<string, boolean>;
+                        const saved = localStorage.getItem('advanced_features_enabled');
+                        const localFlags = saved ? JSON.parse(saved) : {};
+
+                        const merged = { ...localFlags, ...dbFlags };
+                        setFeatureStates(merged);
+                        localStorage.setItem('advanced_features_enabled', JSON.stringify(merged));
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to load profile feature flags:", err);
+            }
+        };
+        loadProfile();
+    }, []);
+
+    const toggleFeature = async (title: string, enabled: boolean) => {
+        const newState = { ...featureStates, [title]: enabled };
+        setFeatureStates(newState);
+        localStorage.setItem('advanced_features_enabled', JSON.stringify(newState));
+
+        // Sync to database if profile exists
+        if (profileId) {
+            try {
+                await updateFeatureFlags(profileId, newState);
+            } catch (err) {
+                console.error("Failed to sync feature flags to DB:", err);
+            }
+        }
+    };
+
+    const features = [
+        { id: 'inactivity-nudge', type: 'template', icon: Moon, title: "Inactivity Nudge", description: "Message users after a period of inactivity.", category: 'retention' },
+        { id: 'user-reminder', type: 'template', icon: Clock, title: "User-Requested Reminder", description: "Follow up when users ask for a reminder about something specific.", category: 'reminders' },
+        { id: 'support-response', type: 'template', icon: LifeBuoy, title: "Support Response", description: "Respond to support requests with a predefined message.", category: 'scripting' },
+        { id: 'notify-alert', type: 'template', icon: Mail, title: "Notify Me On Alert", description: "When an alert is triggered, send me an email", category: 'alerts' },
+        { id: 'user-tagging', type: 'data', icon: Tag, title: "User Tagging", description: "Group users based on interactions for audience categorization.", category: 'data' },
+        { id: 'data-forwarding', type: 'data', icon: Share2, title: "Data Forwarding", description: "Forward user data to an API for integration with external systems.", category: 'data' },
+        { id: 'user-props', type: 'data', icon: Fingerprint, title: "User Properties", description: "Automatically stores a user's location when mentioned.", category: 'data' },
+        { id: 'weekly-progress', type: 'template', icon: Calendar, title: "Weekly Progress Check", description: "Check-in weekly with users to maintain regular contact.", category: 'retention' },
+        { id: 'conv-recap', type: 'template', icon: Clock, title: "Conversation Recap", description: "Auto-send a summary every 50 messages.", category: 'retention' },
+        { id: 'event-reminder', type: 'template', icon: Calendar, title: "Event Reminder", description: "Remind users about events they've expressed interest in.", category: 'reminders' },
+        { id: 'follow-up', type: 'template', icon: MessageCircle, title: "Follow-Up Message", description: "Follow up with users about a topic/event they mentioned earlier.", category: 'reminders' },
+        { id: 'post-conv-plan', type: 'template', icon: Share2, title: "Post-Conversation Plan", description: "Send next steps after a conversation.", category: 'reminders' },
+        { id: 'meeting-setup', type: 'template', icon: ArrowRight, title: "Instant Meeting Setup", description: "Auto-send your calendar link upon request.", category: 'reminders' },
+        { id: 'pep-talk', type: 'template', icon: Sparkles, title: "Pre-Event Pep Talk", description: "Call users an hour before events with a pep talk.", category: 'reminders' },
+        { id: 'thank-you', type: 'template', icon: ThumbsUp, title: "Thank You Message", description: "Send a thank you message when new users sign up.", category: 'scripting' },
+        { id: 'feedback-coll', type: 'template', icon: MessageSquare, title: "Feedback Collection", description: "Request feedback on your Delphi the day after the user's first conversation.", category: 'scripting' },
+        { id: 'birthday-wishes', type: 'template', icon: Heart, title: "Birthday Wishes", description: "Send a personalized note on every user's birthday.", category: 'multi-step', onClick: () => setBirthdayOpen(true) },
+        { id: 'personal-contact', type: 'template', icon: Mail, title: "Personal Contact", description: "Notify yourself about highly inactive users for personal follow-up.", category: 'growth', onClick: () => setPersonalContactOpen(true) },
+    ];
+
+    const activeFeatures = features.filter(f => featureStates[f.title]);
+
+    const renderCard = (f: any) => {
+        const CardComponent = f.type === 'template' ? TemplateCard : DataCard;
+        return (
+            <CardComponent
+                key={f.id}
+                icon={f.icon}
+                title={f.title}
+                description={f.description}
+                enabled={featureStates[f.title] || false}
+                onToggle={(enabled) => toggleFeature(f.title, enabled)}
+                onClick={f.onClick}
+            />
+        );
+    };
 
     return (
         <div className="flex-1 flex flex-col min-h-0 bg-background overflow-auto">
@@ -645,59 +770,32 @@ const ActionsView = () => {
                             To get started, simply describe a flow or use one of our pre-built templates.
                         </p>
                     </div>
-
-
                 </div>
 
-                {/* Your Actions */}
-
-
-                {/* Featured Templates */}
+                {/* Active Features Template Section */}
                 <div className="space-y-6">
-                    <h2 className="text-xl font-semibold">Featured Templates</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <TemplateCard
-                            icon={Moon}
-                            title="Inactivity Nudge"
-                            description="Message users after a period of inactivity."
-                        />
-                        <TemplateCard
-                            icon={Clock}
-                            title="User-Requested Reminder"
-                            description="Follow up when users ask for a reminder about something specific."
-                        />
-                        <TemplateCard
-                            icon={LifeBuoy}
-                            title="Support Response"
-                            description="Respond to support requests with a predefined message."
-                        />
-                        <TemplateCard
-                            icon={Mail}
-                            title="Notify Me On Alert"
-                            description="When an alert is triggered, send me an email"
-                        />
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-xl font-semibold">Active Features Template</h2>
+                        <Badge variant="secondary" className="bg-orange-100 text-orange-700">
+                            {activeFeatures.length} Active
+                        </Badge>
                     </div>
+                    {activeFeatures.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-in fade-in duration-500">
+                            {activeFeatures.map(renderCard)}
+                        </div>
+                    ) : (
+                        <div className="border rounded-xl p-8 text-center bg-muted/20 border-dashed">
+                            <p className="text-muted-foreground italic">No features enabled yet. Toggle features below to add them to your active template.</p>
+                        </div>
+                    )}
                 </div>
 
                 {/* Data Collection */}
                 <div className="space-y-6">
                     <h2 className="text-xl font-semibold">Data Collection</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <DataCard
-                            icon={Tag}
-                            title="User Tagging"
-                            description="Group users based on interactions for audience categorization."
-                        />
-                        <DataCard
-                            icon={Share2}
-                            title="Data Forwarding"
-                            description="Forward user data to an API for integration with external systems."
-                        />
-                        <DataCard
-                            icon={Fingerprint}
-                            title="User Properties"
-                            description="Automatically stores a user's location when mentioned."
-                        />
+                        {features.filter(f => f.category === 'data').map(renderCard)}
                     </div>
                 </div>
 
@@ -705,21 +803,7 @@ const ActionsView = () => {
                 <div className="space-y-6">
                     <h2 className="text-xl font-semibold">User Engagement & Retention</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <TemplateCard
-                            icon={Moon}
-                            title="Inactivity Nudge"
-                            description="Message users after a period of inactivity."
-                        />
-                        <TemplateCard
-                            icon={Calendar}
-                            title="Weekly Progress Check"
-                            description="Check-in weekly with users to maintain regular contact."
-                        />
-                        <TemplateCard
-                            icon={Clock}
-                            title="Conversation Recap"
-                            description="Auto-send a summary every 50 messages."
-                        />
+                        {features.filter(f => f.category === 'retention').map(renderCard)}
                     </div>
                 </div>
 
@@ -727,36 +811,7 @@ const ActionsView = () => {
                 <div className="space-y-6">
                     <h2 className="text-xl font-semibold">Follow Ups & Reminders</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <TemplateCard
-                            icon={Clock}
-                            title="User-Requested Reminder"
-                            description="Follow up when users ask for a reminder about something specific."
-                        />
-                        <TemplateCard
-                            icon={Calendar}
-                            title="Event Reminder"
-                            description="Remind users about events they've expressed interest in."
-                        />
-                        <TemplateCard
-                            icon={MessageCircle}
-                            title="Follow-Up Message"
-                            description="Follow up with users about a topic/event they mentioned earlier."
-                        />
-                        <TemplateCard
-                            icon={Share2}
-                            title="Post-Conversation Plan"
-                            description="Send next steps after a conversation."
-                        />
-                        <TemplateCard
-                            icon={ArrowRight}
-                            title="Instant Meeting Setup"
-                            description="Auto-send your calendar link upon request."
-                        />
-                        <TemplateCard
-                            icon={Sparkles}
-                            title="Pre-Event Pep Talk"
-                            description="Call users an hour before events with a pep talk."
-                        />
+                        {features.filter(f => f.category === 'reminders').map(renderCard)}
                     </div>
                 </div>
 
@@ -764,21 +819,7 @@ const ActionsView = () => {
                 <div className="space-y-6">
                     <h2 className="text-xl font-semibold">Message Scripting</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <TemplateCard
-                            icon={ThumbsUp}
-                            title="Thank You Message"
-                            description="Send a thank you message when new users sign up."
-                        />
-                        <TemplateCard
-                            icon={LifeBuoy}
-                            title="Support Response"
-                            description="Respond to support requests with a predefined message."
-                        />
-                        <TemplateCard
-                            icon={MessageSquare}
-                            title="Feedback Collection"
-                            description="Request feedback on your Delphi the day after the user's first conversation."
-                        />
+                        {features.filter(f => f.category === 'scripting').map(renderCard)}
                     </div>
                 </div>
 
@@ -786,12 +827,7 @@ const ActionsView = () => {
                 <div className="space-y-6">
                     <h2 className="text-xl font-semibold">Multi-Step Actions</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <TemplateCard
-                            icon={Heart}
-                            title="Birthday Wishes"
-                            description="Send a personalized note on every user's birthday."
-                            onClick={() => setBirthdayOpen(true)}
-                        />
+                        {features.filter(f => f.category === 'multi-step').map(renderCard)}
                     </div>
                 </div>
 
@@ -799,12 +835,7 @@ const ActionsView = () => {
                 <div className="space-y-6">
                     <h2 className="text-xl font-semibold">Conversion & Growth</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <TemplateCard
-                            icon={Mail}
-                            title="Personal Contact"
-                            description="Notify yourself about highly inactive users for personal follow-up."
-                            onClick={() => setPersonalContactOpen(true)}
-                        />
+                        {features.filter(f => f.category === 'growth').map(renderCard)}
                     </div>
                 </div>
 

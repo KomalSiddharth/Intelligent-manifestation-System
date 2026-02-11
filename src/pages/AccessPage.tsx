@@ -43,7 +43,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import AddIntegrationDialog from '@/components/access/AddIntegrationDialog';
-import AddPhoneDialog from '@/components/access/AddPhoneDialog';
 
 const AccessPage = () => {
   const [loading, setLoading] = useState(true);
@@ -53,7 +52,6 @@ const AccessPage = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [isAddUserDialogOpen, setIsAddUserDialogOpen] = useState(false);
   const [isAddIntegrationDialogOpen, setIsAddIntegrationDialogOpen] = useState(false);
-  const [isAddPhoneDialogOpen, setIsAddPhoneDialogOpen] = useState(false);
   const [activeSection, setActiveSection] = useState('users');
   const [selectedProfileId, setSelectedProfileId] = useState<string | undefined>(undefined);
   const [profiles, setProfiles] = useState<MindProfile[]>([]);
@@ -325,55 +323,6 @@ const AccessPage = () => {
         <BroadcastsView />
       );
     }
-    if (activeSection === 'external') {
-      return (
-        <div className="space-y-6">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-3xl font-bold">External Integrations</h1>
-            <p className="text-muted-foreground text-lg">Connect your Clone with your audience and external tools</p>
-          </div>
-
-          <div>
-            <Button
-              onClick={() => setIsAddIntegrationDialogOpen(true)}
-              className="bg-[#1A1A1A] hover:bg-black text-white rounded-full px-6 h-10 font-medium"
-            >
-              Add Integration +
-            </Button>
-          </div>
-
-          {/* Placeholder for list if needed, currently just empty state implied */}
-          <div className="mt-8 border rounded-xl p-8 text-center text-muted-foreground bg-muted/20 border-dashed">
-            <p>No active external integrations. Click "Add Integration" to get started.</p>
-          </div>
-        </div>
-      );
-    }
-
-    if (activeSection === 'phone') {
-      return (
-        <div className="space-y-6">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-3xl font-bold">Phone Integrations</h1>
-            <p className="text-muted-foreground text-lg">Connect your Clone with your audience and external tools</p>
-          </div>
-
-          <div>
-            <Button
-              onClick={() => setIsAddPhoneDialogOpen(true)}
-              className="bg-[#1A1A1A] hover:bg-black text-white rounded-full px-6 h-10 font-medium"
-            >
-              Add Phone Number +
-            </Button>
-          </div>
-
-          <div className="mt-8 border rounded-xl p-8 text-center text-muted-foreground bg-muted/20 border-dashed">
-            <p>No phone number connected. Click "Add Phone Number" to provision one.</p>
-          </div>
-        </div>
-      );
-    }
-
     if (activeSection === 'engage-preferences') {
       return (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
@@ -426,14 +375,16 @@ const AccessPage = () => {
     }
 
     if (activeSection === 'website') {
-      const widgetUrl = `${window.location.origin}/widget/${selectedProfileId}`;
+      // Use full ChatPage instead of limited widget
+      const widgetUrl = `${window.location.origin}/talk-to-miteshai`;
       const embedCode = `<iframe 
   src="${widgetUrl}" 
   width="100%" 
-  height="600" 
+  height="700" 
   style="border: none; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);"
   allow="microphone"
 ></iframe>`;
+
 
       return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -561,14 +512,9 @@ const AccessPage = () => {
         }}
       />
 
-      {/* Integrations Dialogs */}
       <AddIntegrationDialog
         open={isAddIntegrationDialogOpen}
         onOpenChange={setIsAddIntegrationDialogOpen}
-      />
-      <AddPhoneDialog
-        open={isAddPhoneDialogOpen}
-        onOpenChange={setIsAddPhoneDialogOpen}
       />
 
       {/* Delete Confirmation Dialog */}
