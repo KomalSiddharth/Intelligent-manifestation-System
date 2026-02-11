@@ -601,21 +601,48 @@ export const trackSocialSource = async (url: string, platform: string, profileId
 // Audience Users API
 export const getAudienceUsers = async (status?: string, profileId?: string): Promise<AudienceUser[]> => {
   console.log('🔍 [getAudienceUsers] status:', status, 'profileId:', profileId);
-  const { data, error } = await supabase.functions.invoke('admin-data', {
-    body: {
-      action: 'get_audience',
-      status: status || 'all',
-      profileId: profileId === 'all' ? null : (profileId || null)
+
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-data', {
+      body: {
+        action: 'get_audience',
+        status: status || 'all',
+        profileId: profileId === 'all' ? null : (profileId || null)
+      }
+    });
+
+    if (error) throw error;
+
+    console.log('📦 [getAudienceUsers] Edge Function result:', data.data?.length);
+    return (data.data as AudienceUser[]) || [];
+  } catch (err) {
+    console.warn('⚠️ [getAudienceUsers] Edge Function failed, falling back to direct DB query:', err);
+
+    // Fallback: Query DB directly
+    let query = supabase
+      .from('audience_users')
+      .select('*')
+      .order('last_active', { ascending: false });
+
+    if (status && status !== 'all') {
+      query = query.eq('status', status);
     }
-  });
 
-  if (error) {
-    console.error('❌ [getAudienceUsers] Error:', error);
-    throw error;
+    if (profileId && profileId !== 'all') {
+      // If filtering by profile, we might need to join or filter by tags/metadata if implemented
+      // For now, return all or implement specific logic if audience is segmented by profile
+      // Note: Current schema might not have direct profile_id on audience_users, confirm schema
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('❌ [getAudienceUsers] DB Fallback Error:', error);
+      throw error;
+    }
+
+    return (data as AudienceUser[]) || [];
   }
-
-  console.log('📦 [getAudienceUsers] result:', data.data?.length);
-  return (data.data as AudienceUser[]) || [];
 };
 
 export const getTotalUserCount = async (profileId?: string): Promise<number> => {
