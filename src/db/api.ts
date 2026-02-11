@@ -422,6 +422,9 @@ export const getContentItems = async (folderId?: string, profileId?: string): Pr
 
     if (folderId) {
       query = query.eq('folder_id', folderId);
+    } else {
+      // If no folder specified (Root), only show items with no folder_id
+      query = query.is('folder_id', null);
     }
 
     if (profileId && profileId !== 'all') {
@@ -440,7 +443,11 @@ export const getContentItems = async (folderId?: string, profileId?: string): Pr
       ...item,
       uploaded_at: item.uploaded_at || item.created_at,
       // Ensure type is set if missing
-      type: item.type || 'text'
+      type: item.type || 'text',
+      // Ensure robust defaults for potential missing fields
+      title: item.title || 'Untitled',
+      source_type: item.source_type || item.type || 'text',
+      word_count: item.word_count || 0
     }));
 
     return items;

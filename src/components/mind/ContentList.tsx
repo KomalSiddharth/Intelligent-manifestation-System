@@ -29,10 +29,11 @@ interface ContentListProps {
 
 const ContentList = ({ items, onDelete, folders, onMove }: ContentListProps) => {
   const getSourceIcon = (item: ContentItem) => {
-    const title = item.title.toLowerCase();
+    const title = (item.title || '').toLowerCase();
     const isVideo = title.endsWith('.mp4') || title.endsWith('.mov') || title.endsWith('.avi');
     const isAudio = title.endsWith('.mp3') || title.endsWith('.wav') || title.endsWith('.m4a') || title.endsWith('.aac') || title.endsWith('.ogg');
-    const isShort = item.word_count < 100;
+    const wordCount = item.word_count || 0;
+    const isShort = wordCount < 100;
 
     // Highest priority: Short audio/video content
     if ((isVideo || isAudio) && isShort) {
@@ -49,7 +50,8 @@ const ContentList = ({ items, onDelete, folders, onMove }: ContentListProps) => 
     }
 
     // Default source type based icons
-    switch (item.source_type.toLowerCase()) {
+    const sourceType = (item.source_type || 'text').toLowerCase();
+    switch (sourceType) {
       case 'youtube':
         return <Youtube className="h-5 w-5 text-red-600" />;
       case 'instagram':
@@ -64,8 +66,13 @@ const ContentList = ({ items, onDelete, folders, onMove }: ContentListProps) => 
   };
 
   const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    if (!dateString) return 'Unknown Date';
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    } catch (e) {
+      return 'Invalid Date';
+    }
   };
 
   return (
@@ -92,11 +99,11 @@ const ContentList = ({ items, onDelete, folders, onMove }: ContentListProps) => 
                   <div className="flex items-start gap-3">
                     <div className="mt-1">{getSourceIcon(item)}</div>
                     <div className="space-y-1">
-                      <p className="font-medium leading-tight">{item.title}</p>
+                      <p className="font-medium leading-tight">{item.title || 'Untitled'}</p>
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <span>{item.source_type}</span>
+                        <span>{item.source_type || 'Unknown'}</span>
                         <span>•</span>
-                        <span>{item.word_count === -1 ? 'Processing...' : `${item.word_count.toLocaleString()} words`}</span>
+                        <span>{(item.word_count === -1 || item.word_count === undefined) ? 'Processing...' : `${(item.word_count || 0).toLocaleString()} words`}</span>
                       </div>
                     </div>
                   </div>
