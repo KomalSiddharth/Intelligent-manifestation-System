@@ -391,27 +391,62 @@ export const moveContentToFolder = async (id: string, folderId: string | null): 
 };
 export const getContentItems = async (folderId?: string, profileId?: string): Promise<ContentItem[]> => {
   console.log('🔍 [getContentItems] folderId:', folderId, 'profileId:', profileId);
-  const { data, error } = await supabase.functions.invoke('admin-data', {
-    body: {
-      action: 'get_content',
-      folderId: folderId || null,
-      profileId: profileId === 'all' ? null : (profileId || null)
+
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-data', {
+      body: {
+        action: 'get_content',
+        folderId: folderId || null,
+        profileId: profileId === 'all' ? null : (profileId || null)
+      }
+    });
+
+    if (error) throw error;
+
+    const items = (data.data || []).map((item: any) => ({
+      ...item,
+      uploaded_at: item.uploaded_at || item.created_at,
+    }));
+
+    console.log('📦 [getContentItems] Edge Function result:', items.length);
+    return items;
+  } catch (err) {
+    console.warn('⚠️ [getContentItems] Edge Function failed, falling back to direct DB query:', err);
+
+    // Fallback: Query DB directly
+    // We primarily use knowledge_sources now
+    let query = supabase
+      .from('knowledge_sources')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (folderId) {
+      query = query.eq('folder_id', folderId);
     }
-  });
 
-  if (error) {
-    console.error('❌ [getContentItems] Error:', error);
-    throw error;
+    if (profileId && profileId !== 'all') {
+      query = query.eq('profile_id', profileId);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('❌ [getContentItems] DB Fallback Error:', error);
+      throw error;
+    }
+
+    // Map DB result to ContentItem shape if needed, but usually it matches
+    const items = (data || []).map((item: any) => ({
+      ...item,
+      uploaded_at: item.uploaded_at || item.created_at,
+      // Ensure type is set if missing
+      type: item.type || 'text'
+    }));
+
+    return items;
   }
-
-  const items = (data.data || []).map((item: any) => ({
-    ...item,
-    uploaded_at: item.uploaded_at || item.created_at,
-  }));
-
-  console.log('📦 [getContentItems] result:', items.length);
-  return items;
 };
+
 
 export const deleteContentItem = async (id: string): Promise<void> => {
   // 1. Delete from knowledge_sources (New AI-Ingested content)
