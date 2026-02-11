@@ -327,16 +327,16 @@ const MindPage = () => {
   };
 
   const filteredItems = contentItems.filter((item) => {
-    // Search filter
-    const matchesSearch = item.title.toLowerCase().includes(searchQuery.toLowerCase());
+    // Search filter - SAFE ACCESS
+    const matchesSearch = (item.title || '').toLowerCase().includes(searchQuery.toLowerCase());
 
     // Content Type filter
     const matchesContentType = selectedContentType === 'all' ||
-      item.type?.toLowerCase() === selectedContentType.toLowerCase();
+      (item.type || '').toLowerCase() === selectedContentType.toLowerCase();
 
     // Status filter
     const matchesStatus = selectedStatus === 'all' ||
-      item.status?.toLowerCase() === selectedStatus.toLowerCase();
+      (item.status || '').toLowerCase() === selectedStatus.toLowerCase();
 
     // Memory Type filter (assuming there's a field like 'createdBy' or 'author')
     const matchesMemoryType = selectedMemoryType === 'all' ||
@@ -345,6 +345,7 @@ const MindPage = () => {
 
     return matchesSearch && matchesContentType && matchesStatus && matchesMemoryType;
   });
+
 
   const renderContent = () => {
     const activeProfile = profiles.find(p => p.id === selectedProfileId);
