@@ -3,14 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     ArrowLeft,
     Bell,
-    Key,
     Users,
-    CreditCard,
-    BarChart2,
-    DollarSign,
-    PlusCircle,
-    MessageSquare,
-    FileText,
     Mic
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -49,30 +42,11 @@ const SettingsPage = () => {
                 { icon: Bell, label: "Notifications", id: "notifications" },
                 { icon: Users, label: "Personal Profile", id: "profile" },
                 { icon: Mic, label: "Voice Settings", id: "voice" },
-                { icon: Key, label: "SSO", id: "sso" },
-            ]
-        },
-        {
-            category: "ACCESS",
-            items: [
-                { icon: Users, label: "Collaborators", id: "collaborators" },
-            ]
-        },
-        {
-            category: "BILLING",
-            items: [
-                { icon: CreditCard, label: "Your Plan", id: "plan" },
-                { icon: BarChart2, label: "Usage", id: "usage" },
-                { icon: DollarSign, label: "Monetization", id: "monetization" },
             ]
         }
     ];
 
-    const bottomItems = [
-        { icon: PlusCircle, label: "Referrals" },
-        { icon: MessageSquare, label: "Feedback" },
-        { icon: FileText, label: "Documentation" },
-    ];
+    const bottomItems = [];
 
     return (
         <div className="min-h-screen bg-background flex flex-col">
@@ -234,19 +208,7 @@ const SettingsPage = () => {
                         </div>
                     )}
 
-                    {activeTab === 'sso' && (
-                        <div className="space-y-6">
-                            <div className="space-y-1">
-                                <h1 className="text-2xl font-semibold">Single Sign-On</h1>
-                                <p className="text-muted-foreground">
-                                    Configure SSO settings for your organization
-                                </p>
-                            </div>
-                            <div className="border rounded-lg p-8 text-center text-muted-foreground">
-                                SSO configuration coming soon
-                            </div>
-                        </div>
-                    )}
+
                 </main>
             </div>
         </div>
