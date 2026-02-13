@@ -150,13 +150,6 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" className="h-8 gap-2 rounded-full text-xs font-semibold px-4 border-muted-foreground/20">
-                        <Phone className="w-3 h-3" />
-                        Call
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:bg-muted/50 rounded-full">
-                        <MoreHorizontal className="w-4 h-4" />
-                    </Button>
                     {onClose && (
                         <Button variant="ghost" size="sm" onClick={onClose} className="xl:hidden">
                             Back

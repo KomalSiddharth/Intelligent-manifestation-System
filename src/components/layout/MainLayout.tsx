@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Search, Bell, User, Menu, X, Sun, Moon } from 'lucide-react';
+import { Bell, Menu, X, Sun, Moon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+
+
 import { useTheme } from 'next-themes';
 
 interface MainLayoutProps {
@@ -114,23 +114,7 @@ const MainLayout = ({ children }: MainLayoutProps) => {
             {isSidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
 
-          {/* Search */}
-          <div className="hidden xl:flex items-center gap-2 mr-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                type="search"
-                placeholder="Find"
-                className="pl-9 pr-12 w-64 bg-muted/50"
-              />
-              <kbd className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                ⌘K
-              </kbd>
-            </div>
-          </div>
 
-          {/* Publish Button */}
-          <Button className="mr-4 hidden xl:inline-flex">Publish</Button>
 
           {/* Notifications, Theme Toggle, and Profile */}
           <div className="flex items-center gap-2">
@@ -151,13 +135,7 @@ const MainLayout = ({ children }: MainLayoutProps) => {
             <Button variant="ghost" size="icon" className="relative">
               <Bell className="h-5 w-5" />
             </Button>
-            <Link to="/settings">
-              <Avatar className="h-8 w-8 hover:ring-2 hover:ring-orange-500 transition-all cursor-pointer">
-                <AvatarFallback className="bg-primary text-primary-foreground">
-                  <User className="h-4 w-4" />
-                </AvatarFallback>
-              </Avatar>
-            </Link>
+
           </div>
         </div>
 
@@ -178,9 +156,7 @@ const MainLayout = ({ children }: MainLayoutProps) => {
                   {tab.name}
                 </Link>
               ))}
-              <div className="pt-2 border-t mt-2">
-                <Button className="w-full">Publish</Button>
-              </div>
+
             </nav>
           </div>
         )}
