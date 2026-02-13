@@ -15,15 +15,14 @@ logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {level} | {messag
 async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
     logger.info(f"🎯 Starting {VERSION}")
 
-    from pipecat.frames.frames import TextFrame, EndFrame, LLMMessagesUpdateFrame, AudioRawFrame
+    from pipecat.frames.frames import TextFrame, EndFrame, LLMMessagesFrame, AudioRawFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineTask, PipelineParams
     from pipecat.services.openai.stt import OpenAISTTService
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.services.cartesia.tts import CartesiaTTSService
-    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.transports.daily.transport import DailyTransport, DailyParams
     from pipecat.processors.frame_processor import FrameProcessor
@@ -66,19 +65,20 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         model_id="sonic-multilingual" 
     )
 
-    # MODERN Context setup
-    context = LLMContext([{"role": "system", "content": "You are Mitesh Khatri, a life coach. Speak in short Hinglish sentences."}])
-    aggregators = LLMContextAggregatorPair(context)
+    # Context setup using modern OpenAILLMContext API
+    messages = [{"role": "system", "content": "You are Mitesh Khatri, a life coach. Speak in short Hinglish sentences."}]
+    context = OpenAILLMContext(messages)
+    context_aggregator = llm.create_context_aggregator(context)
 
     pipeline = Pipeline([
         transport.input(),
         stt,
-        aggregators.user(),
+        context_aggregator.user(),
         llm,
         tts,
-        AudioProbe(), # Sensor placed before output
+        AudioProbe(),
         transport.output(),
-        aggregators.assistant(),
+        context_aggregator.assistant(),
     ])
 
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
@@ -91,13 +91,10 @@ async def run_bot(room_url: str, token: str, user_id: str = "anonymous"):
         logger.info(f"👋 User {participant['id']} joined. Wait 5s for Greeting...")
         await asyncio.sleep(5)
         
-        # ⭐ Trigger Greeting (Modern Pattern)
+        # Trigger Greeting
         logger.info("📤 Triggering Greeting...")
-        await task.queue_frames([
-            LLMMessagesUpdateFrame(messages=[
-                {"role": "user", "content": "Hi Mitesh, I am here. Say hello."}
-            ], run_llm=True)
-        ])
+        messages.append({"role": "user", "content": "Hi Mitesh, I am here. Say hello."})
+        await task.queue_frames([LLMMessagesFrame(messages)])
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
