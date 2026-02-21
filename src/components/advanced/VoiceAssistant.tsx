@@ -42,6 +42,10 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             callRef.current = null;
         }
 
+        // Remove audio element
+        const audioEl = document.getElementById('daily-remote-audio');
+        if (audioEl) audioEl.remove();
+
         setIsConnected(false);
         setIsAISpeaking(false);
         setIsUserSpeaking(false);
@@ -101,6 +105,8 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             // ──────────────────────────── Daily.co Setup ────────────────────────────
             const call = DailyIframe.createCallObject({
                 videoSource: false,
+                // Ensure we subscribe to remote audio
+                subscribeToTracksAutomatically: true,
             });
             callRef.current = call;
 
@@ -111,6 +117,7 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                 setIsConnecting(false);
                 setStatus('Connected! Waiting for Mitesh...');
 
+                // Enable local mic
                 try {
                     await call.setLocalAudio(true);
                     setIsMuted(false);
@@ -119,6 +126,17 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                     console.warn('⚠️ Microphone not available:', micError);
                     setIsMuted(true);
                     setStatus('Connected! (Mic unavailable - check permissions)');
+                }
+
+                // Ensure remote audio plays in browser
+                try {
+                    const audioElement = document.createElement('audio');
+                    audioElement.autoplay = true;
+                    audioElement.id = 'daily-remote-audio';
+                    document.body.appendChild(audioElement);
+                    console.log('🔊 Remote audio element created');
+                } catch (e) {
+                    console.warn('Audio element warning:', e);
                 }
 
                 timerRef.current = setInterval(() => {
@@ -144,12 +162,27 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                 }
             });
 
-            // Event: Track started (AI speaking)
+            // Event: Track started (AI speaking) — PLAY AUDIO
             call.on('track-started', (event) => {
                 if (!event?.participant?.local && event?.track?.kind === 'audio') {
-                    console.log('🔊 Bot audio track started');
+                    console.log('🔊 Bot audio track started — attaching to audio element');
                     setIsAISpeaking(true);
                     setStatus('Mitesh is speaking...');
+
+                    // Explicitly play remote audio track
+                    try {
+                        const existingAudio = document.getElementById('daily-remote-audio') as HTMLAudioElement;
+                        if (existingAudio && event.track) {
+                            const stream = new MediaStream([event.track]);
+                            existingAudio.srcObject = stream;
+                            existingAudio.play().catch(e => {
+                                console.warn('Audio autoplay blocked, user interaction needed:', e);
+                            });
+                            console.log('🔊 Remote audio attached and playing');
+                        }
+                    } catch (e) {
+                        console.warn('Audio attach error:', e);
+                    }
                 }
             });
 
