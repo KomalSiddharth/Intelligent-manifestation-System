@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     ArrowLeft,
     Bell,
-    Users,
-    Mic
+    Users
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -16,7 +15,7 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { VoiceSettingsPanel } from '@/components/admin/VoiceSettingsPanel';
+// import { VoiceSettingsPanel } from '@/components/admin/VoiceSettingsPanel';
 import { getMindProfiles } from '@/db/api';
 
 const SettingsPage = () => {
@@ -25,15 +24,15 @@ const SettingsPage = () => {
     const [emailNoAnswer, setEmailNoAnswer] = useState(true);
     const [activityReport, setActivityReport] = useState("never");
     const [emailNewUser, setEmailNewUser] = useState(false);
-    const [profileId, setProfileId] = useState<string | null>(null);
+    // const [profileId, setProfileId] = useState<string | null>(null);
 
-    useEffect(() => {
-        // Fetch primary profile for voice settings
-        getMindProfiles().then(profiles => {
-            const primary = profiles.find(p => p.is_primary);
-            if (primary) setProfileId(primary.id);
-        });
-    }, []);
+    // useEffect(() => {
+    //     // Fetch primary profile for voice settings
+    //     getMindProfiles().then(profiles => {
+    //         const primary = profiles.find(p => p.is_primary);
+    //         if (primary) setProfileId(primary.id);
+    //     });
+    // }, []);
 
     const sidebarItems = [
         {
@@ -41,7 +40,6 @@ const SettingsPage = () => {
             items: [
                 { icon: Bell, label: "Notifications", id: "notifications" },
                 { icon: Users, label: "Personal Profile", id: "profile" },
-                { icon: Mic, label: "Voice Settings", id: "voice" },
             ]
         }
     ];
@@ -167,17 +165,6 @@ const SettingsPage = () => {
                         </div>
                     )}
 
-                    {activeTab === 'voice' && profileId && (
-                        <div className="space-y-6">
-                            <div className="space-y-1">
-                                <h1 className="text-2xl font-semibold">Voice Settings</h1>
-                                <p className="text-muted-foreground">
-                                    Fine-tune your AI voice parameters for the perfect sound
-                                </p>
-                            </div>
-                            <VoiceSettingsPanel profileId={profileId} />
-                        </div>
-                    )}
 
                     {activeTab === 'profile' && (
                         <div className="space-y-6">
@@ -189,18 +176,6 @@ const SettingsPage = () => {
                             </div>
 
                             <div className="border rounded-lg bg-card p-6 space-y-4">
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                                        Date of Birth
-                                    </label>
-                                    <p className="text-xs text-muted-foreground mb-2">
-                                        We'll use this to celebrate your special moments!
-                                    </p>
-                                    <input
-                                        type="date"
-                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 max-w-sm"
-                                    />
-                                </div>
                                 <Button className="bg-orange-600 hover:bg-orange-700 text-white">
                                     Save Changes
                                 </Button>
