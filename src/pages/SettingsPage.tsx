@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     ArrowLeft,
-    Bell,
-    Users
+    Bell
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -15,8 +14,6 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-// import { VoiceSettingsPanel } from '@/components/admin/VoiceSettingsPanel';
-import { getMindProfiles } from '@/db/api';
 
 const SettingsPage = () => {
     const navigate = useNavigate();
@@ -24,22 +21,12 @@ const SettingsPage = () => {
     const [emailNoAnswer, setEmailNoAnswer] = useState(true);
     const [activityReport, setActivityReport] = useState("never");
     const [emailNewUser, setEmailNewUser] = useState(false);
-    // const [profileId, setProfileId] = useState<string | null>(null);
-
-    // useEffect(() => {
-    //     // Fetch primary profile for voice settings
-    //     getMindProfiles().then(profiles => {
-    //         const primary = profiles.find(p => p.is_primary);
-    //         if (primary) setProfileId(primary.id);
-    //     });
-    // }, []);
 
     const sidebarItems = [
         {
             category: "GENERAL",
             items: [
                 { icon: Bell, label: "Notifications", id: "notifications" },
-                { icon: Users, label: "Personal Profile", id: "profile" },
             ]
         }
     ];
@@ -166,22 +153,6 @@ const SettingsPage = () => {
                     )}
 
 
-                    {activeTab === 'profile' && (
-                        <div className="space-y-6">
-                            <div className="space-y-1">
-                                <h1 className="text-2xl font-semibold">Personal Profile</h1>
-                                <p className="text-muted-foreground">
-                                    Manage your personal details and preferences.
-                                </p>
-                            </div>
-
-                            <div className="border rounded-lg bg-card p-6 space-y-4">
-                                <Button className="bg-orange-600 hover:bg-orange-700 text-white">
-                                    Save Changes
-                                </Button>
-                            </div>
-                        </div>
-                    )}
 
 
                 </main>
