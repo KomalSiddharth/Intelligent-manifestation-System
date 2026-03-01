@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Search, Filter, AlertCircle, RefreshCw, Ghost } from 'lucide-react';
+import { Search, AlertCircle, RefreshCw, Ghost } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -42,6 +42,11 @@ const ConversationsView = ({ profileId, onSelectConversation }: ConversationsVie
             ]);
 
             const uMap: Record<string, AudienceUser> = {};
+            // Pass 1: Map everything by primary id
+            usersData.forEach(u => {
+                uMap[u.id] = u;
+            });
+            // Pass 2: Map by user_id (Auth UID) to ensure verified profile overrides guests
             usersData.forEach(u => {
                 if (u.user_id) uMap[u.user_id] = u;
             });
@@ -66,18 +71,22 @@ const ConversationsView = ({ profileId, onSelectConversation }: ConversationsVie
         const groups: Record<string, Conversation> = {};
 
         conversations.forEach(conv => {
-            const uid = conv.user_id;
-            if (!uid) return;
+            // Priority 1: Use the canonical audience user ID (stable UUID)
+            // Priority 2: Fallback to the stored user_id (might be guest ID or auth UID)
+            const audienceUser = (conv as any).audience_user;
+            const groupKey = audienceUser?.id || conv.user_id;
 
-            if (groups[uid]) {
-                const current = groups[uid];
+            if (!groupKey) return;
+
+            if (groups[groupKey]) {
+                const current = groups[groupKey];
                 const convDate = new Date(conv.last_message_at || conv.created_at).getTime();
                 const currDate = new Date(current.last_message_at || current.created_at).getTime();
                 if (convDate > currDate) {
-                    groups[uid] = conv;
+                    groups[groupKey] = conv;
                 }
             } else {
-                groups[uid] = conv;
+                groups[groupKey] = conv;
             }
         });
 
@@ -91,7 +100,8 @@ const ConversationsView = ({ profileId, onSelectConversation }: ConversationsVie
 
     const filteredConversations = groupedConversations.filter(conv => {
         const query = searchQuery.toLowerCase();
-        const user = usersMap[conv.user_id];
+        const groupKey = (conv as any).audience_user?.id || conv.user_id;
+        const user = usersMap[groupKey];
         const userName = user?.name?.toLowerCase() || '';
         const userEmail = user?.email?.toLowerCase() || '';
         const title = conv.title?.toLowerCase() || '';
@@ -112,11 +122,20 @@ const ConversationsView = ({ profileId, onSelectConversation }: ConversationsVie
     const getDisplayName = (conv: Conversation) => {
         if (anonymize) return `Anonymous ${conv.user_id.substring(0, 4).toUpperCase()}`;
 
+        const isRecoveredName = (name?: string | null) =>
+            !name || name === 'Unknown' || name.toLowerCase().includes('recovered guest');
+
+        // Priority 1: Use pre-joined data directly from the conversation object
+        const joinedUser = (conv as any).audience_user;
+        if (joinedUser && !isRecoveredName(joinedUser.name)) return joinedUser.name;
+        if (joinedUser && joinedUser.email) return joinedUser.email;
+
         // Priority 2: Use the local map (fallback)
         const user = usersMap[conv.user_id];
-        if (user && user.name && user.name !== 'Unknown') return user.name;
+        if (user && !isRecoveredName(user.name)) return user.name;
         if (user && user.email) return user.email;
 
+        // Final fallback: Use a truncated ID only if no email/name found
         return `User ${conv.user_id.substring(0, 6)}...`;
     };
 
@@ -131,9 +150,6 @@ const ConversationsView = ({ profileId, onSelectConversation }: ConversationsVie
                         <div className="flex items-center gap-1">
                             <Button variant="ghost" size="icon" onClick={fetchData} className="h-8 w-8 text-muted-foreground hover:text-primary transition-colors">
                                 <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground">
-                                <Filter className="h-4 w-4" />
                             </Button>
                         </div>
                     </div>
@@ -229,9 +245,16 @@ const ConversationsView = ({ profileId, onSelectConversation }: ConversationsVie
                                                 {getDisplayName(conv)}
                                             </span>
                                             <span className="text-[10px] text-muted-foreground font-medium whitespace-nowrap uppercase">
-                                                {usersMap[conv.user_id]?.message_count ? `${usersMap[conv.user_id].message_count} msgs` : (conv.last_message_at
-                                                    ? formatDistanceToNow(new Date(conv.last_message_at), { addSuffix: true })
-                                                    : 'Active')}
+                                                {(() => {
+                                                    const mCount = (conv as any).audience_user?.message_count;
+                                                    if (mCount !== undefined && mCount !== null) return `${mCount} msgs`;
+
+                                                    const groupKey = (conv as any).audience_user?.id || conv.user_id;
+                                                    const mappedCount = usersMap[groupKey]?.message_count;
+                                                    return mappedCount ? `${mappedCount} msgs` : (conv.last_message_at
+                                                        ? formatDistanceToNow(new Date(conv.last_message_at), { addSuffix: true })
+                                                        : 'Active');
+                                                })()}
                                             </span>
                                         </div>
 

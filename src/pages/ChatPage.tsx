@@ -68,6 +68,16 @@ const ADMIN_EMAILS = [
     'komalsiddharth814@gmail.com' // User email added for admin access
 ];
 
+const DETECTION_PATTERNS = {
+    suicide: [
+        'suicide', 'kill myself', 'end my life', 'want to die', 'harm myself',
+        'marne ka mann', 'atmanhatya', 'zindagi khatam', 'suicidal'
+    ],
+    reminders: [
+        'remind me', 'yaad dilana', 'remind me to', 'yaad dilao', 'remind karo'
+    ]
+};
+
 const ChatPage = () => {
     const { toast } = useToast();
     console.log("🚀 ChatPage Rendering...");
@@ -435,6 +445,30 @@ const ChatPage = () => {
                 }
             } catch (err) {
                 console.error("❌ [ChatPage] Failed to save user message:", err);
+            }
+
+            // --- ALERT DETECTION ---
+            const lowerText = text.toLowerCase();
+            const isSuicidal = DETECTION_PATTERNS.suicide.some(p => lowerText.includes(p));
+            const isReminder = DETECTION_PATTERNS.reminders.some(p => lowerText.includes(p));
+
+            if (isSuicidal || isReminder) {
+                console.log("🚨 Alert Triggered:", { isSuicidal, isReminder });
+                await supabase
+                    .from('conversations')
+                    .update({
+                        has_alert: true,
+                        // Optionally store alert type in a metadata column if it exists
+                    })
+                    .eq('id', sessionId);
+
+                toast({
+                    title: isSuicidal ? "Help is available" : "Reminder noted",
+                    description: isSuicidal
+                        ? "If you're going through a tough time, please reach out for support."
+                        : "I'll make sure this is highlighted for attention.",
+                    variant: isSuicidal ? "destructive" : "default"
+                });
             }
 
             let finalQuery = text;

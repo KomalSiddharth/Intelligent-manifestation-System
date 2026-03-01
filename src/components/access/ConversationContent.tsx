@@ -113,10 +113,20 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
     };
 
     const fetchMessages = async () => {
-        if (!conversation?.id) return;
+        if (!conversation?.user_id) return;
         setLoading(true);
         try {
-            const data = await getConversationMessages(conversation.id);
+            // Use all potential identifiers to fetch complete history
+            const ids = new Set<string>();
+            ids.add(conversation.user_id);
+
+            const audienceUser = (conversation as any).audience_user;
+            if (audienceUser) {
+                if (audienceUser.id) ids.add(audienceUser.id);
+                if (audienceUser.user_id) ids.add(audienceUser.user_id);
+            }
+
+            const data = await getConversationMessages(Array.from(ids), true);
             setMessages(data);
         } catch (error) {
             console.error("Failed to fetch messages", error);
@@ -235,7 +245,10 @@ const ConversationContent = ({ conversation, participantName, onClose, anonymize
                                                 )}
                                             >
                                                 <MarkdownRenderer
-                                                    content={message.content.replace(/\(SYSTEM CONTEXT:.*?\)\s*/g, '').trim()}
+                                                    content={message.content
+                                                        .replace(/\(SYSTEM CONTEXT:.*?\)\s*/g, '')
+                                                        .split('__SOURCES__:')[0]
+                                                        .trim()}
                                                     className={message.role === 'assistant' ? '' : 'text-white'}
                                                 />
 

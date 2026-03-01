@@ -660,10 +660,243 @@ const BirthdayDialog = ({
     );
 };
 
+const WeeklyProgressDialog = ({
+    open,
+    onOpenChange
+}: {
+    open: boolean,
+    onOpenChange: (open: boolean) => void
+}) => {
+    const [users, setUsers] = useState<any[]>([]);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        if (open) {
+            fetchRecentUsers();
+        }
+    }, [open]);
+
+    const fetchRecentUsers = async () => {
+        try {
+            setLoading(true);
+            const allUsers = await getAudienceUsers('all');
+
+            const processed = allUsers.map(u => ({
+                ...u,
+                is_due: u.last_seen ? (new Date().getTime() - new Date(u.last_seen).getTime() < 7 * 24 * 60 * 60 * 1000) : false
+            })).sort((a: any, b: any) => {
+                const dateA = new Date(a.last_seen || a.created_at).getTime();
+                const dateB = new Date(b.last_seen || b.created_at).getTime();
+                return dateB - dateA;
+            });
+
+            setUsers(processed);
+        } catch (error) {
+            console.error("Error fetching users for progress check:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-4xl h-[80vh] flex flex-col">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <Calendar className="w-5 h-5 text-blue-500" />
+                        Weekly Progress Automation
+                    </DialogTitle>
+                    <DialogDescription>
+                        When enabled, the AI automatically analyzes user history every Sunday night and sends a progress follow-up.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl mb-4">
+                    <div className="flex items-center gap-3">
+                        <Sparkles className="w-5 h-5 text-blue-600" />
+                        <div className="text-sm">
+                            <span className="font-semibold text-blue-900">Next Auto-Run:</span>
+                            <span className="text-blue-700 ml-2">This Sunday at 10:00 PM</span>
+                        </div>
+                    </div>
+                </div>
+
+                <ScrollArea className="flex-1 -mx-6 px-6">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>User</TableHead>
+                                <TableHead>Last Active</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead className="text-right">History</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {loading ? (
+                                <TableRow>
+                                    <TableCell colSpan={4} className="h-24 text-center">Loading...</TableCell>
+                                </TableRow>
+                            ) : users.length === 0 ? (
+                                <TableRow>
+                                    <TableCell colSpan={4} className="h-24 text-center">No users found.</TableCell>
+                                </TableRow>
+                            ) : (
+                                users.map((user) => (
+                                    <TableRow key={user.id}>
+                                        <TableCell>
+                                            <div className="font-medium">{user.name || 'User'}</div>
+                                            <div className="text-xs text-muted-foreground">{user.email}</div>
+                                        </TableCell>
+                                        <TableCell>
+                                            {user.last_seen ? formatDistanceToNow(new Date(user.last_seen), { addSuffix: true }) : 'Never'}
+                                        </TableCell>
+                                        <TableCell>
+                                            {user.is_due ? (
+                                                <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">Scheduled</Badge>
+                                            ) : (
+                                                <Badge variant="outline">No recent data</Badge>
+                                            )}
+                                        </TableCell>
+                                        <TableCell className="text-right">
+                                            <Button variant="ghost" size="sm">View Log</Button>
+                                        </TableCell>
+                                    </TableRow>
+                                ))
+                            )}
+                        </TableBody>
+                    </Table>
+                </ScrollArea>
+
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+};
+
+const InactivityNudgeDialog = ({
+    open,
+    onOpenChange
+}: {
+    open: boolean,
+    onOpenChange: (open: boolean) => void
+}) => {
+    const [users, setUsers] = useState<any[]>([]);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        if (open) {
+            fetchRecentUsers();
+        }
+    }, [open]);
+
+    const fetchRecentUsers = async () => {
+        try {
+            setLoading(true);
+            const allUsers = await getAudienceUsers('all');
+
+            const processed = allUsers.map(u => ({
+                ...u,
+                is_due: u.last_seen ? (new Date().getTime() - new Date(u.last_seen).getTime() >= 15 * 24 * 60 * 60 * 1000) : true,
+                inactivity_days: u.last_seen ? Math.floor((new Date().getTime() - new Date(u.last_seen).getTime()) / (24 * 60 * 60 * 1000)) : '?'
+            })).sort((a: any, b: any) => {
+                const dateA = new Date(a.last_seen || a.created_at).getTime();
+                const dateB = new Date(b.last_seen || b.created_at).getTime();
+                return dateA - dateB; // Oldest first
+            });
+
+            setUsers(processed);
+        } catch (error) {
+            console.error("Error fetching users for inactivity nudge:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-4xl h-[80vh] flex flex-col">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <Moon className="w-5 h-5 text-indigo-500" />
+                        Inactivity Nudge Automation
+                    </DialogTitle>
+                    <DialogDescription>
+                        Automatically re-engage users after 15 days of silence with a personalized AI nudge.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-4">
+                    <div className="flex items-center gap-3">
+                        <AlertCircle className="w-5 h-5 text-indigo-600" />
+                        <div className="text-sm">
+                            <span className="font-semibold text-indigo-900">Automation Trigger:</span>
+                            <span className="text-indigo-700 ml-2">Sent daily at 12:00 PM for users reaching 15 days.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <ScrollArea className="flex-1 -mx-6 px-6">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>User</TableHead>
+                                <TableHead>Inactive For</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead className="text-right">Action</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {loading ? (
+                                <TableRow>
+                                    <TableCell colSpan={4} className="h-24 text-center">Loading...</TableCell>
+                                </TableRow>
+                            ) : users.length === 0 ? (
+                                <TableRow>
+                                    <TableCell colSpan={4} className="h-24 text-center">No users found.</TableCell>
+                                </TableRow>
+                            ) : (
+                                users.map((user) => (
+                                    <TableRow key={user.id}>
+                                        <TableCell>
+                                            <div className="font-medium">{user.name || 'User'}</div>
+                                            <div className="text-xs text-muted-foreground">{user.email}</div>
+                                        </TableCell>
+                                        <TableCell>
+                                            {user.inactivity_days === '?' ? 'Unknown' : `${user.inactivity_days} days`}
+                                        </TableCell>
+                                        <TableCell>
+                                            {user.is_due ? (
+                                                <Badge className="bg-indigo-100 text-indigo-700 hover:bg-indigo-100">Nudge Due</Badge>
+                                            ) : (
+                                                <Badge variant="outline">Recently active</Badge>
+                                            )}
+                                        </TableCell>
+                                        <TableCell className="text-right">
+                                            <Button variant="ghost" size="sm">Preview Nudge</Button>
+                                        </TableCell>
+                                    </TableRow>
+                                ))
+                            )}
+                        </TableBody>
+                    </Table>
+                </ScrollArea>
+
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+};
+
 const ActionsView = () => {
 
     const [personalContactOpen, setPersonalContactOpen] = useState(false);
     const [birthdayOpen, setBirthdayOpen] = useState(false);
+    const [weeklyProgressOpen, setWeeklyProgressOpen] = useState(false);
+    const [inactivityNudgeOpen, setInactivityNudgeOpen] = useState(false);
 
     // State for feature toggles
     const [featureStates, setFeatureStates] = useState<Record<string, boolean>>(() => {
@@ -713,14 +946,14 @@ const ActionsView = () => {
     };
 
     const features = [
-        { id: 'inactivity-nudge', type: 'template', icon: Moon, title: "Inactivity Nudge", description: "Message users after a period of inactivity.", category: 'retention' },
+        { id: 'inactivity-nudge', type: 'template', icon: Moon, title: "Inactivity Nudge", description: "Automated: Message users after 15 days of inactivity.", category: 'retention', onClick: () => setInactivityNudgeOpen(true) },
         { id: 'user-reminder', type: 'template', icon: Clock, title: "User-Requested Reminder", description: "Follow up when users ask for a reminder about something specific.", category: 'reminders' },
         { id: 'support-response', type: 'template', icon: LifeBuoy, title: "Support Response", description: "Respond to support requests with a predefined message.", category: 'scripting' },
         { id: 'notify-alert', type: 'template', icon: Mail, title: "Notify Me On Alert", description: "When an alert is triggered, send me an email", category: 'alerts' },
         { id: 'user-tagging', type: 'data', icon: Tag, title: "User Tagging", description: "Group users based on interactions for audience categorization.", category: 'data' },
         { id: 'data-forwarding', type: 'data', icon: Share2, title: "Data Forwarding", description: "Forward user data to an API for integration with external systems.", category: 'data' },
         { id: 'user-props', type: 'data', icon: Fingerprint, title: "User Properties", description: "Automatically stores a user's location when mentioned.", category: 'data' },
-        { id: 'weekly-progress', type: 'template', icon: Calendar, title: "Weekly Progress Check", description: "Check-in weekly with users to maintain regular contact.", category: 'retention' },
+        { id: 'weekly-progress', type: 'template', icon: Calendar, title: "Weekly Progress Check", description: "Automated: Check-in weekly with users to summarize their progress.", category: 'retention', onClick: () => setWeeklyProgressOpen(true) },
         { id: 'conv-recap', type: 'template', icon: Clock, title: "Conversation Recap", description: "Auto-send a summary every 50 messages.", category: 'retention' },
         { id: 'event-reminder', type: 'template', icon: Calendar, title: "Event Reminder", description: "Remind users about events they've expressed interest in.", category: 'reminders' },
         { id: 'follow-up', type: 'template', icon: MessageCircle, title: "Follow-Up Message", description: "Follow up with users about a topic/event they mentioned earlier.", category: 'reminders' },
@@ -754,6 +987,8 @@ const ActionsView = () => {
         <div className="flex-1 flex flex-col min-h-0 bg-background overflow-auto">
             <InactiveUsersDialog open={personalContactOpen} onOpenChange={setPersonalContactOpen} />
             <BirthdayDialog open={birthdayOpen} onOpenChange={setBirthdayOpen} />
+            <WeeklyProgressDialog open={weeklyProgressOpen} onOpenChange={setWeeklyProgressOpen} />
+            <InactivityNudgeDialog open={inactivityNudgeOpen} onOpenChange={setInactivityNudgeOpen} />
 
             <div className="p-8 max-w-7xl mx-auto w-full space-y-12">
 

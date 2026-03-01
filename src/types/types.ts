@@ -43,6 +43,7 @@ export interface Conversation {
   created_at: string;
   last_message_at: string | null;
   updated_at?: string;
+  has_alert?: boolean;
 }
 
 export interface Message {

@@ -718,7 +718,7 @@ export const createAudienceUser = async (user: Partial<AudienceUser>, profileId?
       last_active: user.last_active || null,
       birthday: user.birthday || null,
       profile_id: profileId,
-      user_id: user.user_id || crypto.randomUUID()
+      user_id: user.user_id || null
     })
     .select()
     .single();
@@ -740,7 +740,7 @@ export const bulkCreateAudienceUsers = async (users: Partial<AudienceUser>[], pr
     last_active: user.last_active || null,
     birthday: user.birthday || null,
     profile_id: profileId,
-    user_id: user.user_id || crypto.randomUUID()
+    user_id: user.user_id || null
   }));
 
   const { error } = await supabase
@@ -773,18 +773,35 @@ export const deleteAudienceUsers = async (ids: string[]): Promise<void> => {
 export const upsertAudienceUser = async (user: { id: string; email?: string; name?: string; profile_id?: string; birthday?: string }) => {
   console.log("🔍 [upsertAudienceUser] Syncing:", user.id);
   try {
-    // 1. Fetch ALL matching users to handle duplicates
-    const { data: users, error: findError } = await supabase
+    // 1. Fetch matching user by user_id
+    const { data: usersByUid, error: findUidError } = await supabase
       .from('audience_users')
       .select('*')
       .eq('user_id', user.id);
 
-    if (findError) {
-      console.error("❌ [upsertAudienceUser] Find error:", findError);
-      throw findError;
+    if (findUidError) {
+      console.error("❌ [upsertAudienceUser] UID Find error:", findUidError);
+      throw findUidError;
     }
 
-    const existing = users && users.length > 0 ? users[0] : null;
+    let existing = usersByUid && usersByUid.length > 0 ? usersByUid[0] : null;
+
+    // 2. FALLBACK: If not found by UID, search by email to link existing record
+    if (!existing && user.email) {
+      console.log("🔍 [upsertAudienceUser] No record by UID, searching by email:", user.email);
+      const { data: usersByEmail, error: findEmailError } = await supabase
+        .from('audience_users')
+        .select('*')
+        .ilike('email', user.email);
+
+      if (findEmailError) {
+        console.error("❌ [upsertAudienceUser] Email Find error:", findEmailError);
+      } else if (usersByEmail && usersByEmail.length > 0) {
+        // Link the first match that doesn't have a user_id yet (or any match if needed)
+        existing = usersByEmail[0];
+        console.log("🔗 [upsertAudienceUser] Found existing record by email, will link UID:", existing.id);
+      }
+    }
     const updates: any = {
       user_id: user.id,
       email: user.email || existing?.email,
@@ -872,6 +889,20 @@ export const verifyAudienceAccess = async (email: string, profileId?: string): P
     return null;
   }
 
+  // AUTO-REVOKE: Check if 180-day trial has expired
+  if (data && data.status !== 'revoked' && data.created_at) {
+    const signupDate = new Date(data.created_at).getTime();
+    const now = Date.now();
+    const diffDays = Math.floor((now - signupDate) / (24 * 60 * 60 * 1000));
+
+    if (diffDays > 180) {
+      console.warn(`⏳ [AUTH] Trial expired for ${email} (${diffDays} days since signup). Revoking access.`);
+      // Update status in DB as well so it shows in Admin Panel
+      await supabase.from('audience_users').update({ status: 'revoked' }).eq('id', data.id);
+      return null;
+    }
+  }
+
   return data;
 };
 
@@ -927,37 +958,87 @@ export const getAllConversations = async (profileId?: string): Promise<Conversat
   // Manual Join: Fetch audience users for these conversations
   const userIds = [...new Set(conversations.map(c => c.user_id).filter(Boolean))];
 
-  if (userIds.length > 0) {
-    const { data: users } = await supabase
-      .from('audience_users')
-      .select('user_id, name, email')
-      .in('user_id', userIds);
+  if (userIds.length === 0) return conversations;
 
-    if (users) {
-      const userMap = new Map(users.map(u => [u.user_id, u]));
-      return conversations.map(c => ({
+  const idList = userIds.map(id => `"${id}"`).join(',');
+  let userQuery = supabase
+    .from('audience_users')
+    .select('id, user_id, name, email')
+    .or(`user_id.in.(${idList}),id.in.(${idList})`);
+
+  if (profileId && profileId !== 'all') {
+    userQuery = userQuery.eq('profile_id', profileId);
+  }
+
+  const { data: users } = await userQuery;
+
+  // Manual Join: Fetch real message counts from the messages table
+  const { data: counts } = await supabase
+    .from('messages')
+    .select('user_id')
+    .in('user_id', userIds);
+
+  const messageCountMap: Record<string, number> = {};
+  if (counts) {
+    counts.forEach(m => {
+      if (m.user_id) {
+        messageCountMap[m.user_id] = (messageCountMap[m.user_id] || 0) + 1;
+      }
+    });
+  }
+
+  if (users) {
+    const userMapFull = new Map();
+    // Pass 1: Map by primary ID (includes guests and partial records)
+    users.forEach(u => {
+      userMapFull.set(u.id, u);
+    });
+    // Pass 2: Map by user_id (Auth UID) - This is more authoritative
+    // and will overwrite entry for the same key if it exists,
+    // ensuring verified profile data takes clinical precedence.
+    users.forEach(u => {
+      if (u.user_id) userMapFull.set(u.user_id, u);
+    });
+
+    return conversations.map(c => {
+      const u = userMapFull.get(c.user_id);
+
+      let finalCount = 0;
+      if (u) {
+        finalCount = (messageCountMap[u.id] || 0) + (u.user_id && u.user_id !== u.id ? (messageCountMap[u.user_id] || 0) : 0);
+      } else {
+        finalCount = messageCountMap[c.user_id] || 0;
+      }
+
+      return {
         ...c,
-        audience_user: userMap.get(c.user_id)
-      }));
-    }
+        audience_user: u ? { ...u, message_count: finalCount } : undefined
+      };
+    });
   }
 
   return conversations;
 };
 
-// Enhanced to fetch by conversationId OR userId (for full history)
-export const getConversationMessages = async (id: string, byUserId: boolean = false): Promise<Message[]> => {
+// Enhanced to fetch by conversationId OR userId(s) (for full history)
+export const getConversationMessages = async (idOrIds: string | string[], byUserId: boolean = false): Promise<Message[]> => {
   let query = supabase
     .from('messages')
     .select('*')
     .order('created_at', { ascending: true });
 
   if (byUserId) {
-    // Fetch ALL messages for this user across all sessions
-    query = query.eq('user_id', id);
+    if (Array.isArray(idOrIds)) {
+      query = query.in('user_id', idOrIds);
+    } else {
+      query = query.eq('user_id', idOrIds);
+    }
   } else {
-    // Fetch just this conversation
-    query = query.eq('conversation_id', id);
+    if (Array.isArray(idOrIds)) {
+      query = query.in('conversation_id', idOrIds);
+    } else {
+      query = query.eq('conversation_id', idOrIds);
+    }
   }
 
   const { data, error } = await query;
