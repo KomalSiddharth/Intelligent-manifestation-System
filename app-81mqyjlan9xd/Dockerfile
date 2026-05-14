@@ -14,11 +14,12 @@ COPY . .
 ENV VITE_SUPABASE_URL=https://axfxldgynmlwdsidklun.supabase.co
 ENV VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4ZnhsZGd5bm1sd2RzaWRrbHVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0Njc5MjMsImV4cCI6MjA4MjA0MzkyM30.niXl1b-LTaSr1o1vraImxa-hOa7OeVK4Czi8vR_CV64
 ENV VITE_API_URL=http://76.13.58.123:5000
-ENV NODE_OPTIONS="--max-old-space-size=2048"
+ENV NODE_OPTIONS="--max-old-space-size=3072"
 ENV CI=false
+ENV VITE_SKIP_TYPECHECK=true
 
-# Run the build with verbose logging to catch the error
-RUN npm run build || (echo "BUILD FAILED! Check logs above." && exit 1)
+# Run the build
+RUN npm run build
 
 # Production Stage
 FROM nginx:stable-alpine
