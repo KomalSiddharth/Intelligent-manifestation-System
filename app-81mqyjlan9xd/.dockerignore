@@ -1,9 +1,8 @@
 node_modules
 .venv
 .git
-dist
+# dist <- Humne ise hata diya hai taki Docker use dekh sake
 build
 *.zip
 *.log
 .next
-
