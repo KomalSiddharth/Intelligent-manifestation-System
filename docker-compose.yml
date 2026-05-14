@@ -27,8 +27,7 @@ services:
   sync-worker:
     build:
       context: ./app-81mqyjlan9xd
-      dockerfile: Dockerfile
-    command: ["node", "scripts/sync-worker.js"]
+      dockerfile: Dockerfile.worker
     restart: always
     environment:
       - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
