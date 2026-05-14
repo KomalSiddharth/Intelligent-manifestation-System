@@ -1,14 +1,16 @@
-FROM dailyco/pipecat-base:latest
+# Standard Python image use kar rahe hain jo VPS par smoothly chalegi
+FROM python:3.10-slim
 
 WORKDIR /app
+
+# Audio processing ke liye zaroori libraries
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY ./requirements.txt .
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 COPY ./bot.py .
-COPY ./.env .
-
-# Set environment variables from .env during runtime
-ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "bot.py"]
