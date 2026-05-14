@@ -5,8 +5,20 @@ import json
 from loguru import logger
 from dotenv import load_dotenv
 
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMContextFrame
+# Robust Imports for Pipecat (Compatibility for v0.x and v1.x)
+try:
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+except ImportError:
+    try:
+        from pipecat.vad.silero import SileroVADAnalyzer
+    except ImportError:
+        from pipecat.analyzers.vad.silero import SileroVADAnalyzer
+
+try:
+    from pipecat.frames.frames import LLMContextFrame as LLMMessagesFrame
+except ImportError:
+    from pipecat.frames.frames import LLMMessagesFrame
+
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -22,7 +34,7 @@ from supabase import create_client
 
 load_dotenv(override=True)
 
-logger.info("Mitesh Bot v7.0 starting...")
+logger.info("Mitesh Bot v7.0 starting (with Compatibility Fixes)...")
 
 # ———————————————————— Config ————————————————————
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -119,14 +131,13 @@ transport_params = {
     "daily": lambda: DailyParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
-        # FIX: Higher VAD thresholds to ignore background noise
         vad_analyzer=SileroVADAnalyzer(
             params=SileroVADAnalyzer.InputParams(
-                threshold=0.6,           # Higher = needs louder/clearer speech (default 0.5)
-                min_volume=0.5,          # Minimum volume to consider as speech (default 0.6)
-                start_secs=0.4,          # Must speak 0.4s before registering (default 0.2)
-                stop_secs=1.2,           # Wait 1.2s silence before "user stopped" (default 0.8)
-                confidence=0.7,          # Higher confidence threshold
+                threshold=0.6,
+                min_volume=0.5,
+                start_secs=0.4,
+                stop_secs=1.2,
+                confidence=0.7,
             )
         ),
     ),
@@ -195,7 +206,6 @@ VOICE CALL RULES:
 - Talk like chatting with a close friend who trusts you.
 - Use natural transitions: "Now here's the thing...", "And you know what?", "Let me share something with you..."."""
 
-    # Auto-detect language (no language="hi" forcing)
     stt = OpenAISTTService(
         api_key=os.getenv("OPENAI_API_KEY"),
         model="whisper-1",
@@ -234,7 +244,6 @@ VOICE CALL RULES:
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
-            # FIX: Disable interruptions — bot completes full response without breaking
             allow_interruptions=False,
         ),
     )
@@ -246,14 +255,15 @@ VOICE CALL RULES:
             "role": "system",
             "content": "Greet the user warmly IN ENGLISH. Say something like: 'Hey Champion! I am Mitesh Khatri, your personal transformation coach. I am so glad you are here today. Ask me anything about life, success, relationships, or mindset, and let us make some magic happen!' Keep it natural and enthusiastic."
         })
-        await task.queue_frames([LLMContextFrame(context)])
+        # Use LLMMessagesFrame (which is now robustly imported)
+        await task.queue_frames([LLMMessagesFrame(messages)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Client disconnected")
         await task.cancel()
 
-    logger.info("Pipeline v7.0 ready")
+    logger.info("Pipeline ready")
     runner = PipelineRunner(handle_sigint=False)
     await runner.run(task)
 
