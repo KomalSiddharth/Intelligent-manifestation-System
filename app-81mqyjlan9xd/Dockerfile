@@ -2,18 +2,15 @@
 FROM node:20-alpine as build
 WORKDIR /app
 
-# Add Build Arguments for Vite
-ARG VITE_SUPABASE_URL
-ARG VITE_SUPABASE_ANON_KEY
-
-# Create .env file explicitly for Vite build
-RUN echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" > .env
-RUN echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" >> .env
-
 COPY package*.json ./
 RUN npm install
+
 COPY . .
-RUN npm run build
+
+# Inject keys directly into the build command
+RUN VITE_SUPABASE_URL=https://axfxldgynmlwdsidklun.supabase.co \
+    VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4ZnhsZGd5bm1sd2RzaWRrbHVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0Njc5MjMsImV4cCI6MjA4MjA0MzkyM30.niXl1b-LTaSr1o1vraImxa-hOa7OeVK4Czi8vR_CV64 \
+    npm run build
 
 # Production Stage
 FROM nginx:stable-alpine
