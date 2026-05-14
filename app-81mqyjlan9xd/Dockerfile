@@ -1,6 +1,9 @@
 # Build Stage
-FROM node:20-alpine as build
+FROM node:20-slim as build
 WORKDIR /app
+
+# Install build dependencies if needed (slim needs these for some native modules)
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 RUN npm install
@@ -14,8 +17,8 @@ ENV VITE_API_URL=http://76.13.58.123:5000
 ENV NODE_OPTIONS="--max-old-space-size=2048"
 ENV CI=false
 
-# Run the build
-RUN npm run build
+# Run the build with verbose logging to catch the error
+RUN npm run build || (echo "BUILD FAILED! Check logs above." && exit 1)
 
 # Production Stage
 FROM nginx:stable-alpine
