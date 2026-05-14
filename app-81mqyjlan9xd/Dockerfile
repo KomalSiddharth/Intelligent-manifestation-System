@@ -6,9 +6,9 @@ WORKDIR /app
 ARG VITE_SUPABASE_URL
 ARG VITE_SUPABASE_ANON_KEY
 
-# Set them as Environment Variables for the build process
-ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
-ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+# Create .env file explicitly for Vite build
+RUN echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" > .env
+RUN echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" >> .env
 
 COPY package*.json ./
 RUN npm install
