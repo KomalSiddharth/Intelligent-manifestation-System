@@ -867,8 +867,6 @@ export const deleteAllAudienceUsers = async (profileId?: string, forceAll: boole
 };
 
 export const verifyAudienceAccess = async (email: string, profileId?: string): Promise<AudienceUser | null> => {
-  console.log("🔐 [AUTH] Verifying access for:", email, "Profile:", profileId);
-  
   let query = supabase
     .from('audience_users')
     .select('*')
