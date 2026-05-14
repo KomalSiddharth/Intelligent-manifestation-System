@@ -1,0 +1,458 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import OpenAI from "https://esm.sh/openai@4.20.1";
+
+const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers":
+        "authorization, x-client-info, apikey, content-type",
+};
+
+serve(async (req) => {
+    // Handle CORS preflight requests
+    if (req.method === "OPTIONS") {
+        return new Response("ok", { headers: corsHeaders });
+    }
+
+    try {
+        const { title, content, type = 'text', url, userId } = await req.json();
+
+        // VALIDATION
+        if (!title) throw new Error("Title is required");
+        if (type === 'text' && !content) throw new Error("Content is required for text snippets");
+        if (type === 'youtube' && !url) throw new Error("URL is required for YouTube");
+        // For 'file' or 'audio' type, we expect 'url' (Storage URL)
+        if ((type === 'file' || type === 'audio') && !url) throw new Error("File URL is required for audio/file");
+
+        let textToIngest = content || "";
+
+        console.log(`Processing content: ${title} [${type}]`);
+
+        // 0. HANDLE MEDIA EXTRACTION
+        // HELPER: PROCESS YOUTUBE (extracted for reuse)
+        const processYoutube = async (videoId: string) => {
+            console.log(`Processing YouTube ID: ${videoId}`);
+            let transcript = "";
+
+            // STRATEGY 0: BRUTE FORCE TIMEDTEXT (New Robust Regex)
+            // Often the URL is just sitting there in the HTML, even if JSON parsing fails.
+            try {
+                console.log("Strategy 0: Scanning for Direct TimedText URLs...");
+                const fetchBruteForce = async (vidId: string) => {
+                    const videoPageUrl = `https://www.youtube.com/watch?v=${vidId}`;
+                    const pageResponse = await fetch(videoPageUrl, {
+                        headers: {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Accept-Language": "en-US,en;q=0.9"
+                        }
+                    });
+                    const html = await pageResponse.text();
+
+                    // Look for any link resembling the caption API
+                    // Matches: https://www.youtube.com/api/timedtext... ending with a quote or whitespace
+                    const matches = html.match(/https:\\?\/\\?\/www\.youtube\.com\\?\/api\\?\/timedtext[^"'\s\\]+/g);
+
+                    if (matches && matches.length > 0) {
+                        // Decode slashes and unicode
+                        let bestUrl = matches[0].replace(/\\u0026/g, '&').replace(/\\/g, '');
+                        // If multiple, try to find 'lang=en'
+                        const enMatch = matches.find(m => m.includes('lang=en') || m.includes('lang%3Den'));
+                        if (enMatch) bestUrl = enMatch.replace(/\\u0026/g, '&').replace(/\\/g, '');
+
+                        console.log("Found Direct TimedText URL! Fetching...");
+                        const xmlRes = await fetch(bestUrl);
+                        const xml = await xmlRes.text();
+
+                        const textMatches = xml.matchAll(/<text start="([\d.]+)" dur="([\d.]+)">([^<]+)<\/text>/g);
+                        let fullText = "";
+                        for (const match of textMatches) fullText += match[3] + " ";
+                        return fullText.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+                    }
+                    throw new Error("No timedtext URLs found in HTML");
+                };
+                transcript = await fetchBruteForce(videoId);
+                if (transcript && transcript.length > 50) {
+                    console.log("Brute Force Caption Fetch Success!");
+                    return transcript; // Return immediately if successful
+                }
+            } catch (bfErr: any) {
+                console.warn(`Brute Force Strategy failed: ${bfErr.message}`);
+            }
+
+            // STRATEGY 1: CAPTIONS (With Custom Headers to Bypass Blocks)
+            try {
+                const fetchManualTranscript = async (vidId: string) => {
+                    const videoPageUrl = `https://www.youtube.com/watch?v=${vidId}`;
+                    const pageResponse = await fetch(videoPageUrl, {
+                        headers: {
+                            "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+                            "Accept-Language": "en-US,en;q=0.9"
+                        }
+                    });
+                    const pageHtml = await pageResponse.text();
+                    const captionsMatch = pageHtml.match(/"captionTracks":\s*(\[.*?\])/);
+                    if (!captionsMatch) throw new Error("No caption tracks found in HTML");
+
+                    const captionTracks = JSON.parse(captptionsMatch[1]);
+                    const englishTrack = captionTracks.find((t: any) => t.languageCode === 'en') || captionTracks[0];
+                    if (!englishTrack) throw new Error("No usable caption track found");
+
+                    const transcriptResponse = await fetch(englishTrack.baseUrl);
+                    const transcriptXml = await transcriptResponse.text();
+                    const textMatches = transcriptXml.matchAll(/<text start="([\d.]+)" dur="([\d.]+)">([^<]+)<\/text>/g);
+                    let fullText = "";
+                    for (const match of textMatches) fullText += match[3] + " ";
+                    return fullText.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+                };
+                transcript = await fetchManualTranscript(videoId);
+                console.log("Manual Caption Fetch Success!");
+            } catch (e: any) {
+                console.warn(`Manual caption fetch failed: ${e.message}. Trying Hidden Transcript Button...`);
+
+                // STRATEGY 1.5: SIMULATE "SHOW TRANSCRIPT" BUTTON CLICK
+                // This mimics the exact API call the browser makes when you click "Show Transcript"
+                try {
+                    const fetchHiddenTranscript = async (vidId: string) => {
+                        const videoPageUrl = `https://www.youtube.com/watch?v=${vidId}`;
+                        const pageRes = await fetch(videoPageUrl, {
+                            headers: {
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                "Accept-Language": "en-US,en;q=0.9"
+                            }
+                        });
+                        const html = await pageRes.text();
+
+                        // 1. Get API Key
+                        const keyMatch = html.match(/"INNERTUBE_API_KEY":"(.+?)"/);
+                        const apiKey = keyMatch ? keyMatch[1] : null;
+                        if (!apiKey) throw new Error("Could not find Innertube API Key");
+
+                        // 2. Get Client Version
+                        const verMatch = html.match(/"clientVersion":"([\d.]+)"/);
+                        const clientVersion = verMatch ? verMatch[1] : "2.20230622.06.00";
+
+                        // 3. Find Transcript Params (The "Button" Token)
+                        // It's buried in 'engagementPanelSectionListRenderer' -> 'getTranscriptEndpoint' -> 'params'
+                        // We use regex to find the specific chunk around "getTranscriptEndpoint"
+                        const paramsMatch = html.match(/"getTranscriptEndpoint":\s*\{\s*"params":\s*"([^"]+)"/);
+                        const params = paramsMatch ? paramsMatch[1] : null;
+
+                        if (!params) throw new Error("Could not find 'Show Transcript' button params");
+
+                        // 4. Click the Button (Call the API)
+                        console.log("Found Transcript Button Params! Clicking...");
+                        const apiRes = await fetch(`https://www.youtube.com/youtubei/v1/get_transcript?key=${apiKey}`, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                            },
+                            body: JSON.stringify({
+                                context: {
+                                    client: {
+                                        hl: "en",
+                                        gl: "US",
+                                        clientName: "WEB",
+                                        clientVersion: clientVersion
+                                    }
+                                },
+                                params: params
+                            })
+                        });
+
+                        if (!apiRes.ok) throw new Error(`Transcript API failed: ${apiRes.status}`);
+                        const json = await apiRes.json();
+
+                        // 5. Parse the Response
+                        // actions -> updateEngagementPanelAction -> content -> transcriptRenderer -> content -> transcriptSearchPanelRenderer -> body -> transcriptSegmentListRenderer -> initialSegments
+                        const actions = json.actions || [];
+                        let segments = null;
+
+                        for (const action of actions) {
+                            const panel = action.updateEngagementPanelAction?.content?.transcriptRenderer;
+                            if (panel) {
+                                segments = panel.content?.transcriptSearchPanelRenderer?.body?.transcriptSegmentListRenderer?.initialSegments;
+                                break;
+                            }
+                        }
+
+                        if (!segments) {
+                            // Try fallback path often found in direct responses
+                            segments = json.actions?.[0]?.updateEngagementPanelAction?.content?.transcriptRenderer?.body?.transcriptSegmentListRenderer?.initialSegments;
+                        }
+
+                        if (!segments) throw new Error("No transcript segments found in API response");
+
+                        let fullText = "";
+                        for (const seg of segments) {
+                            if (seg.transcriptSegmentRenderer) {
+                                const runs = seg.transcriptSegmentRenderer.snippet?.runs || [];
+                                for (const run of runs) {
+                                    fullText += run.text + " ";
+                                }
+                            }
+                        }
+                        return fullText.trim();
+                    };
+
+                    transcript = await fetchHiddenTranscript(videoId);
+                    console.log("Hidden Transcript Button Success!");
+
+                } catch (hiddenErr: any) {
+                    console.warn(`Hidden Transcript failed: ${hiddenErr.message}. Falling back to Audio...`);
+                }
+            }
+
+            if (!transcript || transcript.length < 50) {
+                // STRATEGY 2: AUDIO DOWNLOAD + WHISPER
+                const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                let audioStreamUrl = null;
+
+                // STAGE A: Cobalt
+                const cobaltInstances = ["https://api.cobalt.tools/api/json", "https://co.wuk.sh/api/json", "https://cobalt.xy24.eu.org/api/json"];
+                for (const instance of cobaltInstances) {
+                    try {
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 6000);
+                        const res = await fetch(instance, {
+                            method: "POST", headers: { "Accept": "application/json", "Content-Type": "application/json" },
+                            body: JSON.stringify({ url: ytUrl, isAudioOnly: true, dubbed: false }), signal: controller.signal
+                        });
+                        clearTimeout(timeoutId);
+                        if (res.ok) { const data = await res.json(); if (data.url) { audioStreamUrl = data.url; break; } }
+                    } catch (e) { }
+                }
+
+                // STAGE B: Invidious
+                if (!audioStreamUrl) {
+                    const invInstances = ["https://inv.tux.pizza", "https://vid.ufficio.eu.org", "https://iv.ggtyler.dev", "https://yt.artemislena.eu"];
+                    for (const instance of invInstances) {
+                        try {
+                            const res = await fetch(`${instance}/api/v1/videos/${videoId}`);
+                            if (res.ok) {
+                                const data = await res.json();
+                                const audio = (data.adaptiveFormats || []).find((f: any) => f.type && f.type.startsWith("audio"));
+                                if (audio) { audioStreamUrl = audio.url; break; }
+                                const stream = (data.formatStreams || []).pop();
+                                if (stream) { audioStreamUrl = stream.url; break; }
+                            }
+                        } catch (e) { }
+                    }
+                }
+
+                // STAGE C: Internal API (TV Client)
+                if (!audioStreamUrl) {
+                    try {
+                        const pageRes = await fetch(ytUrl);
+                        const pageTxt = await pageRes.text();
+                        const keyMatch = pageTxt.match(/"INNERTUBE_API_KEY":"(.+?)"/);
+                        const apiKey = keyMatch ? keyMatch[1] : null;
+
+                        if (apiKey) {
+                            const client = { name: "TVHTML5", version: "7.20230405.08.01" };
+                            const apiRes = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}`, {
+                                method: 'POST',
+                                headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (SmartHub; SMART-TV; U; Platform/9.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/44.0.2403.133 Safari/537.36" },
+                                body: JSON.stringify({ context: { client: { clientName: client.name, clientVersion: client.version } }, videoId: videoId })
+                            });
+                            if (apiRes.ok) {
+                                const json = await apiRes.json();
+                                if (json.streamingData) {
+                                    const formats = json.streamingData.adaptiveFormats || json.streamingData.formats || [];
+                                    const audioFmt = formats.find((f: any) => f.mimeType && f.mimeType.includes("audio")) || formats[0];
+                                    if (audioFmt && audioFmt.url) audioStreamUrl = audioFmt.url;
+                                }
+                            }
+                        }
+                    } catch (e) { console.warn("Stage C failed:", e); }
+                }
+
+                if (!audioStreamUrl) throw new Error("All extraction methods failed.");
+
+                // Download & Transcribe
+                const audioBlob = await (await fetch(audioStreamUrl)).blob();
+                if (audioBlob.size > 25 * 1024 * 1024) throw new Error("Audio too large (>25MB).");
+
+                const file = new File([audioBlob], "yt_audio.mp3", { type: "audio/mp3" });
+                const apiKey = Deno.env.get("OPENAI_API_KEY");
+                if (!apiKey) throw new Error("Missing OpenAI Key");
+
+                const transcription = await new OpenAI({ apiKey }).audio.transcriptions.create({ file, model: "whisper-1", response_format: "text" });
+                transcript = transcription as unknown as string;
+            }
+            return transcript;
+        };
+
+        // HELPER: PROCESS AUDIO URL
+        const processAudio = async (audioUrl: string) => {
+            console.log(`Processing Audio URL: ${audioUrl}`);
+            const fileBlob = await (await fetch(audioUrl)).blob();
+            if (fileBlob.size > 25 * 1024 * 1024) throw new Error("Audio too large (>25MB).");
+            const file = new File([fileBlob], "audio.mp3", { type: "audio/mp3" });
+            const apiKey = Deno.env.get("OPENAI_API_KEY");
+            if (!apiKey) throw new Error("Missing OpenAI Key");
+
+            const transcription = await new OpenAI({ apiKey }).audio.transcriptions.create({ file, model: "whisper-1", response_format: "text" });
+            return transcription as unknown as string;
+        };
+
+
+        // --- MAIN LOGIC ---
+
+        // 0. HANDLE MEDIA EXTRACTION
+        if (type === 'youtube') {
+            const videoIdMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=|live\/)|youtu\.be\/)([^"&?\/\s]{11})/);
+            const videoId = videoIdMatch ? videoIdMatch[1] : null;
+            if (!videoId) throw new Error("Invalid YouTube URL");
+            textToIngest = await processYoutube(videoId);
+
+        } else if (type === 'file' || type === 'audio') {
+            textToIngest = await processAudio(url);
+
+        } else if (type === 'text' && url && url.startsWith('http')) {
+            console.log("Scraping generic website:", url);
+            try {
+                const pageRes = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" } });
+                if (!pageRes.ok) throw new Error(`Failed to fetch website: ${pageRes.status}`);
+                let html = await pageRes.text();
+
+                // SMART DISCOVERY: Check for Embedded Media
+                // 1. YouTube Embeds
+                const ytEmbedMatch = html.match(/youtube\.com\/embed\/([^"&?\/\s]{11})/);
+                if (ytEmbedMatch && ytEmbedMatch[1]) {
+                    console.log(`Auto-Discovery: Found embedded YouTube video (${ytEmbedMatch[1]}). Switching strategy.`);
+                    textToIngest = await processYoutube(ytEmbedMatch[1]);
+                } else {
+                    // 2. Direct Media Links ( mp4 inside src )
+                    // Simple regex to find <video src="..."> or <source src="...">
+                    const videoSrcMatch = html.match(/src=["'](.*?\.(?:mp4|mp3|m4a|wav))["']/i);
+                    if (videoSrcMatch && videoSrcMatch[1]) {
+                        let mediaUrl = videoSrcMatch[1];
+                        // Handle relative URLs
+                        if (!mediaUrl.startsWith('http')) {
+                            const urlObj = new URL(url);
+                            mediaUrl = new URL(mediaUrl, urlObj.origin).href;
+                        }
+                        console.log(`Auto-Discovery: Found media file (${mediaUrl}). Switching strategy.`);
+                        textToIngest = await processAudio(mediaUrl);
+                    } else {
+                        // 3. Fallback: Generic Text Scraping
+                        html = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gim, " ");
+                        html = html.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gim, " ");
+                        let text = html.replace(/<[^>]+>/g, " ");
+                        text = text.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
+                        textToIngest = text.replace(/\s+/g, " ").trim();
+                        console.log("Website scraped text length:", textToIngest.length);
+                        if (textToIngest.length < 50) console.warn("Scraped text very short. Might be JS-rendered.");
+                    }
+                }
+            } catch (scrapeErr) {
+                console.warn("Website scraping failed:", scrapeErr);
+                if (!content) throw new Error("Failed to scrape website and no fallback content provided.");
+            }
+        }
+
+        // 1. Auth Check
+        let finalUserId = userId;
+        if (!finalUserId) {
+            const authHeader = req.headers.get("Authorization");
+            if (authHeader) {
+                const token = authHeader.replace("Bearer ", "");
+                const supabaseAuth = createClient(
+                    Deno.env.get("SUPABASE_URL") ?? "",
+                    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+                );
+                const { data: { user } } = await supabaseAuth.auth.getUser(token);
+                if (user) finalUserId = user.id;
+            }
+        }
+
+        if (!finalUserId) throw new Error("Unauthorized: No User ID");
+
+        const supabaseClient = createClient(
+            Deno.env.get("SUPABASE_URL") ?? "",
+            Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+        );
+
+        // 2. Insert Source Metadata
+        const { data: source, error: sourceError } = await supabaseClient
+            .from("knowledge_sources")
+            .insert({
+                user_id: finalUserId,
+                title,
+                source_type: type,
+                source_url: url,
+                word_count: textToIngest ? textToIngest.trim().split(/\s+/).length : 0
+            })
+            .select()
+            .single();
+
+        if (sourceError) throw sourceError;
+
+        // 3. Chunking Logic
+        const chunkSize = 1000;
+        const overlap = 100;
+        const chunks: string[] = [];
+
+        if (textToIngest.length <= chunkSize) {
+            chunks.push(textToIngest);
+        } else {
+            for (let i = 0; i < textToIngest.length; i += (chunkSize - overlap)) {
+                chunks.push(textToIngest.slice(i, i + chunkSize));
+            }
+        }
+
+        const openai = new OpenAI({
+            apiKey: Deno.env.get("OPENAI_API_KEY"),
+        });
+
+        // 4. Process Chunks (Embed & Insert)
+        let successfulChunks = 0;
+
+        const batchSize = 5;
+        for (let i = 0; i < chunks.length; i += batchSize) {
+            const batch = chunks.slice(i, i + batchSize);
+
+            await Promise.all(batch.map(async (textChunk) => {
+                if (textChunk.trim().length < 5) return;
+
+                try {
+                    const embeddingResponse = await openai.embeddings.create({
+                        model: "text-embedding-3-small",
+                        input: textChunk,
+                    });
+                    const embedding = embeddingResponse.data[0].embedding;
+
+                    await supabaseClient.from("knowledge_chunks").insert({
+                        source_id: source.id,
+                        user_id: finalUserId,
+                        content: textChunk,
+                        embedding
+                    });
+                    successfulChunks++;
+                } catch (err) {
+                    console.error("Chunk Error:", err);
+                }
+            }));
+        }
+
+        return new Response(JSON.stringify({
+            success: true,
+            sourceId: source.id,
+            chunks: successfulChunks
+        }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            status: 200,
+        });
+
+    } catch (error: any) {
+        console.error("Edge Function Error:", error);
+        return new Response(JSON.stringify({
+            success: false,
+            error: error.message || "Unknown error occurred"
+        }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            status: 200,
+        });
+    }
+});

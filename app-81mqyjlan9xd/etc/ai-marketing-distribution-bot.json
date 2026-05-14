@@ -1,0 +1,126 @@
+{
+  "name": "AI Marketing Distribution Bot",
+  "nodes": [
+    {
+      "id": "cron",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.cron",
+      "position": [-800, 0],
+      "parameters": {
+        "schedule": {
+          "hour": [9],
+          "minute": [0]
+        }
+      }
+    },
+    {
+      "id": "sheet",
+      "name": "Read Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [-600, 0],
+      "parameters": {
+        "operation": "read",
+        "sheetId": "",
+        "range": "Sheet1!A:G"
+      }
+    },
+    {
+      "id": "filter",
+      "name": "Filter Pending",
+      "type": "n8n-nodes-base.code",
+      "position": [-400, 0],
+      "parameters": {
+        "jsCode": "return items.filter(i => i.json.status === 'pending');"
+      }
+    },
+    {
+      "id": "pick",
+      "name": "Pick One Idea",
+      "type": "n8n-nodes-base.code",
+      "position": [-200, 0],
+      "parameters": {
+        "jsCode": "return [items[Math.floor(Math.random() * items.length)]];"
+      }
+    },
+    {
+      "id": "ai",
+      "name": "AI Marketing Agent",
+      "type": "n8n-nodes-base.openAi",
+      "position": [0, 0],
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "prompt": "Create a {{platform}} post.\nRules:\n- Instagram/Facebook: short caption + soft CTA\n- Reddit: value-first, no selling, no links\n- LinkedIn: professional insight, no emojis\n\nProduct: {{product_name}}\nNiche: {{niche}}\nAngle: {{angle}}\n"
+      }
+    },
+    {
+      "id": "router",
+      "name": "Platform Router",
+      "type": "n8n-nodes-base.switch",
+      "position": [200, 0],
+      "parameters": {
+        "value": "={{$json.platform}}",
+        "rules": [
+          { "value": "instagram" },
+          { "value": "facebook" },
+          { "value": "reddit" },
+          { "value": "linkedin" }
+        ]
+      }
+    },
+    {
+      "id": "insta",
+      "name": "Post to Instagram",
+      "type": "n8n-nodes-base.facebookGraphApi",
+      "position": [400, -150],
+      "parameters": {
+        "edge": "media",
+        "node": "",
+        "options": {}
+      }
+    },
+    {
+      "id": "fb",
+      "name": "Post to Facebook Page",
+      "type": "n8n-nodes-base.facebookGraphApi",
+      "position": [400, 0],
+      "parameters": {
+        "edge": "feed",
+        "node": "",
+        "options": {}
+      }
+    },
+    {
+      "id": "reddit",
+      "name": "Reddit Draft / Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [400, 150],
+      "parameters": {
+        "url": "https://oauth.reddit.com/api/submit",
+        "method": "POST"
+      }
+    },
+    {
+      "id": "linkedin",
+      "name": "LinkedIn Draft",
+      "type": "n8n-nodes-base.noOp",
+      "position": [400, 300]
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [[{ "node": "Read Google Sheet", "type": "main" }]]
+    },
+    "Read Google Sheet": {
+      "main": [[{ "node": "Filter Pending", "type": "main" }]]
+    },
+    "Filter Pending": {
+      "main": [[{ "node": "Pick One Idea", "type": "main" }]]
+    },
+    "Pick One Idea": {
+      "main": [[{ "node": "AI Marketing Agent", "type": "main" }]]
+    },
+    "AI Marketing Agent": {
+      "main": [[{ "node": "Platform Router", "type": "main" }]]
+    }
+  }
+}

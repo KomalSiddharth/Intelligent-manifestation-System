@@ -1,0 +1,9 @@
+node_modules
+.venv
+.git
+dist
+build
+*.zip
+*.log
+.next
+
