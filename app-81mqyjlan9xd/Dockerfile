@@ -7,12 +7,15 @@ RUN npm install
 
 COPY . .
 
-# Inject keys and run build with memory optimization
-RUN VITE_SUPABASE_URL=https://axfxldgynmlwdsidklun.supabase.co \
-    VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4ZnhsZGd5bm1sd2RzaWRrbHVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0Njc5MjMsImV4cCI6MjA4MjA0MzkyM30.niXl1b-LTaSr1o1vraImxa-hOa7OeVK4Czi8vR_CV64 \
-    VITE_API_URL=http://76.13.58.123:5000 \
-    NODE_OPTIONS="--max-old-space-size=4096" \
-    npm run build
+# Set environment variables for the build
+ENV VITE_SUPABASE_URL=https://axfxldgynmlwdsidklun.supabase.co
+ENV VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4ZnhsZGd5bm1sd2RzaWRrbHVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0Njc5MjMsImV4cCI6MjA4MjA0MzkyM30.niXl1b-LTaSr1o1vraImxa-hOa7OeVK4Czi8vR_CV64
+ENV VITE_API_URL=http://76.13.58.123:5000
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+ENV CI=false
+
+# Run the build
+RUN npm run build
 
 # Production Stage
 FROM nginx:stable-alpine
