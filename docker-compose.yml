@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # 1. React Frontend
+  frontend:
+    build:
+      context: ./app-81mqyjlan9xd
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    restart: always
+    environment:
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+
+  # 2. Voice Bot (Pipecat)
+  voice-bot:
+    build:
+      context: ./miteshbot
+      dockerfile: Dockerfile
+    restart: always
+    env_file:
+      - ./app-81mqyjlan9xd/.env
+    # Scale this service if you have 1000+ users
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # 3. Worker (Drive Sync & Background Jobs)
+  # This uses the same image as frontend build tools or a simple node image
+  sync-worker:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./app-81mqyjlan9xd:/app
+    command: ["sh", "-c", "npm install && node scripts/sync-worker.js"]
+    restart: always
+    env_file:
+      - ./app-81mqyjlan9xd/.env
