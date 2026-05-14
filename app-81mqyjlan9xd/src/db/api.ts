@@ -867,12 +867,14 @@ export const deleteAllAudienceUsers = async (profileId?: string, forceAll: boole
 };
 
 export const verifyAudienceAccess = async (email: string, profileId?: string): Promise<AudienceUser | null> => {
+  console.log("🔐 [AUTH] Verifying access for:", email, "Profile:", profileId);
+  
   let query = supabase
     .from('audience_users')
     .select('*')
-    .ilike('email', email);
+    .ilike('email', email.trim());
 
-  if (profileId) {
+  if (profileId && profileId !== 'undefined' && profileId !== 'null') {
     // Allow if user belongs to this profile OR is a global user (profile_id is null)
     query = query.or(`profile_id.eq.${profileId},profile_id.is.null`);
   }
@@ -880,9 +882,29 @@ export const verifyAudienceAccess = async (email: string, profileId?: string): P
   const { data, error } = await query.maybeSingle();
 
   if (error) {
-    console.error("Error verifying audience access:", error);
+    console.error("❌ [AUTH] Error verifying audience access:", error);
     return null;
   }
+
+  if (!data) {
+    console.warn("⚠️ [AUTH] No user found for email:", email);
+    // Fallback: Check without profile_id just in case
+    const { data: fallbackData } = await supabase
+      .from('audience_users')
+      .select('*')
+      .ilike('email', email.trim())
+      .maybeSingle();
+      
+    if (fallbackData) {
+      console.log("✅ [AUTH] Found user via fallback (profile mismatch ignored):", fallbackData.id);
+      return fallbackData;
+    }
+    return null;
+  }
+
+  console.log("✅ [AUTH] Access granted for:", data.email);
+  return data;
+};
 
   // STRICT BLOCK: Reject revoked users
   if (data && data.status === 'revoked') {

@@ -10,6 +10,7 @@ COPY . .
 # Inject keys directly into the build command
 RUN VITE_SUPABASE_URL=https://axfxldgynmlwdsidklun.supabase.co \
     VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4ZnhsZGd5bm1sd2RzaWRrbHVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0Njc5MjMsImV4cCI6MjA4MjA0MzkyM30.niXl1b-LTaSr1o1vraImxa-hOa7OeVK4Czi8vR_CV64 \
+    VITE_API_URL=http://76.13.58.123:5000 \
     npm run build
 
 # Production Stage
