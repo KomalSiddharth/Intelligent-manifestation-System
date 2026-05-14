@@ -12,7 +12,7 @@ services:
       - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
 
   # 2. Voice Bot
-  voice-bot:
+  voice-bot-ai:
     build:
       context: ./miteshbot
       dockerfile: Dockerfile
