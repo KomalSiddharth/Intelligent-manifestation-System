@@ -6,7 +6,7 @@ from loguru import logger
 from dotenv import load_dotenv
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMMessagesFrame
+from pipecat.frames.frames import LLMContextFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -246,7 +246,7 @@ VOICE CALL RULES:
             "role": "system",
             "content": "Greet the user warmly IN ENGLISH. Say something like: 'Hey Champion! I am Mitesh Khatri, your personal transformation coach. I am so glad you are here today. Ask me anything about life, success, relationships, or mindset, and let us make some magic happen!' Keep it natural and enthusiastic."
         })
-        await task.queue_frames([LLMMessagesFrame(messages)])
+        await task.queue_frames([LLMContextFrame(context)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):

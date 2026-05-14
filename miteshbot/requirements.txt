@@ -1,4 +1,4 @@
-pipecat-ai[daily,openai,cartesia,silero,webrtc]==0.0.40
+pipecat-ai[daily,openai,cartesia,silero,webrtc]
 pipecatcloud
 python-dotenv
 loguru
