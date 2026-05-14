@@ -26,15 +26,34 @@ try:
     from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 except ImportError:
     try:
-        from pipecat.services.openai.llm import OpenAILLMContext
+        from pipecat.services.openai import OpenAILLMContext
     except ImportError:
-        # Fallback to generic if specific not found
-        from pipecat.processors.aggregators.llm_response import LLMContextAggregator as OpenAILLMContext
-from pipecat.services.cartesia.tts import CartesiaTTSService
-from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.openai.stt import OpenAISTTService
+        try:
+            from pipecat.services.openai.llm import OpenAILLMContext
+        except ImportError:
+            try:
+                from pipecat.processors.aggregators.llm_response import LLMContextAggregator as OpenAILLMContext
+            except ImportError:
+                # Fallback for very new versions where it might be generic
+                from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContextAggregator as OpenAILLMContext
+try:
+    from pipecat.services.cartesia.tts import CartesiaTTSService
+except ImportError:
+    from pipecat.services.cartesia import CartesiaTTSService
+
+try:
+    from pipecat.services.openai.llm import OpenAILLMService
+    from pipecat.services.openai.stt import OpenAISTTService
+except ImportError:
+    from pipecat.services.openai import OpenAILLMService, OpenAISTTService
+
 from pipecat.transports.base_transport import BaseTransport, TransportParams
-from pipecat.transports.daily.transport import DailyParams
+from pipecat.transports.network.fastapi_transport import FastAPIParams as DailyParams
+# Fallback for DailyParams if needed
+try:
+    from pipecat.transports.daily.transport import DailyTransport, DailyParams
+except ImportError:
+    pass
 
 import openai as openai_module
 from supabase import create_client
