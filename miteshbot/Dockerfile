@@ -1,5 +1,5 @@
 # Standard Python image use kar rahe hain jo VPS par smoothly chalegi
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
