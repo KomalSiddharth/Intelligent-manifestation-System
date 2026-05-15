@@ -473,17 +473,21 @@ export const getFailedContentCount = async (profileId?: string): Promise<number>
 
 export const getTotalWordCount = async (profileId?: string): Promise<number> => {
   try {
-    const { data, error } = await supabase.functions.invoke('admin-data', {
-      body: {
-        action: 'get_stats',
-        profileId: (profileId === 'all' ? null : profileId) || null
-      }
-    });
+    let query = supabase
+      .from('knowledge_sources')
+      .select('word_count');
 
+    if (profileId && profileId !== 'all') {
+      query = query.eq('profile_id', profileId);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
-    return data?.totalWords || 0;
+
+    const total = (data || []).reduce((acc, curr) => acc + (curr.word_count || 0), 0);
+    return total;
   } catch (err) {
-    console.error("Error fetching total word count via Edge Function:", err);
+    console.error("Error fetching total word count via DB:", err);
     return 0;
   }
 };
@@ -627,22 +631,7 @@ export const getAudienceUsers = async (status?: string, profileId?: string): Pro
   console.log('🔍 [getAudienceUsers] status:', status, 'profileId:', profileId);
 
   try {
-    const { data, error } = await supabase.functions.invoke('admin-data', {
-      body: {
-        action: 'get_audience',
-        status: status || 'all',
-        profileId: profileId === 'all' ? null : (profileId || null)
-      }
-    });
-
-    if (error) throw error;
-
-    console.log('📦 [getAudienceUsers] Edge Function result:', data.data?.length);
-    return (data.data as AudienceUser[]) || [];
-  } catch (err) {
-    console.warn('⚠️ [getAudienceUsers] Edge Function failed, falling back to direct DB query:', err);
-
-    // Fallback: Query DB directly
+    // Priority: Direct DB Query for stability
     let query = supabase
       .from('audience_users')
       .select('*')
@@ -653,38 +642,39 @@ export const getAudienceUsers = async (status?: string, profileId?: string): Pro
     }
 
     if (profileId && profileId !== 'all') {
-      // If filtering by profile, we might need to join or filter by tags/metadata if implemented
-      // For now, return all or implement specific logic if audience is segmented by profile
-      // Note: Current schema might not have direct profile_id on audience_users, confirm schema
+      query = query.eq('profile_id', profileId);
     }
 
     const { data, error } = await query;
 
     if (error) {
-      console.error('❌ [getAudienceUsers] DB Fallback Error:', error);
+      console.error('❌ [getAudienceUsers] DB Error:', error);
       throw error;
     }
 
     return (data as AudienceUser[]) || [];
+  } catch (err) {
+    console.error('❌ [getAudienceUsers] Total failure:', err);
+    throw err;
   }
 };
 
 export const getTotalUserCount = async (profileId?: string): Promise<number> => {
   try {
-    const { data, error } = await supabase.functions.invoke('admin-data', {
-      body: {
-        action: 'get_stats',
-        profileId: (profileId === 'all' ? null : profileId) || null
-      }
-    });
+    let query = supabase
+      .from('audience_users')
+      .select('id', { count: 'exact', head: true });
 
+    if (profileId && profileId !== 'all') {
+      query = query.eq('profile_id', profileId);
+    }
+
+    const { count, error } = await query;
     if (error) throw error;
-    return data?.userCount || 0;
-  } catch (err) {
-    console.error("Error fetching total user count via Edge Function:", err);
-    // Silent fallback to standard head query if Edge Function fails
-    const { count } = await supabase.from('audience_users').select('id', { count: 'exact', head: true });
     return count || 0;
+  } catch (err) {
+    console.error("Error fetching total user count via DB:", err);
+    return 0;
   }
 };
 
