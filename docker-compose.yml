@@ -4,15 +4,14 @@ services:
     build:
       context: ./app-81mqyjlan9xd
       dockerfile: Dockerfile
-      args:
-        - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
-        - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
     ports:
       - "8080:80"
     restart: always
     environment:
       - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
       - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+      - VITE_API_URL=http://76.13.58.123:5000
+      - VITE_SITE_URL=http://76.13.58.123:8080
 
   # 2. Voice Bot
   voice-bot-ai:
