@@ -251,7 +251,7 @@ export const initiateGoogleDriveAuth = async (profileId: string) => {
         access_type: 'offline',
         prompt: 'consent',
       },
-      redirectTo: `${window.location.origin}/callback?profileId=${profileId}&platform=google_drive`,
+      redirectTo: `${(import.meta.env.VITE_SITE_URL || window.location.origin).replace(/\/$/, '')}/callback?profileId=${profileId}&platform=google_drive`,
     },
   });
 
