@@ -394,37 +394,16 @@ export const getContentItems = async (folderId?: string, profileId?: string): Pr
   console.log('🔍 [getContentItems] folderId:', folderId, 'profileId:', profileId);
 
   try {
-    const { data, error } = await supabase.functions.invoke('admin-data', {
-      body: {
-        action: 'get_content',
-        folderId: folderId || null,
-        profileId: profileId === 'all' ? null : (profileId || null)
-      }
-    });
-
-    if (error) throw error;
-
-    const items = (data.data || []).map((item: any) => ({
-      ...item,
-      uploaded_at: item.uploaded_at || item.created_at,
-    }));
-
-    console.log('📦 [getContentItems] Edge Function result:', items.length);
-    return items;
-  } catch (err) {
-    console.warn('⚠️ [getContentItems] Edge Function failed, falling back to direct DB query:', err);
-
-    // Fallback: Query DB directly
-    // We primarily use knowledge_sources now
+    // Priority: Direct DB Query (Faster and more stable on VPS)
     let query = supabase
       .from('knowledge_sources')
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (folderId) {
+    if (folderId && folderId !== 'all') {
       query = query.eq('folder_id', folderId);
-    } else {
-      // If no folder specified (Root), only show items with no folder_id
+    } else if (!folderId || folderId === 'root') {
+      // Show root items
       query = query.is('folder_id', null);
     }
 
@@ -435,23 +414,25 @@ export const getContentItems = async (folderId?: string, profileId?: string): Pr
     const { data, error } = await query;
 
     if (error) {
-      console.error('❌ [getContentItems] DB Fallback Error:', error);
+      console.error('❌ [getContentItems] DB Error:', error);
       throw error;
     }
 
-    // Map DB result to ContentItem shape if needed, but usually it matches
     const items = (data || []).map((item: any) => ({
       ...item,
       uploaded_at: item.uploaded_at || item.created_at,
-      // Ensure type is set if missing
       type: item.type || 'text',
-      // Ensure robust defaults for potential missing fields
       title: item.title || 'Untitled',
       source_type: item.source_type || item.type || 'text',
       word_count: item.word_count || 0
     }));
 
+    console.log('📦 [getContentItems] Direct DB result:', items.length);
     return items;
+
+  } catch (err) {
+    console.error('❌ [getContentItems] Total failure:', err);
+    throw err;
   }
 };
 
