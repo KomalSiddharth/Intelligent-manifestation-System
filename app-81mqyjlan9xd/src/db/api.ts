@@ -838,64 +838,70 @@ export const deleteAllAudienceUsers = async (profileId?: string, forceAll: boole
 };
 
 export const verifyAudienceAccess = async (email: string, profileId?: string): Promise<AudienceUser | null> => {
-  let query = supabase
-    .from('audience_users')
-    .select('*')
-    .ilike('email', email.trim());
+  const normalizedEmail = email.trim().toLowerCase();
+  console.log("🔍 [AUTH] Verifying access for:", normalizedEmail, "Profile:", profileId);
 
-  if (profileId && profileId !== 'undefined' && profileId !== 'null') {
-    // Allow if user belongs to this profile OR is a global user (profile_id is null)
-    query = query.or(`profile_id.eq.${profileId},profile_id.is.null`);
-  }
-
-  const { data, error } = await query.maybeSingle();
-
-  if (error) {
-    console.error("❌ [AUTH] Error verifying audience access:", error);
-    return null;
-  }
-
-  if (!data) {
-    console.warn("⚠️ [AUTH] No user found for email:", email);
-    // Fallback: Check without profile_id just in case
-    const { data: fallbackData } = await supabase
+  try {
+    let query = supabase
       .from('audience_users')
       .select('*')
-      .ilike('email', email.trim())
-      .maybeSingle();
-      
-    if (fallbackData) {
-      console.log("✅ [AUTH] Found user via fallback (profile mismatch ignored):", fallbackData.id);
-      return fallbackData;
+      .ilike('email', normalizedEmail);
+
+    if (profileId && profileId !== 'undefined' && profileId !== 'null') {
+      // Allow if user belongs to this profile OR is a global user (profile_id is null)
+      query = query.or(`profile_id.eq.${profileId},profile_id.is.null`);
     }
-    return null;
-  }
 
-  console.log("✅ [AUTH] Access granted for:", data.email);
-  return data;
-};
+    const { data, error } = await query.maybeSingle();
 
-  // STRICT BLOCK: Reject revoked users
-  if (data && data.status === 'revoked') {
-    console.warn(`🚫 [AUTH] Access denied for revoked email: ${email}`);
-    return null;
-  }
-
-  // AUTO-REVOKE: Check if 180-day trial has expired
-  if (data && data.status !== 'revoked' && data.created_at) {
-    const signupDate = new Date(data.created_at).getTime();
-    const now = Date.now();
-    const diffDays = Math.floor((now - signupDate) / (24 * 60 * 60 * 1000));
-
-    if (diffDays > 180) {
-      console.warn(`⏳ [AUTH] Trial expired for ${email} (${diffDays} days since signup). Revoking access.`);
-      // Update status in DB as well so it shows in Admin Panel
-      await supabase.from('audience_users').update({ status: 'revoked' }).eq('id', data.id);
+    if (error) {
+      console.error("❌ [AUTH] Error verifying audience access:", error);
       return null;
     }
-  }
 
-  return data;
+    let user = data;
+
+    // Fallback: Check without profile_id if not found
+    if (!user) {
+      console.warn("⚠️ [AUTH] No user found for email with profile filter, trying global search...");
+      const { data: fallbackData } = await supabase
+        .from('audience_users')
+        .select('*')
+        .ilike('email', normalizedEmail)
+        .maybeSingle();
+      user = fallbackData;
+    }
+
+    if (!user) {
+      console.warn("⚠️ [AUTH] User not in audience list:", normalizedEmail);
+      return null;
+    }
+
+    // 1. STRICT BLOCK: Reject revoked users
+    if (user.status === 'revoked') {
+      console.warn(`🚫 [AUTH] Access denied for revoked email: ${normalizedEmail}`);
+      return null;
+    }
+
+    // 2. AUTO-REVOKE: Check if 180-day trial has expired
+    if (user.status !== 'revoked' && user.created_at) {
+      const signupDate = new Date(user.created_at).getTime();
+      const now = Date.now();
+      const diffDays = Math.floor((now - signupDate) / (24 * 60 * 60 * 1000));
+
+      if (diffDays > 180) {
+        console.warn(`⏳ [AUTH] Trial expired for ${normalizedEmail} (${diffDays} days). Revoking.`);
+        await supabase.from('audience_users').update({ status: 'revoked' }).eq('id', user.id);
+        return null;
+      }
+    }
+
+    console.log("✅ [AUTH] Access granted for:", user.email);
+    return user;
+  } catch (err) {
+    console.error("❌ [AUTH] Unexpected verification error:", err);
+    return null;
+  }
 };
 
 // Revoke user access
