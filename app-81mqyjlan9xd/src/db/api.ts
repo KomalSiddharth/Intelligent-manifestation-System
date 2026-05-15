@@ -1045,6 +1045,21 @@ export const getConversationMessages = async (idOrIds: string | string[], byUser
   return data as Message[];
 };
 
+const generateUUID = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    try {
+      return crypto.randomUUID();
+    } catch (e) {
+      // Fallback
+    }
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
 export const createSession = async (userId: string, title: string = "New Chat", profileId?: string): Promise<Conversation> => {
   const { data, error } = await supabase
     .from('conversations')
@@ -1291,7 +1306,7 @@ export const getLatestMetrics = async (): Promise<AnalyticsMetric | null> => {
 
     // Transform RPC response to AnalyticsMetric format
     return {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       date: new Date().toISOString().split('T')[0],
       total_conversations: data.total_conversations || 0,
       active_users: data.active_users || 0,

@@ -175,7 +175,7 @@ async function syncOneProfile(supabase: SupabaseClient, profileId: string, supab
     // DEDUPLICATION BEFORE SLICING
     const filesToProcess: any[] = [];
     for (const file of filteredFiles) {
-        if (filesToProcess.length >= 200) break;
+        if (filesToProcess.length >= 50) break;
 
         const storagePath = `drive_sync/${userId}/${file.id}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
         const gDocUrl = `https://docs.google.com/document/d/${file.id}`;
