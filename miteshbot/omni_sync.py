@@ -30,6 +30,7 @@ def process_media():
             "yt-dlp",
             "-x", "--audio-format", "mp3",
             "-o", output_template,
+            "--",  # Forces yt-dlp to treat the next string as a URL, even if it starts with a dash
             url
         ]
         subprocess.run(download_command, check=True)
