@@ -24,39 +24,42 @@ def process_media():
     print(f"📥 [OMNI-SYNC] Starting download for {source}: {url}")
     
     try:
-        import glob
-        
-        # 1. Download best available stream (audio preferred, fallback to video)
-        output_template = "temp_media.%(ext)s"
+        # 1. Download audio using yt-dlp (Extract audio to save Whisper API costs)
+        output_template = "temp_audio.%(ext)s"
         download_command = [
             "yt-dlp",
-            "-f", "bestaudio/best",
-            "--extractor-args", "youtube:player_client=android",
+            "-x", "--audio-format", "mp3",
             "-o", output_template,
-            "--",  # Forces yt-dlp to treat the next string as a URL
-            url
         ]
+        
+        # Add platform-specific cookies dynamically
+        if source == "youtube":
+            download_command.extend(["--extractor-args", "youtube:player_client=android"])
+            if os.path.exists("youtube_cookies.txt"):
+                print("🍪 [OMNI-SYNC] Using YouTube cookies...")
+                download_command.extend(["--cookies", "youtube_cookies.txt"])
+        elif source == "instagram":
+            if os.path.exists("instagram_cookies.txt"):
+                print("🍪 [OMNI-SYNC] Using Instagram cookies...")
+                download_command.extend(["--cookies", "instagram_cookies.txt"])
+                
+        download_command.extend(["--", url])
         result = subprocess.run(download_command, capture_output=True, text=True)
         if result.returncode != 0:
             raise Exception(f"yt-dlp failed: {result.stderr}")
-            
-        # Find the downloaded file
-        downloaded_files = glob.glob("temp_media.*")
-        if not downloaded_files:
-            raise Exception("No file was downloaded!")
-        media_file = downloaded_files[0]
+        audio_file = "temp_audio.mp3"
         
         # 2. Transcribe with OpenAI Whisper
-        print(f"🎙️ [OMNI-SYNC] Transcribing {media_file} with Whisper...")
-        with open(media_file, "rb") as file:
+        print("🎙️ [OMNI-SYNC] Transcribing audio with Whisper...")
+        with open(audio_file, "rb") as file:
             transcription = openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=file
             )
         text_content = transcription.text
         
-        # Cleanup media file
-        os.remove(media_file)
+        # Cleanup audio file
+        os.remove(audio_file)
         
         # 3. Create Embeddings for Supabase
         print("🧠 [OMNI-SYNC] Creating embeddings...")
