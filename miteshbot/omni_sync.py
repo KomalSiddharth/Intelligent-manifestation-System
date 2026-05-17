@@ -33,7 +33,9 @@ def process_media():
             "--",  # Forces yt-dlp to treat the next string as a URL, even if it starts with a dash
             url
         ]
-        subprocess.run(download_command, check=True)
+        result = subprocess.run(download_command, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Exception(f"yt-dlp failed: {result.stderr}")
         audio_file = "temp_audio.mp3"
         
         # 2. Transcribe with OpenAI Whisper
