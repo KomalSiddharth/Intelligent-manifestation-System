@@ -394,31 +394,49 @@ export const getContentItems = async (folderId?: string, profileId?: string): Pr
   console.log('🔍 [getContentItems] folderId:', folderId, 'profileId:', profileId);
 
   try {
-    // Priority: Direct DB Query (Faster and more stable on VPS)
-    let query = supabase
-      .from('knowledge_sources')
-      .select('*')
-      .order('created_at', { ascending: false });
+    let allData: any[] = [];
+    let from = 0;
+    const step = 1000;
+    let keepFetching = true;
 
-    if (folderId && folderId !== 'all') {
-      query = query.eq('folder_id', folderId);
-    } else if (!folderId || folderId === 'root') {
-      // Show root items
-      query = query.is('folder_id', null);
+    // Loop to bypass Supabase 1000-row limit
+    while (keepFetching) {
+      let query = supabase
+        .from('knowledge_sources')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(from, from + step - 1);
+
+      if (folderId && folderId !== 'all') {
+        query = query.eq('folder_id', folderId);
+      } else if (!folderId || folderId === 'root') {
+        query = query.is('folder_id', null);
+      }
+
+      if (profileId && profileId !== 'all') {
+        query = query.eq('profile_id', profileId);
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        console.error('❌ [getContentItems] DB Error:', error);
+        throw error;
+      }
+
+      if (data && data.length > 0) {
+        allData = [...allData, ...data];
+        if (data.length < step) {
+          keepFetching = false; // We reached the end
+        } else {
+          from += step; // Prepare for next page
+        }
+      } else {
+        keepFetching = false;
+      }
     }
 
-    if (profileId && profileId !== 'all') {
-      query = query.eq('profile_id', profileId);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('❌ [getContentItems] DB Error:', error);
-      throw error;
-    }
-
-    const items = (data || []).map((item: any) => ({
+    const items = allData.map((item: any) => ({
       ...item,
       uploaded_at: item.uploaded_at || item.created_at,
       type: item.type || 'text',
@@ -427,7 +445,7 @@ export const getContentItems = async (folderId?: string, profileId?: string): Pr
       word_count: item.word_count || 0
     }));
 
-    console.log('📦 [getContentItems] Direct DB result:', items.length);
+    console.log(`📦 [getContentItems] Direct DB result (All Pages): ${items.length}`);
     return items;
 
   } catch (err) {
