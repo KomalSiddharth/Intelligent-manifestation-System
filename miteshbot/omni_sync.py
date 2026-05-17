@@ -29,6 +29,7 @@ def process_media():
         download_command = [
             "yt-dlp",
             "-x", "--audio-format", "mp3",
+            "--extractor-args", "youtube:player_client=android",
             "-o", output_template,
             "--",  # Forces yt-dlp to treat the next string as a URL, even if it starts with a dash
             url
