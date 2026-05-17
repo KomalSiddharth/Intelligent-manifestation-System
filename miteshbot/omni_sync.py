@@ -24,32 +24,39 @@ def process_media():
     print(f"📥 [OMNI-SYNC] Starting download for {source}: {url}")
     
     try:
-        # 1. Download audio using yt-dlp (Extract audio to save Whisper API costs)
-        output_template = "temp_audio.%(ext)s"
+        import glob
+        
+        # 1. Download best available stream (audio preferred, fallback to video)
+        output_template = "temp_media.%(ext)s"
         download_command = [
             "yt-dlp",
-            "-x", "--audio-format", "mp3",
+            "-f", "bestaudio/best",
             "--extractor-args", "youtube:player_client=android",
             "-o", output_template,
-            "--",  # Forces yt-dlp to treat the next string as a URL, even if it starts with a dash
+            "--",  # Forces yt-dlp to treat the next string as a URL
             url
         ]
         result = subprocess.run(download_command, capture_output=True, text=True)
         if result.returncode != 0:
             raise Exception(f"yt-dlp failed: {result.stderr}")
-        audio_file = "temp_audio.mp3"
+            
+        # Find the downloaded file
+        downloaded_files = glob.glob("temp_media.*")
+        if not downloaded_files:
+            raise Exception("No file was downloaded!")
+        media_file = downloaded_files[0]
         
         # 2. Transcribe with OpenAI Whisper
-        print("🎙️ [OMNI-SYNC] Transcribing audio with Whisper...")
-        with open(audio_file, "rb") as file:
+        print(f"🎙️ [OMNI-SYNC] Transcribing {media_file} with Whisper...")
+        with open(media_file, "rb") as file:
             transcription = openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=file
             )
         text_content = transcription.text
         
-        # Cleanup audio file
-        os.remove(audio_file)
+        # Cleanup media file
+        os.remove(media_file)
         
         # 3. Create Embeddings for Supabase
         print("🧠 [OMNI-SYNC] Creating embeddings...")
