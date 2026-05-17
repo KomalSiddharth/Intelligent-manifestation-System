@@ -36,3 +36,16 @@ services:
     environment:
       - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+
+  # 4. Omni-Channel Media Sync Worker (n8n companion)
+  omni-sync-worker:
+    build:
+      context: ./miteshbot
+      dockerfile: Dockerfile.omni
+    ports:
+      - "5001:5001"
+    restart: always
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}

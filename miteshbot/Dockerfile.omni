@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install ffmpeg for yt-dlp and whisper
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies
+RUN pip install --no-cache-dir flask openai supabase yt-dlp python-dotenv
+
+COPY omni_sync.py .
+
+EXPOSE 5001
+
+CMD ["python", "omni_sync.py"]
