@@ -176,6 +176,140 @@ const DataCard = ({
     </div>
 );
 
+const EventReminderDialog = ({
+    open,
+    onOpenChange
+}: {
+    open: boolean,
+    onOpenChange: (open: boolean) => void
+}) => {
+    const [eventName, setEventName] = useState("");
+    const [eventDate, setEventDate] = useState("");
+    const [emailMessage, setEmailMessage] = useState("");
+    const [webhookUrl, setWebhookUrl] = useState("");
+    const [isSending, setIsSending] = useState(false);
+    const [statusMsg, setStatusMsg] = useState("");
+
+    const handleSend = async () => {
+        if (!eventName || !eventDate || !emailMessage || !webhookUrl) {
+            setStatusMsg("Please fill all fields, including the n8n Webhook URL.");
+            return;
+        }
+
+        setIsSending(true);
+        setStatusMsg("Sending to n8n...");
+
+        try {
+            const response = await fetch(webhookUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    eventName: eventName,
+                    eventTag: `event_${eventName.toLowerCase().replace(/\\s+/g, '_')}`,
+                    eventDate: eventDate,
+                    emailMessage: emailMessage
+                })
+            });
+
+            if (response.ok) {
+                setStatusMsg("Successfully triggered n8n workflow!");
+                setTimeout(() => {
+                    onOpenChange(false);
+                    setStatusMsg("");
+                }, 2000);
+            } else {
+                setStatusMsg("Failed to trigger webhook. Check the URL.");
+            }
+        } catch (error) {
+            console.error("Webhook error:", error);
+            setStatusMsg("Network error trying to reach the webhook.");
+        } finally {
+            setIsSending(false);
+        }
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-md flex flex-col">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <Calendar className="w-5 h-5 text-emerald-600" />
+                        Send Event Reminder
+                    </DialogTitle>
+                    <DialogDescription>
+                        Triggers your n8n workflow to email all users who showed interest in this event.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Event Name (Exact name users asked about)</label>
+                        <input 
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            placeholder="e.g. Masterclass"
+                            value={eventName}
+                            onChange={e => setEventName(e.target.value)}
+                        />
+                        <p className="text-xs text-muted-foreground">This matches the AI tag: event_masterclass</p>
+                    </div>
+                    
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Event Date & Time</label>
+                        <input 
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            placeholder="e.g. Tomorrow at 5 PM"
+                            value={eventDate}
+                            onChange={e => setEventDate(e.target.value)}
+                        />
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Email Message</label>
+                        <textarea 
+                            className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            placeholder="Hi there! Here is the link for our upcoming masterclass..."
+                            value={emailMessage}
+                            onChange={e => setEmailMessage(e.target.value)}
+                        />
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-emerald-600">n8n Webhook URL</label>
+                        <input 
+                            className="flex h-10 w-full rounded-md border border-emerald-200 bg-emerald-50/50 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                            placeholder="http://your-vps:5678/webhook/event-reminder"
+                            value={webhookUrl}
+                            onChange={e => setWebhookUrl(e.target.value)}
+                        />
+                    </div>
+
+                    {statusMsg && (
+                        <div className={`p-3 rounded-md text-sm ${statusMsg.includes('Success') ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                            {statusMsg}
+                        </div>
+                    )}
+                </div>
+
+                <div className="flex justify-end gap-2 pt-4 border-t">
+                    <button 
+                        onClick={() => onOpenChange(false)}
+                        className="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
+                    >
+                        Cancel
+                    </button>
+                    <button 
+                        onClick={handleSend}
+                        disabled={isSending}
+                        className="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
+                    >
+                        {isSending ? "Sending..." : "Send Reminders via n8n"}
+                    </button>
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
+};
+
 const InactiveUsersDialog = ({
     open,
     onOpenChange
@@ -897,6 +1031,7 @@ const ActionsView = () => {
     const [birthdayOpen, setBirthdayOpen] = useState(false);
     const [weeklyProgressOpen, setWeeklyProgressOpen] = useState(false);
     const [inactivityNudgeOpen, setInactivityNudgeOpen] = useState(false);
+    const [eventReminderOpen, setEventReminderOpen] = useState(false);
 
     // State for feature toggles
     const [featureStates, setFeatureStates] = useState<Record<string, boolean>>(() => {
@@ -955,7 +1090,7 @@ const ActionsView = () => {
         { id: 'user-props', type: 'data', icon: Fingerprint, title: "User Properties", description: "Automatically stores a user's location when mentioned.", category: 'data' },
         { id: 'weekly-progress', type: 'template', icon: Calendar, title: "Weekly Progress Check", description: "Automated: Check-in weekly with users to summarize their progress.", category: 'retention', onClick: () => setWeeklyProgressOpen(true) },
         { id: 'conv-recap', type: 'template', icon: Clock, title: "Conversation Recap", description: "Auto-send a summary every 50 messages.", category: 'retention' },
-        { id: 'event-reminder', type: 'template', icon: Calendar, title: "Event Reminder", description: "Remind users about events they've expressed interest in.", category: 'reminders' },
+        { id: 'event-reminder', type: 'template', icon: Calendar, title: "Event Reminder", description: "Remind users about events they've expressed interest in.", category: 'reminders', onClick: () => setEventReminderOpen(true) },
         { id: 'follow-up', type: 'template', icon: MessageCircle, title: "Follow-Up Message", description: "Follow up with users about a topic/event they mentioned earlier.", category: 'reminders' },
         { id: 'post-conv-plan', type: 'template', icon: Share2, title: "Post-Conversation Plan", description: "Send next steps after a conversation.", category: 'reminders' },
         { id: 'meeting-setup', type: 'template', icon: ArrowRight, title: "Instant Meeting Setup", description: "Auto-send your calendar link upon request.", category: 'reminders' },
@@ -988,6 +1123,7 @@ const ActionsView = () => {
             <InactiveUsersDialog open={personalContactOpen} onOpenChange={setPersonalContactOpen} />
             <BirthdayDialog open={birthdayOpen} onOpenChange={setBirthdayOpen} />
             <WeeklyProgressDialog open={weeklyProgressOpen} onOpenChange={setWeeklyProgressOpen} />
+            <EventReminderDialog open={eventReminderOpen} onOpenChange={setEventReminderOpen} />
             <InactivityNudgeDialog open={inactivityNudgeOpen} onOpenChange={setInactivityNudgeOpen} />
 
             <div className="p-8 max-w-7xl mx-auto w-full space-y-12">
