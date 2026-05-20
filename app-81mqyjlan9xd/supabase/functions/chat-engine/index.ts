@@ -1,4 +1,4 @@
-﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import OpenAI from "https://esm.sh/openai@4.20.1";
 import {
@@ -1110,7 +1110,7 @@ PERSONALIZATION:
 
                             const currentTime = new Date().toISOString();
 
-                            // 1. Intent Detection (Reminders & Tasks)
+                            // 1. Intent Detection (Reminders, Tasks & Event Interest)
                             const intentDetection = await openai.chat.completions.create({
                                 model: "gpt-4o-mini",
                                 messages: [
@@ -1118,10 +1118,18 @@ PERSONALIZATION:
                                         role: "system",
                                         content: `You are an intent detection engine. 
                                         Current Time: ${currentTime}
-                                        Analyze the user message for any requests to be reminded, scheduled tasks, or goals with dates.
-                                        If found, extract the task and precisely calculate the due date (ISO string).
-                                        Return valid JSON: { "isReminder": boolean, "task": string, "dueDate": string, "priority": "low"|"normal"|"high"|"urgent" }
-                                        If no reminder intent, return { "isReminder": false }`
+                                        Analyze the user message for TWO things:
+                                        1. Requests to be reminded, scheduled tasks, or goals with dates.
+                                        2. Showing interest in upcoming events, masterclasses, workshops, or webinars.
+                                        
+                                        Return valid JSON: { 
+                                            "isReminder": boolean, 
+                                            "task": "string (if reminder)", 
+                                            "dueDate": "ISO string", 
+                                            "priority": "low|normal|high|urgent",
+                                            "isEventInterest": boolean,
+                                            "interestedEvent": "Name of the event they asked about (e.g. Masterclass, Webinar)"
+                                        }`
                                     },
                                     { role: "user", content: query }
                                 ],
@@ -1129,6 +1137,31 @@ PERSONALIZATION:
                             });
 
                             const intentData = JSON.parse(intentDetection.choices[0].message.content || "{}");
+
+                            // Handle Event Interest Tagging
+                            if (intentData.isEventInterest && intentData.interestedEvent && chatUserId !== 'anonymous') {
+                                console.log(`🎟️ [EVENT] User interested in: ${intentData.interestedEvent}`);
+                                
+                                // Fetch current tags
+                                const { data: userData } = await supabaseClient
+                                    .from('audience_users')
+                                    .select('tags')
+                                    .eq('user_id', chatUserId)
+                                    .single();
+                                
+                                let currentTags = userData?.tags || [];
+                                const newTag = `event_${intentData.interestedEvent.toLowerCase().replace(/\\s+/g, '_')}`;
+                                
+                                if (!currentTags.includes(newTag)) {
+                                    currentTags.push(newTag);
+                                    // Update tags in database
+                                    await supabaseClient
+                                        .from('audience_users')
+                                        .update({ tags: currentTags })
+                                        .eq('user_id', chatUserId);
+                                    console.log(`✅ [EVENT] Tag added: ${newTag}`);
+                                }
+                            }
 
                             // Check if reminders are enabled for this profile
                             const currentFlags = (requestBody as any).featureFlags || {};
