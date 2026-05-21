@@ -1,0 +1,10 @@
+{
+  "buildCommand": "cd app-81mqyjlan9xd && npm install && npm run build",
+  "outputDirectory": "app-81mqyjlan9xd/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
