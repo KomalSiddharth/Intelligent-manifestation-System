@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npx vite build",
     "lint": "tsgo -p tsconfig.check.json; npx biome lint; .rules/check.sh;npx tailwindcss -i ./src/index.css -o /dev/null 2>&1 | grep -E '^(CssSyntaxError|Error):.*' || true;.rules/testBuild.sh"
   },
   "dependencies": {
@@ -80,7 +80,7 @@
     "uuid": "^13.0.0",
     "vaul": "^1.1.2",
     "video-react": "^0.16.0",
-    "vite": "^8.0.14",
+    "vite": "^5.4.21",
     "xlsx": "^0.18.5",
     "zod": "^3.25.76"
   },
