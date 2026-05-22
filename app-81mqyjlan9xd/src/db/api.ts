@@ -510,6 +510,29 @@ export const getTotalWordCount = async (profileId?: string): Promise<number> => 
   }
 };
 
+export const updateContentItem = async (id: string, updates: {
+  title?: string;
+  metadata?: any;
+  url?: string;
+  folder_id?: string | null;
+}): Promise<void> => {
+  try {
+    // Update knowledge_sources table
+    const { error: ksError } = await supabase
+      .from('knowledge_sources')
+      .update(updates)
+      .eq('id', id);
+
+    if (ksError) {
+      console.error("Error updating knowledge_sources:", ksError);
+      throw ksError;
+    }
+  } catch (error) {
+    console.error("Error updating content item:", error);
+    throw error;
+  }
+};
+
 // Ingestion API
 export const ingestContent = async (
   title: string,
@@ -1341,14 +1364,21 @@ export const getLatestMetrics = async (): Promise<AnalyticsMetric | null> => {
 
 // Insights API
 export const getInsights = async (limit: number = 5): Promise<any[]> => {
-  const { data, error } = await supabase
-    .from('insights')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
+  try {
+    const { data, error } = await supabase
+      .from('insights')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) {
+      console.error('Error fetching insights:', error);
+      return [];
+    }
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.error('Unexpected error in getInsights:', err);
+    return [];
+  }
 };
 
 // Trending Topics API

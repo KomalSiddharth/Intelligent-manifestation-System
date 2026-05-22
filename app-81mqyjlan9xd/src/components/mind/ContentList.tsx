@@ -25,9 +25,10 @@ interface ContentListProps {
   onDelete: (id: string) => void;
   folders: any[];
   onMove: (id: string, folderId: string | null) => void;
+  onSettingsClick?: (item: ContentItem) => void;
 }
 
-const ContentList = ({ items, onDelete, folders, onMove }: ContentListProps) => {
+const ContentList = ({ items, onDelete, folders, onMove, onSettingsClick }: ContentListProps) => {
   const getSourceIcon = (item: ContentItem) => {
     const title = (item.title || '').toLowerCase();
     const isVideo = title.endsWith('.mp4') || title.endsWith('.mov') || title.endsWith('.avi');
@@ -94,7 +95,7 @@ const ContentList = ({ items, onDelete, folders, onMove }: ContentListProps) => 
             </TableRow>
           ) : (
             items.map((item) => (
-              <TableRow key={item.id}>
+              <TableRow key={item.id} className="cursor-pointer hover:bg-muted/50" onClick={() => onSettingsClick?.(item)}>
                 <TableCell>
                   <div className="flex items-start gap-3">
                     <div className="mt-1">{getSourceIcon(item)}</div>
@@ -119,7 +120,7 @@ const ContentList = ({ items, onDelete, folders, onMove }: ContentListProps) => 
                   </div>
                 </TableCell>
                 <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-2">
+                  <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon">
@@ -143,7 +144,7 @@ const ContentList = ({ items, onDelete, folders, onMove }: ContentListProps) => 
                       </DropdownMenuContent>
                     </DropdownMenu>
 
-                    <Button variant="ghost" size="icon">
+                    <Button variant="ghost" size="icon" onClick={() => onSettingsClick?.(item)}>
                       <Settings className="h-4 w-4" />
                     </Button>
                     <Button

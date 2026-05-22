@@ -79,6 +79,9 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
     const [autoSync, setAutoSync] = useState(false);
     const [integrationId, setIntegrationId] = useState<string | null>(null);
 
+    // Access Group state
+    const [selectedAccessGroup, setSelectedAccessGroup] = useState('insiders');
+
     useEffect(() => {
         const checkIntegration = async () => {
             try {
@@ -137,6 +140,29 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
             setLoading(true);
             const { ingestContent } = await import('@/db/api');
             await ingestContent(titleValue, contentValue, type as any, urlValue, undefined, profileId, targetFolderId || undefined);
+
+            // Update the uploaded content with the selected access group
+            const { supabase } = await import('@/db/supabase');
+            const { data: latestContent } = await supabase
+                .from('knowledge_sources')
+                .select('*')
+                .eq('profile_id', profileId)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .single();
+
+            if (latestContent) {
+                await supabase
+                    .from('knowledge_sources')
+                    .update({
+                        metadata: {
+                            ...latestContent.metadata,
+                            accessGroup: selectedAccessGroup
+                        }
+                    })
+                    .eq('id', latestContent.id);
+            }
+
             onUpload({ title: titleValue, type });
             onClose();
         } catch (error: any) {
@@ -203,6 +229,30 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
             if (isMedia) {
                 const { ingestMedia } = await import('@/db/api');
                 await ingestMedia(file, profileId, targetFolderId || undefined);
+
+                // Update the uploaded media with the selected access group
+                const { supabase } = await import('@/db/supabase');
+                const { data: latestContent } = await supabase
+                    .from('knowledge_sources')
+                    .select('*')
+                    .eq('profile_id', profileId)
+                    .eq('title', file.name)
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .single();
+
+                if (latestContent) {
+                    await supabase
+                        .from('knowledge_sources')
+                        .update({
+                            metadata: {
+                                ...latestContent.metadata,
+                                accessGroup: selectedAccessGroup
+                            }
+                        })
+                        .eq('id', latestContent.id);
+                }
+
                 onUpload({ title: file.name, type: 'file' });
                 return;
             }
@@ -215,6 +265,30 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                     console.warn("Client-side PDF extraction failed, falling back to server-side:", pdfErr.message);
                     const { ingestMedia } = await import('@/db/api');
                     await ingestMedia(file, profileId, targetFolderId || undefined); // Pass targetFolderId here
+
+                    // Update the uploaded PDF with the selected access group
+                    const { supabase } = await import('@/db/supabase');
+                    const { data: latestContent } = await supabase
+                        .from('knowledge_sources')
+                        .select('*')
+                        .eq('profile_id', profileId)
+                        .eq('title', file.name)
+                        .order('created_at', { ascending: false })
+                        .limit(1)
+                        .single();
+
+                    if (latestContent) {
+                        await supabase
+                            .from('knowledge_sources')
+                            .update({
+                                metadata: {
+                                    ...latestContent.metadata,
+                                    accessGroup: selectedAccessGroup
+                                }
+                            })
+                            .eq('id', latestContent.id);
+                    }
+
                     onUpload({ title: file.name, type: 'pdf' });
                     return;
                 }
@@ -239,6 +313,29 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
 
             const { ingestContent } = await import('@/db/api');
             await ingestContent(file.name, extractedText, 'text', '', undefined, profileId, targetFolderId || undefined); // Pass targetFolderId here
+
+            // Update the uploaded content with the selected access group
+            const { supabase } = await import('@/db/supabase');
+            const { data: latestContent } = await supabase
+                .from('knowledge_sources')
+                .select('*')
+                .eq('profile_id', profileId)
+                .eq('title', file.name)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .single();
+
+            if (latestContent) {
+                await supabase
+                    .from('knowledge_sources')
+                    .update({
+                        metadata: {
+                            ...latestContent.metadata,
+                            accessGroup: selectedAccessGroup
+                        }
+                    })
+                    .eq('id', latestContent.id);
+            }
 
             onUpload({ title: file.name, type: 'text' });
         } catch (error: any) {
@@ -548,6 +645,21 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                     })}
                 </div>
             )}
+
+            {/* Access Group Selection */}
+            <div className="space-y-2">
+                <Label>Access Group</Label>
+                <Select value={selectedAccessGroup} onValueChange={setSelectedAccessGroup}>
+                    <SelectTrigger className="w-full bg-background rounded-lg">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="insiders"><div className="flex items-center gap-2"><span className="text-blue-500 text-lg leading-none mt-[-2px]">🔒</span> Insiders</div></SelectItem>
+                        <SelectItem value="public"><div className="flex items-center gap-2"><span className="text-green-500 text-lg leading-none mt-[-2px]">🌍</span> Public</div></SelectItem>
+                        <SelectItem value="collaborator"><div className="flex items-center gap-2"><span className="text-purple-500 text-lg leading-none mt-[-2px]">👥</span> Collaborator</div></SelectItem>
+                    </SelectContent>
+                </Select>
+            </div>
 
             <Button className="w-full bg-[#FC5859]" onClick={handleFileUpload} disabled={loading || selectedFiles.length === 0}>
                 {loading ? `Processing (${uploadingFiles.length} uploading)...` : `Add ${selectedFiles.length} files to Brain`}

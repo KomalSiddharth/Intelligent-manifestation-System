@@ -4,6 +4,7 @@ import MainLayout from '@/components/layout/MainLayout';
 import MindSidebar from '@/components/mind/MindSidebar';
 import FolderSidebar from '@/components/mind/FolderSidebar';
 import ContentList from '@/components/mind/ContentList';
+import ContentSettingsDialog from '@/components/mind/ContentSettingsDialog';
 import ProfileView from '@/components/mind/sections/ProfileView';
 import BiographyView from '@/components/mind/sections/BiographyView';
 import SocialLinksView from '@/components/mind/sections/SocialLinksView';
@@ -22,6 +23,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AddContentDialog from '@/components/mind/AddContentDialog';
 import {
   getContentItems,
@@ -35,6 +37,7 @@ import {
   updateMindProfile,
   deleteMindProfile,
   moveContentToFolder,
+  updateContentItem,
 } from '@/db/api';
 import type { ContentItem, Folder } from '@/types/types';
 import { supabase } from '@/db/supabase';
@@ -54,12 +57,16 @@ const MindPage = () => {
   const [newFolderName, setNewFolderName] = useState('');
   const [uploadContent, setUploadContent] = useState('');
   const [_isUploading, setIsUploading] = useState(false);
+  
+  // Settings dialog
+  const [selectedItemForEdit, setSelectedItemForEdit] = useState<ContentItem | null>(null);
 
   // Filter States
-  const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [selectedContentType, setSelectedContentType] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
-  const [selectedMemoryType, setSelectedMemoryType] = useState<string>('all');
+  const [selectedAccessGroup, setSelectedAccessGroup] = useState<string>('all');
+  const [selectedWordCount, setSelectedWordCount] = useState<string>('all');
+  const [selectedDatePublished, setSelectedDatePublished] = useState<string>('all');
 
   // Navigation State
   const [activeTab, setActiveTab] = useState('content');
@@ -338,14 +345,33 @@ const MindPage = () => {
     const matchesStatus = selectedStatus === 'all' ||
       (item.status || '').toLowerCase() === selectedStatus.toLowerCase();
 
-    // Memory Type filter (assuming there's a field like 'createdBy' or 'author')
-    const matchesMemoryType = selectedMemoryType === 'all' ||
-      (selectedMemoryType === 'by-me' && item.isOwnContent) ||
-      (selectedMemoryType === 'by-others' && !item.isOwnContent);
+    // Word count filter
+    let matchesWordCount = true;
+    const wc = item.word_count || 0;
+    if (selectedWordCount === '< 500') matchesWordCount = wc < 500;
+    if (selectedWordCount === '500 - 2000') matchesWordCount = wc >= 500 && wc <= 2000;
+    if (selectedWordCount === '> 2000') matchesWordCount = wc > 2000;
 
-    return matchesSearch && matchesContentType && matchesStatus && matchesMemoryType;
+    // Access Group filter (assuming it is stored in item.metadata.accessGroup, default to all for now)
+    const matchesAccessGroup = selectedAccessGroup === 'all' || 
+      ((item.metadata as any)?.accessGroup || 'insiders').toLowerCase() === selectedAccessGroup.toLowerCase();
+
+    // Date Published filter
+    let matchesDate = true;
+    if (selectedDatePublished !== 'all' && item.uploaded_at) {
+      const date = new Date(item.uploaded_at);
+      const now = new Date();
+      const diffTime = Math.abs(now.getTime() - date.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (selectedDatePublished === '7 days') matchesDate = diffDays <= 7;
+      if (selectedDatePublished === '30 days') matchesDate = diffDays <= 30;
+      if (selectedDatePublished === '90 days') matchesDate = diffDays <= 90;
+      if (selectedDatePublished === '1 year') matchesDate = diffDays <= 365;
+    }
+
+    return matchesSearch && matchesContentType && matchesStatus && matchesWordCount && matchesAccessGroup && matchesDate;
   });
-
 
   const renderContent = () => {
     const activeProfile = profiles.find(p => p.id === selectedProfileId);
@@ -438,103 +464,107 @@ const MindPage = () => {
                         className="pl-9 rounded-full bg-muted/30 border-muted-foreground/20"
                       />
                     </div>
-                    <Dialog open={isFilterOpen} onOpenChange={setIsFilterOpen}>
-                      <DialogTrigger asChild>
-                        <Button variant="outline" className="rounded-full border-muted-foreground/20 gap-2">
-                          Edit Filters
-                          <Filter className="h-3 w-3" />
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="sm:max-w-md">
-                        <DialogHeader>
-                          <DialogTitle>Edit Filters</DialogTitle>
-                        </DialogHeader>
-                        <div className="space-y-4 py-4">
-                          {/* Content Type Filter */}
-                          <div className="space-y-2">
-                            <Label>Content Type</Label>
-                            <select
-                              value={selectedContentType}
-                              onChange={(e) => setSelectedContentType(e.target.value)}
-                              className="w-full p-2 border rounded-md bg-background"
-                            >
-                              <option value="all">All Types</option>
-                              <option value="file">File</option>
-                              <option value="podcast">Podcast</option>
-                              <option value="twitter">Twitter</option>
-                              <option value="pdf">PDF</option>
-                              <option value="website">Website</option>
-                              <option value="youtube">YouTube</option>
-                              <option value="tiktok">TikTok</option>
-                              <option value="manual">Manual</option>
-                              <option value="qa">Q&A</option>
-                              <option value="slack">Slack</option>
-                              <option value="facebook">Facebook</option>
-                              <option value="email">Email</option>
-                              <option value="instagram">Instagram</option>
-                              <option value="linkedin">LinkedIn</option>
-                              <option value="image">Image</option>
-                            </select>
-                          </div>
-
-                          {/* Status Filter */}
-                          <div className="space-y-2">
-                            <Label>Status</Label>
-                            <select
-                              value={selectedStatus}
-                              onChange={(e) => setSelectedStatus(e.target.value)}
-                              className="w-full p-2 border rounded-md bg-background"
-                            >
-                              <option value="all">All Status</option>
-                              <option value="complete">✓ Complete</option>
-                              <option value="failed">● Failed</option>
-                              <option value="queued">○ Queued</option>
-                              <option value="processing">○ Processing</option>
-                              <option value="deleting">○ Deleting</option>
-                            </select>
-                          </div>
-
-                          {/* Memory Type Filter */}
-                          <div className="space-y-2">
-                            <Label>Memory Type</Label>
-                            <select
-                              value={selectedMemoryType}
-                              onChange={(e) => setSelectedMemoryType(e.target.value)}
-                              className="w-full p-2 border rounded-md bg-background"
-                            >
-                              <option value="all">All</option>
-                              <option value="by-me">By Me</option>
-                              <option value="by-others">By Others</option>
-                            </select>
-                          </div>
-
-                          {/* Action Buttons */}
-                          <div className="flex gap-2 pt-4">
-                            <Button
-                              variant="outline"
-                              className="flex-1 rounded-full"
-                              onClick={() => {
-                                setSelectedContentType('all');
-                                setSelectedStatus('all');
-                                setSelectedMemoryType('all');
-                              }}
-                            >
-                              Reset
-                            </Button>
-                            <Button
-                              className="flex-1 rounded-full bg-black text-white hover:bg-black/90"
-                              onClick={() => setIsFilterOpen(false)}
-                            >
-                              Apply
-                            </Button>
-                          </div>
-                        </div>
-                      </DialogContent>
-                    </Dialog>
                   </div>
-                  <div className="text-sm text-muted-foreground">
-                    Showing {filteredItems.length} items • {totalWords.toLocaleString()} total words
-                  </div>
+                </div>
+
+                {/* Filters Row */}
+                <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+                  <Select value={selectedStatus} onValueChange={setSelectedStatus}>
+                    <SelectTrigger className="rounded-full h-8 px-4 text-xs font-medium border-border/50 bg-background w-auto gap-2 hover:bg-muted/50 transition-colors">
+                      <span className="text-muted-foreground">Status</span>
+                      {selectedStatus !== 'all' && <span className="text-foreground border-l pl-2 border-border/50">{selectedStatus}</span>}
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Status</SelectItem>
+                      <SelectItem value="completed">Completed</SelectItem>
+                      <SelectItem value="processing">Learning</SelectItem>
+                      <SelectItem value="failed">Failed</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Select value={selectedContentType} onValueChange={setSelectedContentType}>
+                    <SelectTrigger className="rounded-full h-8 px-4 text-xs font-medium border-border/50 bg-background w-auto gap-2 hover:bg-muted/50 transition-colors">
+                      <span className="text-muted-foreground">Content Type</span>
+                      {selectedContentType !== 'all' && <span className="text-foreground border-l pl-2 border-border/50">{selectedContentType}</span>}
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Types</SelectItem>
+                      <SelectItem value="File">File</SelectItem>
+                      <SelectItem value="QA / Manual">QA / Manual</SelectItem>
+                      <SelectItem value="Notion">Notion</SelectItem>
+                      <SelectItem value="Website">Website</SelectItem>
+                      <SelectItem value="YouTube">YouTube</SelectItem>
+                      <SelectItem value="Podcast">Podcast</SelectItem>
+                      <SelectItem value="Granola">Granola</SelectItem>
+                      <SelectItem value="Evernote">Evernote</SelectItem>
+                      <SelectItem value="Slack">Slack</SelectItem>
+                      <SelectItem value="X">X</SelectItem>
+                      <SelectItem value="TikTok">TikTok</SelectItem>
+                      <SelectItem value="Facebook">Facebook</SelectItem>
+                      <SelectItem value="Instagram">Instagram</SelectItem>
+                      <SelectItem value="LinkedIn">LinkedIn</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Select value={selectedAccessGroup} onValueChange={setSelectedAccessGroup}>
+                    <SelectTrigger className="rounded-full h-8 px-4 text-xs font-medium border-border/50 bg-background w-auto gap-2 hover:bg-muted/50 transition-colors">
+                      <span className="text-muted-foreground">Access Group</span>
+                      {selectedAccessGroup !== 'all' && <span className="text-foreground border-l pl-2 border-border/50">{selectedAccessGroup}</span>}
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Groups</SelectItem>
+                      <SelectItem value="Insiders">Insiders</SelectItem>
+                      <SelectItem value="Public">Public</SelectItem>
+                      <SelectItem value="Collaborator">Collaborator</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Select value={selectedWordCount} onValueChange={setSelectedWordCount}>
+                    <SelectTrigger className="rounded-full h-8 px-4 text-xs font-medium border-border/50 bg-background w-auto gap-2 hover:bg-muted/50 transition-colors">
+                      <span className="text-muted-foreground">Word Count</span>
+                      {selectedWordCount !== 'all' && <span className="text-foreground border-l pl-2 border-border/50">{selectedWordCount}</span>}
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Any Length</SelectItem>
+                      <SelectItem value="< 500">{"< 500 words"}</SelectItem>
+                      <SelectItem value="500 - 2000">{"500 - 2000 words"}</SelectItem>
+                      <SelectItem value="> 2000">{"> 2000 words"}</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Select value={selectedDatePublished} onValueChange={setSelectedDatePublished}>
+                    <SelectTrigger className="rounded-full h-8 px-4 text-xs font-medium border-border/50 bg-background w-auto gap-2 hover:bg-muted/50 transition-colors">
+                      <span className="text-muted-foreground">Date Published</span>
+                      {selectedDatePublished !== 'all' && <span className="text-foreground border-l pl-2 border-border/50">{selectedDatePublished}</span>}
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Any Date</SelectItem>
+                      <SelectItem value="7 days">Last 7 days</SelectItem>
+                      <SelectItem value="30 days">Last 30 days</SelectItem>
+                      <SelectItem value="90 days">Last 90 days</SelectItem>
+                      <SelectItem value="1 year">Last 1 year</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  {(selectedStatus !== 'all' || selectedContentType !== 'all' || selectedAccessGroup !== 'all' || selectedWordCount !== 'all' || selectedDatePublished !== 'all') && (
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      className="h-8 px-3 text-xs text-blue-500 hover:text-blue-600 hover:bg-blue-50/50 rounded-full ml-1"
+                      onClick={() => {
+                        setSelectedStatus('all');
+                        setSelectedContentType('all');
+                        setSelectedAccessGroup('all');
+                        setSelectedWordCount('all');
+                        setSelectedDatePublished('all');
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Showing {filteredItems.length} items • {totalWords.toLocaleString()} total words
                 </div>
               </div>
 
@@ -550,6 +580,7 @@ const MindPage = () => {
                     onDelete={handleDeleteContent}
                     folders={folders}
                     onMove={handleMoveContent}
+                    onSettingsClick={setSelectedItemForEdit}
                   />
                   <div className="flex items-center justify-between text-sm text-muted-foreground">
                     <span>
@@ -560,6 +591,29 @@ const MindPage = () => {
               )}
             </div>
           </div>
+          <ContentSettingsDialog
+            item={selectedItemForEdit}
+            isOpen={selectedItemForEdit !== null}
+            onClose={() => setSelectedItemForEdit(null)}
+            onSave={async (id, updates) => {
+              try {
+                await updateContentItem(id, updates);
+                setContentItems(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+                toast({
+                  title: "Success",
+                  description: "Content settings updated successfully.",
+                });
+              } catch (error) {
+                console.error("Error updating content:", error);
+                toast({
+                  title: "Error",
+                  description: "Failed to update content settings.",
+                  variant: "destructive",
+                });
+              }
+            }}
+            folders={folders}
+          />
         </>
       );
     }
