@@ -23,6 +23,7 @@ const corsHeaders = {
 const BUCKET_MAX_TOKENS = 10;          // Maximum burst size
 const REFILL_RATE_PER_SEC = 0.33;      // 1 token every 3 seconds (~20 per minute)
 
+// ── Issue #5 fix: pipeline replaces 4 separate fetches → 2 round trips ──────
 async function checkRateLimit(userId: string): Promise<boolean> {
     const redisUrl = Deno.env.get("UPSTASH_REDIS_REST_URL");
     const redisToken = Deno.env.get("UPSTASH_REDIS_REST_TOKEN");
@@ -33,46 +34,64 @@ async function checkRateLimit(userId: string): Promise<boolean> {
     }
 
     const keyTokens = `rl:bucket:tokens:${userId}`;
-    const keyLast = `rl:bucket:last:${userId}`;
+    const keyLast   = `rl:bucket:last:${userId}`;
 
     try {
-        // 1. Get current state (Parallel)
-        const [tokenRes, lastRes] = await Promise.all([
-            fetch(`${redisUrl}/get/${keyTokens}`, { headers: { Authorization: `Bearer ${redisToken}` } }).then(r => r.json()),
-            fetch(`${redisUrl}/get/${keyLast}`, { headers: { Authorization: `Bearer ${redisToken}` } }).then(r => r.json())
-        ]);
+        // 1. Pipeline GET both keys in a single HTTP round-trip
+        const pipeRes = await fetch(`${redisUrl}/pipeline`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${redisToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify([["GET", keyTokens], ["GET", keyLast]]),
+        }).then(r => r.json());
 
         const now = Date.now();
-        let tokens = tokenRes.result !== null ? parseFloat(tokenRes.result) : BUCKET_MAX_TOKENS;
-        const lastRefill = lastRes.result !== null ? parseInt(lastRes.result) : now;
+        let tokens    = pipeRes[0]?.result != null ? parseFloat(pipeRes[0].result) : BUCKET_MAX_TOKENS;
+        const lastRefill = pipeRes[1]?.result != null ? parseInt(pipeRes[1].result) : now;
 
-        // 2. Refill tokens based on time elapsed
-        const elapsedSec = (now - lastRefill) / 1000;
-        const refill = elapsedSec * REFILL_RATE_PER_SEC;
-        tokens = Math.min(BUCKET_MAX_TOKENS, tokens + refill);
+        // 2. Refill based on elapsed time
+        tokens = Math.min(BUCKET_MAX_TOKENS, tokens + (now - lastRefill) / 1000 * REFILL_RATE_PER_SEC);
 
-        // 3. Check if we have enough tokens
         if (tokens < 1) {
             console.warn(`🚫 [RATE] User ${userId} bucket empty: ${tokens.toFixed(2)} tokens`);
             return false;
         }
 
-        // 4. Consume 1 token and update Redis (Non-blocking bucket update)
-        const updatedTokens = tokens - 1;
+        // 3. Pipeline SET both keys in a single HTTP round-trip (fire-and-forget)
+        fetch(`${redisUrl}/pipeline`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${redisToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify([
+                ["SET", keyTokens, (tokens - 1).toString(), "EX", "3600"],
+                ["SET", keyLast,   now.toString(),           "EX", "3600"],
+            ]),
+        }).catch(err => console.error("❌ [RATE] Bucket update failed:", err));
 
-        // Multi-command for atomic-ish update (using Redis pipeline-like behavior or separate calls)
-        // For Upstash REST API, we can use /mset or two separate calls. Separate is safer for simple logic.
-        Promise.all([
-            fetch(`${redisUrl}/set/${keyTokens}/${updatedTokens}?ex=3600`, { headers: { Authorization: `Bearer ${redisToken}` } }),
-            fetch(`${redisUrl}/set/${keyLast}/${now}?ex=3600`, { headers: { Authorization: `Bearer ${redisToken}` } })
-        ]).catch(err => console.error("❌ [RATE] Bucket update failed:", err));
-
-        console.log(`✅ [RATE] User ${userId}: ${updatedTokens.toFixed(2)} tokens remaining`);
+        console.log(`✅ [RATE] User ${userId}: ${(tokens - 1).toFixed(2)} tokens remaining`);
         return true;
     } catch (err) {
         console.error("❌ [RATE] Redis error, allowing request:", err);
         return true;
     }
+}
+
+// ── Issue #6 fix: timeout wrapper for background tasks ───────────────────────
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    return Promise.race([
+        promise,
+        new Promise<T>((_, reject) =>
+            setTimeout(() => reject(new Error(`⏰ ${label} timed out after ${ms}ms`)), ms)
+        ),
+    ]);
+}
+
+// ── Bug #2 fix: single normalisation function used everywhere ────────────────
+function normalizeCacheKey(text: string): string {
+    return text
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")   // strip punctuation / special chars
+        .replace(/\s+/g, "_")            // spaces → underscores (safe Redis key)
+        .substring(0, 120);
 }
 
 function isSupportStyleProfile(name?: string | null): boolean {
@@ -221,11 +240,16 @@ function dedupeChunks(chunks: any[]): any[] {
 // TTL is enforced via `expiresAt` in the metadata (24 h).
 // ============================================================
 
+// Bug #1 note: Upstash Vector DOES support the `filter` parameter with
+// "field = 'value'" syntax — it is NOT broken. We keep it for server-side
+// pre-filtering AND add code-side validation as a defensive double-check.
 async function checkSemanticCache(
     vectorUrl: string,
     vectorToken: string,
     embedding: number[],
     profileId: string,
+    redisUrl: string | undefined,
+    redisToken: string | undefined,
     threshold = 0.92
 ): Promise<{ text: string; sources: any[] } | null> {
     try {
@@ -237,31 +261,49 @@ async function checkSemanticCache(
             },
             body: JSON.stringify({
                 vector: embedding,
-                topK: 1,
-                filter: `profileId = '${profileId}'`,
+                topK: 5,                                    // fetch top 5, filter in code
+                filter: `profileId = '${profileId}'`,       // server-side pre-filter (valid Upstash syntax)
                 includeMetadata: true,
             }),
         }).then((r) => r.json());
 
-        const top = res.result?.[0];
-        if (!top) return null;
+        const now = Date.now();
+        // Code-side validation: profile match + threshold + TTL
+        const valid = (res.result ?? []).filter((item: any) => {
+            if (item.metadata?.profileId !== profileId) return false;   // defensive double-check
+            if ((item.score ?? 0) < threshold) return false;
+            const exp: number = item.metadata?.expiresAt ?? 0;
+            if (exp && now > exp) return false;
+            return true;
+        });
 
+        if (valid.length === 0) return null;
+
+        const top = valid[0];
         console.log(`🔍 [SEM-CACHE] Best match score: ${top.score?.toFixed(4)}`);
 
-        if (top.score < threshold) return null;
-
-        // Respect the 24-hour TTL stored in metadata
-        const expiresAt: number = top.metadata?.expiresAt ?? 0;
-        if (expiresAt && Date.now() > expiresAt) {
-            console.log("⏰ [SEM-CACHE] Entry expired — treating as miss");
-            return null;
+        // Bug #3 fix: answer is stored in Redis (not in vector metadata)
+        // Retrieve it via the reference key stored in metadata.
+        const answerKey: string | undefined = top.metadata?.answerKey;
+        if (answerKey && redisUrl && redisToken) {
+            try {
+                const rRes = await fetch(`${redisUrl}/get/${encodeURIComponent(answerKey)}`, {
+                    headers: { Authorization: `Bearer ${redisToken}` },
+                }).then(r => r.json());
+                if (rRes.result) {
+                    const payload = JSON.parse(rRes.result);
+                    return { text: payload.answer ?? "", sources: payload.sources ?? [] };
+                }
+            } catch (redisErr) {
+                console.warn("⚠️ [SEM-CACHE] Redis answer fetch error:", redisErr);
+            }
         }
 
+        // Legacy fallback: answer embedded directly in metadata (old entries)
         const sources = (() => {
             try { return JSON.parse(top.metadata?.sources ?? "[]"); }
             catch { return []; }
         })();
-
         return { text: top.metadata?.answer ?? "", sources };
     } catch (err) {
         console.warn("⚠️ [SEM-CACHE] Query error:", err);
@@ -269,6 +311,10 @@ async function checkSemanticCache(
     }
 }
 
+// Bug #3 fix: hybrid storage
+//  • Upstash Vector  → stores embedding + lightweight metadata (no answer text)
+//  • Redis           → stores the actual answer + sources (no size concern)
+// This keeps vector metadata small (<1 KB) and avoids the 48 KB limit edge case.
 async function storeSemanticCache(
     vectorUrl: string,
     vectorToken: string,
@@ -276,32 +322,44 @@ async function storeSemanticCache(
     profileId: string,
     question: string,
     answer: string,
-    sources: any[]
+    sources: any[],
+    redisUrl?: string,
+    redisToken?: string
 ): Promise<void> {
     try {
         const id = `${profileId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const answerKey = `sem-answer:${id}`;
+        const now = Date.now();
+
+        // 1. Store answer + sources in Redis (cheap, handles large text)
+        if (redisUrl && redisToken) {
+            await fetch(`${redisUrl}/pipeline`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${redisToken}`, "Content-Type": "application/json" },
+                body: JSON.stringify([
+                    ["SET", answerKey, JSON.stringify({ answer, sources }), "EX", "86400"],
+                ]),
+            });
+        }
+
+        // 2. Store embedding + slim metadata in Upstash Vector
         await fetch(`${vectorUrl}/upsert`, {
             method: "POST",
-            headers: {
-                Authorization: `Bearer ${vectorToken}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify([
-                {
-                    id,
-                    vector: embedding,
-                    metadata: {
-                        profileId,
-                        question: question.slice(0, 500),
-                        answer,
-                        sources: JSON.stringify(sources),
-                        cachedAt: Date.now(),
-                        expiresAt: Date.now() + 86_400_000, // 24 hours
-                    },
+            headers: { Authorization: `Bearer ${vectorToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify([{
+                id,
+                vector: embedding,
+                metadata: {
+                    profileId,
+                    questionHash: normalizeCacheKey(question),   // normalised, for debug only
+                    answerKey,                                    // reference to Redis key
+                    cachedAt: now,
+                    expiresAt: now + 86_400_000,                 // 24 hours
                 },
-            ]),
+            }]),
         });
-        console.log(`✅ [SEM-CACHE] Stored: "${question.slice(0, 60)}"`);
+
+        console.log(`✅ [SEM-CACHE] Stored (hybrid): "${question.slice(0, 60)}"`);
     } catch (err) {
         console.warn("⚠️ [SEM-CACHE] Write error:", err);
     }
@@ -718,8 +776,8 @@ serve(async (req) => {
         // ⚡ RESPONSE CACHE — for support bots, serve identical questions from Redis (24h TTL)
         // This skips embedding + KB load + OpenAI call entirely — fastest possible path.
         if (useFastSupportPath && redisUrl && redisToken && activeProfileId) {
-            const normalizedQ = query.trim().toLowerCase();
-            const cacheKey = `resp:${activeProfileId}:${normalizedQ.slice(0, 120)}`;
+            // Bug #2 fix: use normalizeCacheKey() — strips punctuation, consistent casing/underscores
+            const cacheKey = `resp:${activeProfileId}:${normalizeCacheKey(query)}`;
             try {
                 const cacheRes = await fetch(`${redisUrl}/get/${encodeURIComponent(cacheKey)}`, {
                     headers: { Authorization: `Bearer ${redisToken}` }
@@ -727,7 +785,7 @@ serve(async (req) => {
 
                 if (cacheRes.result) {
                     const cached = JSON.parse(cacheRes.result);
-                    console.log(`⚡ [RESP-CACHE] HIT — "${normalizedQ.slice(0, 50)}"`);
+                    console.log(`⚡ [RESP-CACHE] HIT — "${query.slice(0, 50)}"`);
                     const enc = new TextEncoder();
                     return new Response(
                         new ReadableStream({
@@ -802,7 +860,8 @@ serve(async (req) => {
                 // Returns instantly without touching the KB or OpenAI chat API.
                 if (vectorUrl && vectorToken && activeProfileId) {
                     const semHit = await checkSemanticCache(
-                        vectorUrl, vectorToken, queryEmbedding, activeProfileId
+                        vectorUrl, vectorToken, queryEmbedding, activeProfileId,
+                        redisUrl, redisToken
                     );
                     if (semHit) {
                         console.log(`🎯 [SEM-CACHE] HIT — "${query.slice(0, 60)}"`);
@@ -1531,11 +1590,17 @@ PERSONALIZATION:
                     controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
 
                 } catch (err: any) {
+                    // Bug #4 fix: never call controller.error() after controller.enqueue() —
+                    // that combination is illegal and causes an unhandled rejection.
+                    // Instead, send the error as an SSE event so the client sees it gracefully,
+                    // then fall through to the finally block which closes the stream normally.
                     console.error("❌ [CHAT] Stream Error:", err);
                     const errorMsg = `Error: ${err.message || 'AI Generation Failed'}`;
                     fullResponse = errorMsg;
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorMsg)}\n\n`));
-                    controller.error(err);
+                    try {
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorMsg)}\n\n`));
+                        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+                    } catch (_) { /* controller may already be closed by the stream */ }
                 } finally {
                     const responseMetadata = {
                         timestamp: new Date().toISOString(),
@@ -1547,18 +1612,20 @@ PERSONALIZATION:
                     };
                     console.log(`📊 [RESPONSE] Metadata:`, JSON.stringify(responseMetadata));
 
-                    controller.close();
+                    // Wrap in try-catch: if the catch block already sent [DONE] and closed,
+                    // this will throw — safe to swallow.
+                    try { controller.close(); } catch (_) {}
 
                     // ⚡ RESPONSE CACHE WRITE — store response for 24h for support bots
                     if (useFastSupportPath && fullResponse && !fullResponse.startsWith('Error:') && redisUrl && redisToken && activeProfileId) {
-                        const normalizedQ = query.trim().toLowerCase();
-                        const cacheKey = `resp:${activeProfileId}:${normalizedQ.slice(0, 120)}`;
+                        // Bug #2 fix: use normalizeCacheKey() so reads and writes always use the same key
+                        const cacheKey = `resp:${activeProfileId}:${normalizeCacheKey(query)}`;
                         fetch(`${redisUrl}/pipeline`, {
                             method: 'POST',
                             headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },
                             body: JSON.stringify([['SET', cacheKey, JSON.stringify({ text: fullResponse, sources: sourceChunks }), 'EX', 86400]])
                         }).catch(e => console.warn("⚠️ [RESP-CACHE] Write error:", e));
-                        console.log(`⚡ [RESP-CACHE] Stored response for "${normalizedQ.slice(0, 40)}"`);
+                        console.log(`⚡ [RESP-CACHE] Stored response for "${query.slice(0, 40)}"`);
                     }
 
                     // ── LAYER 2 WRITE: Semantic cache ──────────────────────────────────
@@ -1574,7 +1641,8 @@ PERSONALIZATION:
                     ) {
                         storeSemanticCache(
                             vectorUrl, vectorToken, queryEmbedding,
-                            activeProfileId, query, fullResponse, sourceChunks
+                            activeProfileId, query, fullResponse, sourceChunks,
+                            redisUrl, redisToken
                         ).catch((e) => console.warn("⚠️ [SEM-CACHE] Background write error:", e));
                     }
 
@@ -1744,12 +1812,22 @@ PERSONALIZATION:
                         }
                     };
 
+                    // Issue #6 fix: wrap backgroundTasks in withTimeout so a stalled
+                    // OpenAI/DB call can't hang the Edge Function past its 30 s kill limit.
+                    // 12 s is generous — enough for 2-3 sequential API calls — while still
+                    // leaving headroom before the runtime terminates.
+                    const backgroundWithTimeout = withTimeout(
+                        backgroundTasks(),
+                        12_000,
+                        "backgroundTasks"
+                    ).catch((e) => console.warn("⚠️ [BG] Task timed out or failed:", e));
+
                     // @ts-ignore: EdgeRuntime
                     if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
                         // @ts-ignore
-                        EdgeRuntime.waitUntil(backgroundTasks());
+                        EdgeRuntime.waitUntil(backgroundWithTimeout);
                     } else {
-                        backgroundTasks();
+                        backgroundWithTimeout;
                     }
                 }
             },
