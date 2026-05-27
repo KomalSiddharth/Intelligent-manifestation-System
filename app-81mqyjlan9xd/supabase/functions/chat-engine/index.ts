@@ -75,6 +75,142 @@ async function checkRateLimit(userId: string): Promise<boolean> {
     }
 }
 
+function isSupportStyleProfile(name?: string | null): boolean {
+    const n = (name || "").toLowerCase();
+    return n.includes("support") || n.includes("imk") || n.includes("faq") || n.includes("helpdesk");
+}
+
+function extractUrlsFromText(text: string): string[] {
+    return [...new Set((text.match(/https?:\/\/[^\s<>"')\]]+/gi) || []))];
+}
+
+function formatKnowledgeChunk(c: any): string {
+    const title = c.source_title || "Knowledge";
+    let url = c.source_url || c.metadata?.url || "";
+    const urlsInContent = extractUrlsFromText(c.content || "");
+    if (!url && urlsInContent[0]) url = urlsInContent[0];
+    const enrollUrl = urlsInContent.find((u) => /enroll|register|signup|kajabi|checkout|payment/i.test(u)) || url;
+    const linkLine = enrollUrl ? ` (Enroll Link: ${enrollUrl})` : (url ? ` (Link: ${url})` : "");
+    return `[SOURCE: ${title}${linkLine}]\n${c.content}`;
+}
+
+// Common English stopwords — we filter these out so keyword search uses
+// meaningful terms like "aloa", "price", "course" instead of "hello", "can", "tell".
+const STOPWORDS = new Set([
+    "the","is","at","which","on","a","an","and","or","but","in","of","to","for",
+    "are","was","be","as","by","this","that","it","its","with","from","have","has",
+    "had","not","do","does","did","can","will","would","could","should","may","might",
+    "shall","must","what","how","why","when","where","who","whom","whose","if","then",
+    "than","so","yet","both","either","each","few","more","most","other","such","into",
+    "through","about","after","before","above","below","up","down","out","off","over",
+    "under","again","further","once","here","there","these","those","am","were","been",
+    "being","all","any","some","nor","too","very","just","tell","get","go","let","use",
+    "also","want","need","make","take","give","see","know","come","say","like","well",
+    "good","new","first","last","long","great","little","own","old","right","big",
+    "high","different","small","large","next","early","young","important","public",
+    "bad","same","able","me","my","we","our","us","you","your","he","she","her","him",
+    "they","them","his","her","its","i","u","hi","hey","hello","please","thanks",
+    "thank","okay","ok","yes","no","dear","sir","madam","want","help","need",
+]);
+
+async function fetchKeywordFAQChunks(supabaseClient: any, profileId: string, query: string): Promise<any[]> {
+    // Extract meaningful keywords — skip stopwords, sort longest first (more specific)
+    const words = query
+        .toLowerCase()
+        .split(/\W+/)
+        .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
+        .sort((a, b) => b.length - a.length)
+        .slice(0, 6);
+
+    console.log(`🔍 [KEYWORD] Query words extracted: [${words.join(", ")}] from: "${query}"`);
+
+    if (!words.length || !profileId) {
+        console.log("⚠️ [KEYWORD] No meaningful keywords found, skipping keyword search");
+        return [];
+    }
+
+    // Fetch sources (no 'content' column in knowledge_sources — content lives in knowledge_chunks)
+    const { data: sources, error: srcErr } = await supabaseClient
+        .from("knowledge_sources")
+        .select("id, title, source_url, metadata")
+        .eq("profile_id", profileId);
+
+    if (srcErr) {
+        console.error("❌ [KEYWORD] Error fetching sources:", srcErr.message);
+        return [];
+    }
+
+    if (!sources?.length) {
+        console.log("⚠️ [KEYWORD] No knowledge sources found for profile:", profileId);
+        return [];
+    }
+
+    console.log(`📚 [KEYWORD] Searching ${sources.length} source(s) for keywords: [${words.join(", ")}]`);
+
+    const sourceMap = new Map(sources.map((s: any) => [s.id, s]));
+    const orFilter = words.map((w) => `content.ilike.%${w}%`).join(",");
+
+    const { data: chunks, error: chunkErr } = await supabaseClient
+        .from("knowledge_chunks")
+        .select("content, source_id, chunk_index")
+        .in("source_id", sources.map((s: any) => s.id))
+        .or(orFilter)
+        .limit(8);
+
+    if (chunkErr) {
+        console.error("❌ [KEYWORD] Error fetching chunks:", chunkErr.message);
+        return [];
+    }
+
+    const chunkResults = (chunks || []).map((c: any) => {
+        const src = sourceMap.get(c.source_id) as any;
+        return {
+            ...c,
+            source_title: src?.title,
+            source_url: src?.source_url || src?.metadata?.url,
+            similarity: 0.85,
+        };
+    });
+
+    console.log(`✅ [KEYWORD] Found ${chunkResults.length} matching chunk(s)`);
+
+    // Fallback: if no keyword matches, return the first few chunks from this profile's
+    // sources so the model still has some context to work with.
+    if (chunkResults.length === 0) {
+        console.log("⚡ [KEYWORD-FALLBACK] No keyword matches — fetching first chunks from all sources...");
+        const { data: recentChunks } = await supabaseClient
+            .from("knowledge_chunks")
+            .select("content, source_id, chunk_index")
+            .in("source_id", sources.map((s: any) => s.id))
+            .order("chunk_index", { ascending: true })
+            .limit(6);
+
+        const fallback = (recentChunks || []).map((c: any) => {
+            const src = sourceMap.get(c.source_id) as any;
+            return {
+                ...c,
+                source_title: src?.title,
+                source_url: src?.source_url || src?.metadata?.url,
+                similarity: 0.70,
+            };
+        });
+        console.log(`✅ [KEYWORD-FALLBACK] Returning ${fallback.length} fallback chunk(s)`);
+        return fallback;
+    }
+
+    return chunkResults;
+}
+
+function dedupeChunks(chunks: any[]): any[] {
+    const seen = new Set<string>();
+    return chunks.filter((c) => {
+        const key = `${c.source_id || ""}:${(c.content || "").slice(0, 120)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
 serve(async (req) => {
     console.log(`📥 [CHAT] Request received: ${req.method}`);
     // 0. HANDLE OPTIONS (CORS)
@@ -163,6 +299,10 @@ serve(async (req) => {
 
         const startRoutingTime = Date.now();
         const activeProfileId = profileId;
+
+        // Redis config — shared by rate limiter, response cache, KB optimisation
+        const redisUrl = Deno.env.get("UPSTASH_REDIS_REST_URL");
+        const redisToken = Deno.env.get("UPSTASH_REDIS_REST_TOKEN");
 
         // 1. Setup OpenAI Client
         const openaiKey = Deno.env.get("OPENAI_API_KEY");
@@ -468,15 +608,61 @@ serve(async (req) => {
 
         // ==================== CORE LOGIC ====================
 
-        // 2. Fetch Context & Prepare Prompt
-        const [userProfileParams, psychProfile, sessionHistory, dynamicProfile, emotionalHistory, episodicMemory] = await Promise.all([
-            buildProfilePrompt(chatUserId, activeProfileId),
-            getPsychProfile(chatUserId, activeProfileId),
-            getSessionHistory(sessionId, chatUserId),
-            getMindProfileSettings(activeProfileId),
-            getEmotionalHistory(chatUserId, activeProfileId),
-            getConversationSummaries(chatUserId, activeProfileId)
-        ]);
+        const dynamicProfile = await getMindProfileSettings(activeProfileId);
+        const profileName = (dynamicProfile?.name || "").toLowerCase();
+        const isMiteshAiProfile = profileName.includes("miteshai") || profileName.includes("mitesh ai");
+        const useFastSupportPath =
+            isSupportStyleProfile(dynamicProfile?.name) ||
+            (!!activeProfileId && activeProfileId !== "anonymous" && !isMiteshAiProfile);
+
+        // ⚡ RESPONSE CACHE — for support bots, serve identical questions from Redis (24h TTL)
+        // This skips embedding + KB load + OpenAI call entirely — fastest possible path.
+        if (useFastSupportPath && redisUrl && redisToken && activeProfileId) {
+            const normalizedQ = query.trim().toLowerCase();
+            const cacheKey = `resp:${activeProfileId}:${normalizedQ.slice(0, 120)}`;
+            try {
+                const cacheRes = await fetch(`${redisUrl}/get/${encodeURIComponent(cacheKey)}`, {
+                    headers: { Authorization: `Bearer ${redisToken}` }
+                }).then(r => r.json());
+
+                if (cacheRes.result) {
+                    const cached = JSON.parse(cacheRes.result);
+                    console.log(`⚡ [RESP-CACHE] HIT — "${normalizedQ.slice(0, 50)}"`);
+                    const enc = new TextEncoder();
+                    return new Response(
+                        new ReadableStream({
+                            start(controller) {
+                                controller.enqueue(enc.encode(`data: ${JSON.stringify(cached.text)}\n\n`));
+                                if (cached.sources?.length > 0) {
+                                    controller.enqueue(enc.encode(`data: ${JSON.stringify(`__SOURCES__:${JSON.stringify(cached.sources)}`)}\n\n`));
+                                }
+                                controller.enqueue(enc.encode(`data: [DONE]\n\n`));
+                                controller.close();
+                            }
+                        }),
+                        { headers: { "Content-Type": "text/event-stream", ...corsHeaders } }
+                    );
+                }
+            } catch (cacheErr) {
+                console.warn("⚠️ [RESP-CACHE] Read error (continuing normally):", cacheErr);
+            }
+        }
+
+        const sessionHistory = await getSessionHistory(sessionId, chatUserId);
+
+        let userProfileParams = "";
+        let psychProfile: any = null;
+        let emotionalHistory: any[] = [];
+        let episodicMemory: any[] = [];
+
+        if (!useFastSupportPath) {
+            [userProfileParams, psychProfile, emotionalHistory, episodicMemory] = await Promise.all([
+                buildProfilePrompt(chatUserId, activeProfileId),
+                getPsychProfile(chatUserId, activeProfileId),
+                getEmotionalHistory(chatUserId, activeProfileId),
+                getConversationSummaries(chatUserId, activeProfileId),
+            ]);
+        }
 
         const pastSummaries = episodicMemory.length > 0
             ? episodicMemory.map((s: any) => `- [${new Date(s.created_at).toLocaleDateString()}]: ${s.summary}`).join('\n')
@@ -495,6 +681,27 @@ serve(async (req) => {
         let queryEmbedding: number[] = [];
 
         try {
+            if (useFastSupportPath) {
+                // Pre-count KB chunks. Small KBs (≤200) load ALL chunks — no embedding needed.
+                // This saves 200-500ms per request on the most common path.
+                const { count: kbCount } = await supabaseClient
+                    .from("knowledge_chunks")
+                    .select("*", { count: "exact", head: true })
+                    .eq("profile_id", activeProfileId!);
+                (requestBody as any).__kbCount = kbCount ?? 0;
+
+                if (!kbCount || kbCount > 200) {
+                    console.log(`⚡ [FAST-SUPPORT] Large KB (${kbCount} chunks) — computing embedding for RAG...`);
+                    const embeddingResponse = await openai.embeddings.create({
+                        model: "text-embedding-3-small",
+                        input: query,
+                    });
+                    queryEmbedding = embeddingResponse.data[0].embedding;
+                } else {
+                    console.log(`⚡ [FAST-SUPPORT] Small KB (${kbCount} chunks) — skipping embedding, will load all`);
+                    // queryEmbedding stays [] — retrieval step takes the all-chunks path
+                }
+            } else {
             console.log("⚡ [PERF] Starting Parallel Sentiment & Embedding...");
             const [sentimentResponse, embeddingResponse] = await Promise.all([
                 openai.chat.completions.create({
@@ -575,6 +782,7 @@ Rule:
             } else {
                 queryEmbedding = expandedResponse.data[0].embedding; // Fallback
             }
+            }
 
         } catch (err) {
             console.error("Parallel Sense Error:", err);
@@ -588,6 +796,72 @@ Rule:
 
         if (queryEmbedding.length > 0) {
             try {
+                if (useFastSupportPath) {
+                    // Reuse the count already fetched in the embedding step — no second DB query needed.
+                    const totalKbChunks: number = (requestBody as any).__kbCount ?? 0;
+                    console.log(`⚡ [FAST-SUPPORT] KB size (cached): ${totalKbChunks} chunks`);
+
+                    let merged: any[] = [];
+
+                    if (totalKbChunks && totalKbChunks <= 200) {
+                        console.log(`📚 [FAST-SUPPORT] Small KB (${totalKbChunks} chunks) — loading ALL for 100% recall`);
+
+                        // Fetch all sources for title/url mapping
+                        const { data: allSources } = await supabaseClient
+                            .from("knowledge_sources")
+                            .select("id, title, source_url, metadata")
+                            .eq("profile_id", activeProfileId!);
+
+                        const sourceMap = new Map((allSources || []).map((s: any) => [s.id, s]));
+
+                        const { data: allChunks } = await supabaseClient
+                            .from("knowledge_chunks")
+                            .select("content, source_id, chunk_index")
+                            .eq("profile_id", activeProfileId!)
+                            .order("chunk_index", { ascending: true });
+
+                        merged = (allChunks || []).map((c: any) => {
+                            const src = sourceMap.get(c.source_id) as any;
+                            return {
+                                ...c,
+                                source_title: src?.title,
+                                source_url: src?.source_url || src?.metadata?.url,
+                                similarity: 1.0,
+                            };
+                        });
+                    } else {
+                        // Large KB → use vector + keyword search (original RAG path)
+                        console.log(`🔍 [FAST-SUPPORT] Large KB (${totalKbChunks} chunks) — using RAG retrieval`);
+                        const [vectorResults, keywordChunks] = await Promise.all([
+                            supabaseClient.rpc("match_knowledge", {
+                                query_embedding: queryEmbedding,
+                                match_threshold: 0.12,
+                                match_count: 15,
+                                p_profile_id: activeProfileId,
+                            }),
+                            fetchKeywordFAQChunks(supabaseClient, activeProfileId!, query),
+                        ]);
+
+                        merged = dedupeChunks([
+                            ...(keywordChunks || []),
+                            ...(vectorResults.data || []),
+                        ]).slice(0, 12);
+                    }
+
+                    if (merged.length > 0) {
+                        knowledgeContext = merged.map(formatKnowledgeChunk).join("\n\n---\n\n");
+                        sourceChunks = merged.map((c: any) => {
+                            const urls = extractUrlsFromText(c.content || "");
+                            const enroll = urls.find((u) => /enroll|register|signup|kajabi|checkout/i.test(u));
+                            return {
+                                title: c.source_title || "FAQ",
+                                url: enroll || c.source_url || urls[0] || "",
+                                similarity: c.similarity || 0,
+                            };
+                        });
+                        console.log(`🧩 [FAST-SUPPORT] ${merged.length} chunks passed to model`);
+                    }
+                } else {
                 // PARALLEL: Vector Match + Graph Traversal
                 const [vectorResults, graphResults] = await Promise.all([
                     supabaseClient.rpc("match_knowledge", {
@@ -603,16 +877,20 @@ Rule:
                 graphContext = graphResults;
 
                 // --- SEARCH 2: GLOBAL KNOWLEDGE (Course Index / Links) ---
-                const { data: globalChunks } = await supabaseClient.rpc("match_knowledge", {
-                    query_embedding: queryEmbedding,
-                    match_threshold: 0.10,
-                    match_count: 15,
-                    p_profile_id: null
-                });
+                let globalChunks: any[] = [];
+                if (!activeProfileId || activeProfileId === 'anonymous' || isMiteshAiProfile) {
+                    const { data } = await supabaseClient.rpc("match_knowledge", {
+                        query_embedding: queryEmbedding,
+                        match_threshold: 0.10,
+                        match_count: 15,
+                        p_profile_id: null
+                    });
+                    globalChunks = data || [];
+                }
 
                 const initialChunks = [
                     ...(userChunks || []),
-                    ...(globalChunks || [])
+                    ...(globalChunks)
                 ];
 
                 if (initialChunks && initialChunks.length > 0) {
@@ -668,26 +946,23 @@ Rule:
                         console.error("Reranking Error:", rerankErr);
                     }
 
-                    knowledgeContext = rerankedChunks.map((c: any) => {
-                        const title = c.source_title || 'Unknown Source';
-                        const link = c.source_url ? ` (Link: ${c.source_url})` : "";
-                        const priority = (c.source_title && !c.source_title.toLowerCase().includes('law of attraction')) ? '[HIGH RELEVANCE] ' : '';
-                        return `${priority}[SOURCE: ${title}${link}]\n${c.content}`;
-                    }).join("\n\n---\n\n");
+                    knowledgeContext = rerankedChunks.map(formatKnowledgeChunk).join("\n\n---\n\n");
 
-                    // Inject Graph Insights into the top of context
                     if (graphContext) {
                         knowledgeContext = `--- GRAPH INSIGHTS (CONCEPTUAL LINKS) ---\n${graphContext}\n\n--- DOCUMENTAL EVIDENCE ---\n${knowledgeContext}`;
                     }
 
-                    sourceChunks = rerankedChunks.map((c: any) => ({
-                        title: c.source_title || 'Unknown Source',
-                        url: c.source_url || '',
-                        similarity: c.similarity || 0
-                    }));
+                    sourceChunks = rerankedChunks.map((c: any) => {
+                        const urls = extractUrlsFromText(c.content || "");
+                        return {
+                            title: c.source_title || 'Unknown Source',
+                            url: c.source_url || urls[0] || '',
+                            similarity: c.similarity || 0
+                        };
+                    });
                 } else if (graphContext) {
-                    // If no vector matches but we have graph matches
                     knowledgeContext = `--- GRAPH INSIGHTS ---\n${graphContext}`;
+                }
                 }
             } catch (err) {
                 console.error("RAG Error:", err);
@@ -893,12 +1168,47 @@ Rule:
 
         let customInstructions = MITESH_CORE_PERSONA.custom_instructions.map(i => `! ${i} `).join("\n");
 
-        if (knowledgeContext && knowledgeContext !== "No specific knowledge.") {
-            customInstructions += `\n\nUSE THIS KNOWLEDGE TO ANSWER (80% WEIGHT): \n${knowledgeContext} `;
-            customInstructions += `\n\n(System Note: If the user's question isn't perfectly matched in the knowledge base, use the 'closest concept' from the knowledge above and frame it as: "While I don't have a lesson on exactly [Subject], this lesson on [Concept] will help..." AND PROVIDE THE LINK.)`;
+        if (useFastSupportPath) {
+            customInstructions = [
+                "You are a fast, accurate support assistant for this program.",
+                "Answer ONLY using the FAQ/knowledge below. If the answer is not in the knowledge, say you do not have that information and ask the user to contact support.",
+                "Keep answers short (2-4 sentences). Be direct.",
+                "CRITICAL: Every Enroll/Register/Signup URL in the knowledge MUST be shared as a clickable markdown link: [Enroll here](full-url) or [Register here](full-url).",
+                "Never invent URLs. Copy enroll links exactly from the knowledge context.",
+                "For pricing, enrollment, course access, or FAQ questions, quote the matching FAQ text.",
+            ].join("\n");
         }
 
-        const systemPrompt = `
+        if (knowledgeContext && knowledgeContext !== "No specific knowledge.") {
+            if (useFastSupportPath) {
+                // Support bots must answer ONLY from the KB — no general AI knowledge allowed
+                customInstructions += `\n\n--- KNOWLEDGE BASE (YOUR ONLY SOURCE) ---\n${knowledgeContext}\n--- END OF KNOWLEDGE BASE ---\n\nCRITICAL RULES:\n1. Answer STRICTLY and ONLY from the knowledge base above.\n2. Do NOT use any general AI knowledge or training data to fill gaps.\n3. Do NOT invent or assume any facts not present above.\n4. If the answer is not found above, say exactly: "I don't have that information in my knowledge base. Please contact support for help."`;
+            } else {
+                customInstructions += `\n\nUSE THIS KNOWLEDGE TO ANSWER (80% WEIGHT): \n${knowledgeContext} `;
+                customInstructions += `\n\n(System Note: If the user's question isn't perfectly matched in the knowledge base, use the 'closest concept' from the knowledge above and frame it as: "While I don't have a lesson on exactly [Subject], this lesson on [Concept] will help..." AND PROVIDE THE LINK.)`;
+            }
+        } else if (useFastSupportPath) {
+            // No matching KB content found — tell the bot to admit it rather than hallucinate
+            customInstructions += `\n\nIMPORTANT: No matching information was found in the knowledge base for this query. You MUST respond: "I don't have that information in my knowledge base. Please contact support for assistance." Do NOT attempt to answer from general knowledge.`;
+        }
+
+        const systemPrompt = useFastSupportPath ? `
+IDENTITY: ${dynamicProfile?.name || "Support Assistant"} — customer support bot.
+
+MISSION: Answer user questions using ONLY the FAQ/knowledge context below. Be fast, clear, and helpful.
+
+${dynamicProfile ? `
+--- PROFILE SETTINGS ---
+${dynamicProfile.purpose ? `PURPOSE: ${dynamicProfile.purpose}` : ''}
+${dynamicProfile.instructions && Array.isArray(dynamicProfile.instructions) ? `RULES:\n${dynamicProfile.instructions.map((i: string) => `- ${i}`).join('\n')}` : ''}
+----------------------
+` : ''}
+
+CUSTOM INSTRUCTIONS:
+${customInstructions}
+
+CHAT HISTORY: Use recent messages only for context, not as a knowledge source.
+` : `
 IDENTITY:
         Transformational Leadership Coach & Law of Attraction Expert Empowering Millions.
         
@@ -962,6 +1272,21 @@ PERSONALIZATION:
         let provider: string, selectedModel: string;
         let routingDecision: RoutingDecision;
         const startTime = Date.now();
+        if (useFastSupportPath) {
+            provider = 'openai';
+            selectedModel = 'gpt-4o-mini';
+            routingDecision = {
+                provider: 'openai',
+                model: 'gpt-4o-mini',
+                intent: 'course_inquiry',
+                complexity: 2,
+                reasoning: 'Fast support FAQ path',
+                estimatedCost: 0.0001,
+                isCritical: false,
+                routeSource: 'classified',
+            };
+            console.log(`⚡ [FAST-SUPPORT] Skipping router — using ${selectedModel}`);
+        } else {
         try {
             routingDecision = await routeIntelligently(
                 query,
@@ -977,7 +1302,6 @@ PERSONALIZATION:
             console.error('Routing failed:', error);
             provider = 'openai';
             selectedModel = 'gpt-4o-mini';
-            // Fallback routing decision
             routingDecision = {
                 provider: 'openai',
                 model: 'gpt-4o-mini',
@@ -988,6 +1312,7 @@ PERSONALIZATION:
                 isCritical: false,
                 routeSource: 'classified'
             };
+        }
         }
 
         // ==================== ENSEMBLE MODE (CRITICAL QUERIES) ====================
@@ -1056,7 +1381,11 @@ PERSONALIZATION:
                             { role: "user", content: query },
                         ],
                         openai,
-                        { temperature: 0.4, stream: true }
+                        {
+                            temperature: useFastSupportPath ? 0.15 : 0.4,
+                            stream: true,
+                            max_tokens: useFastSupportPath ? 400 : undefined,
+                        }
                     );
                     selectedModel = usedModel;
                     console.log(`🌊 [STREAM] Using ${usedModel} (${usedProvider})`);
@@ -1095,6 +1424,18 @@ PERSONALIZATION:
                     console.log(`📊 [RESPONSE] Metadata:`, JSON.stringify(responseMetadata));
 
                     controller.close();
+
+                    // ⚡ RESPONSE CACHE WRITE — store response for 24h for support bots
+                    if (useFastSupportPath && fullResponse && !fullResponse.startsWith('Error:') && redisUrl && redisToken && activeProfileId) {
+                        const normalizedQ = query.trim().toLowerCase();
+                        const cacheKey = `resp:${activeProfileId}:${normalizedQ.slice(0, 120)}`;
+                        fetch(`${redisUrl}/pipeline`, {
+                            method: 'POST',
+                            headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify([['SET', cacheKey, JSON.stringify({ text: fullResponse, sources: sourceChunks }), 'EX', 86400]])
+                        }).catch(e => console.warn("⚠️ [RESP-CACHE] Write error:", e));
+                        console.log(`⚡ [RESP-CACHE] Stored response for "${normalizedQ.slice(0, 40)}"`);
+                    }
 
                     // Background Tasks (Intent Detection & Fact Extraction)
                     const backgroundTasks = async () => {

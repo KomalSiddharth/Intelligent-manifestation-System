@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Plus, Search, Filter as FilterIcon, Users, ExternalLink, Trash2, Brain, Ghost } from 'lucide-react';
+import { useEffect, useState, useMemo } from 'react';
+import { Plus, Search, Filter as FilterIcon, Users, ExternalLink, Trash2, Brain, Ghost, Info, MessageSquare as ConvIcon } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
@@ -57,6 +57,12 @@ const AccessPage = () => {
   const [profiles, setProfiles] = useState<MindProfile[]>([]);
   const currentProfile = profiles.find(p => p.id === selectedProfileId);
 
+  // Support/FAQ bots are public — no audience management needed
+  const isCurrentProfileSupport = useMemo(() => {
+    const name = (currentProfile?.name || '').toLowerCase();
+    return name.includes('support') || name.includes('imk') || name.includes('faq') || name.includes('helpdesk');
+  }, [currentProfile]);
+
   // Selection & Delete State
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [idToDelete, setIdToDelete] = useState<string | 'bulk' | null>(null);
@@ -80,13 +86,31 @@ const AccessPage = () => {
     setSelectedIds([]);
   }, [users, searchQuery]);
 
+  useEffect(() => {
+    if (selectedProfileId && selectedProfileId !== 'all') {
+      localStorage.setItem('globalSelectedProfileId', selectedProfileId);
+    }
+  }, [selectedProfileId]);
+
+  // Website widget preview needs a concrete profile id (not "all")
+  useEffect(() => {
+    if (activeSection !== 'website' || profiles.length === 0) return;
+    if (!selectedProfileId || selectedProfileId === 'all') {
+      const fallbackId = profiles.find(p => p.is_primary)?.id || profiles[0].id;
+      setSelectedProfileId(fallbackId);
+    }
+  }, [activeSection, selectedProfileId, profiles]);
+
   const initProfiles = async () => {
     try {
       const data = await getMindProfiles();
       setProfiles(data);
       if (data.length > 0) {
-        const primary = data.find(p => p.is_primary) || data[0];
-        setSelectedProfileId(primary.id);
+        const savedId = localStorage.getItem('globalSelectedProfileId');
+        const exists = savedId ? data.some(p => p.id === savedId) : false;
+        const targetId = exists ? savedId : (data.find(p => p.is_primary)?.id || data[0].id);
+        
+        setSelectedProfileId(targetId);
       }
     } catch (error) {
       console.error('Error loading profiles:', error);
@@ -222,17 +246,20 @@ const AccessPage = () => {
                   </Select>
                 )}
               </div>
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Users className="h-4 w-4" />
-                <span>{filteredUsers.length.toLocaleString()} {statusFilter !== 'all' ? statusFilter : ''} Users</span>
-                {searchQuery && (
-                  <>
-                    <span>•</span>
-                    <span>{users.length - filteredUsers.length} filtered by search</span>
-                  </>
-                )}
-              </div>
+              {!isCurrentProfileSupport && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Users className="h-4 w-4" />
+                  <span>{filteredUsers.length.toLocaleString()} {statusFilter !== 'all' ? statusFilter : ''} Users</span>
+                  {searchQuery && (
+                    <>
+                      <span>•</span>
+                      <span>{users.length - filteredUsers.length} filtered by search</span>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
+            {!isCurrentProfileSupport && (
             <div className="flex gap-2">
               <Button
                 variant="outline"
@@ -261,9 +288,39 @@ const AccessPage = () => {
                 Add Users
               </Button>
             </div>
+            )}
           </div>
 
-          {/* Filters */}
+          {/* Public support bot notice */}
+          {isCurrentProfileSupport && (
+            <Card className="border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800">
+              <CardContent className="p-6 flex items-start gap-4">
+                <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
+                  <Info className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-semibold text-blue-900 dark:text-blue-100">Public Support Bot — No Audience Needed</h3>
+                  <p className="text-sm text-blue-700 dark:text-blue-300">
+                    This is a public-facing support bot. Anyone can access it without being added to an audience list.
+                    To view conversations users have had with this bot, go to the <strong>Conversations</strong> tab.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-2 border-blue-300 text-blue-700 hover:bg-blue-100"
+                    onClick={() => setActiveSection('conversations')}
+                  >
+                    <ConvIcon className="w-3.5 h-3.5 mr-2" />
+                    View Conversations
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Filters + Table — only for non-support profiles */}
+          {!isCurrentProfileSupport && (
+          <>
           <div className="flex flex-col xl:flex-row gap-4">
             <Tabs value={statusFilter} onValueChange={setStatusFilter} className="w-full xl:w-auto">
               <TabsList>
@@ -291,7 +348,6 @@ const AccessPage = () => {
             </div>
           </div>
 
-          {/* User Table */}
           {loading ? (
             <Skeleton className="h-[500px] bg-muted" />
           ) : (
@@ -303,6 +359,8 @@ const AccessPage = () => {
               onDeleteUser={(id) => setIdToDelete(id)}
               onRevokeUser={handleRevokeUser}
             />
+          )}
+          </>
           )}
         </>
       );
@@ -375,8 +433,24 @@ const AccessPage = () => {
     }
 
     if (activeSection === 'website') {
-      // Use full ChatPage instead of limited widget
-      const widgetUrl = `${window.location.origin}/talk-to-miteshai`;
+      const websiteProfileId =
+        selectedProfileId && selectedProfileId !== 'all'
+          ? selectedProfileId
+          : profiles.find(p => p.is_primary)?.id || profiles[0]?.id;
+
+      if (!websiteProfileId) {
+        return (
+          <div className="flex items-center justify-center h-[400px] text-muted-foreground">
+            <p>Loading profiles…</p>
+          </div>
+        );
+      }
+
+      // Production embed URL (identity gate applies)
+      const widgetUrl = `${window.location.origin}/widget/${websiteProfileId}`;
+      // Preview iframe bypasses identity gate and uses iframe-safe layout
+      const previewUrl = `${widgetUrl}?preview=1`;
+      const previewProfile = profiles.find(p => p.id === websiteProfileId);
       const embedCode = `<iframe 
   src="${widgetUrl}" 
   width="100%" 
@@ -403,7 +477,7 @@ const AccessPage = () => {
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Select MiteshAI Profile</label>
-                    <Select value={selectedProfileId} onValueChange={setSelectedProfileId}>
+                    <Select value={websiteProfileId} onValueChange={setSelectedProfileId}>
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select MiteshAI" />
                       </SelectTrigger>
@@ -444,7 +518,7 @@ const AccessPage = () => {
                 <Brain className="h-4 w-4 text-orange-500" />
                 <AlertTitle className="text-orange-800">Identity Gate Protection</AlertTitle>
                 <AlertDescription className="text-orange-700/80">
-                  Your widget is protected. Visitors will be asked to verify their email before they can start chatting with {currentProfile?.name || 'your AI'}.
+                  Your widget is protected. Visitors will be asked to verify their email before they can start chatting with {previewProfile?.name || 'your AI'}.
                 </AlertDescription>
               </Alert>
             </div>
@@ -461,11 +535,13 @@ const AccessPage = () => {
                   Open in New Tab
                 </Button>
               </div>
-              <div className="border rounded-2xl overflow-hidden bg-white shadow-xl aspect-[9/12] max-h-[600px] relative group">
+              <div className="border rounded-2xl overflow-hidden bg-white shadow-xl aspect-[9/12] max-h-[600px] min-h-[480px] relative group">
                 <iframe
-                  src={widgetUrl}
-                  className="w-full h-full border-none"
+                  key={websiteProfileId}
+                  src={previewUrl}
+                  className="w-full h-full border-none bg-white"
                   title="Widget Preview"
+                  allow="microphone"
                 />
               </div>
             </div>

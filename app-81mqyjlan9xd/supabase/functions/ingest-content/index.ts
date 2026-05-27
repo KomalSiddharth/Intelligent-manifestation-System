@@ -15,7 +15,7 @@ const CONFIG = {
     MAX_MEDIA_FILE_SIZE_MB: 1000, // Increased for large videos (1GB)
     CHUNK_SIZE: 1500,
     CHUNK_OVERLAP: 200,
-    BATCH_SIZE: 10,
+    BATCH_SIZE: 5, // Reduced from 10 → faster per batch, avoids background timeout
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
 };
@@ -481,6 +481,16 @@ const performIngestion = async (
     const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
     console.log(`📥 [DB] Creating/Updating source: ${title} (${type}) - ${wordCount} words`);
 
+    // Auto-extract enroll/page URLs from snippet text when no URL was provided
+    let resolvedUrl = url;
+    if (!resolvedUrl && (type === 'text' || type === 'snippet')) {
+        const urlMatches = text.match(/https?:\/\/[^\s<>"')\]]+/gi);
+        if (urlMatches?.length) {
+            resolvedUrl = urlMatches.find((u) => /enroll|register|signup|kajabi|checkout|payment/i.test(u)) || urlMatches[0];
+            console.log(`🔗 [INGEST] Auto-detected URL from snippet: ${resolvedUrl}`);
+        }
+    }
+
     let source: any;
 
     if (existingSourceId) {
@@ -490,7 +500,7 @@ const performIngestion = async (
             .update({
                 title,
                 source_type: type,
-                source_url: url,
+                source_url: resolvedUrl,
                 word_count: wordCount,
                 folder_id: folderId
             })
@@ -512,9 +522,10 @@ const performIngestion = async (
                 profile_id: profileId,
                 title,
                 source_type: type,
-                source_url: url,
+                source_url: resolvedUrl,
                 word_count: wordCount,
-                folder_id: folderId
+                folder_id: folderId,
+                metadata: resolvedUrl ? { url: resolvedUrl } : undefined,
             })
             .select().single();
 
@@ -541,9 +552,14 @@ const performIngestion = async (
 
     console.log(`🧩 [CHUNK] Generated ${chunks.length} chunks`);
 
+    const totalBatches = Math.ceil(chunks.length / CONFIG.BATCH_SIZE);
+    console.log(`🔄 [EMBED] Starting embedding: ${chunks.length} chunks in ${totalBatches} batches of ${CONFIG.BATCH_SIZE}`);
+
     let successfulChunks = 0;
     for (let i = 0; i < chunks.length; i += CONFIG.BATCH_SIZE) {
+        const batchNum = Math.floor(i / CONFIG.BATCH_SIZE) + 1;
         const batch = chunks.slice(i, i + CONFIG.BATCH_SIZE);
+        console.log(`🔄 [EMBED] Batch ${batchNum}/${totalBatches} — embedding ${batch.length} chunks...`);
         await Promise.all(batch.map(async (textChunk, idxInBatch) => {
             const globalIdx = i + idxInBatch;
             try {
@@ -552,7 +568,7 @@ const performIngestion = async (
                         model: "text-embedding-3-small",
                         input: textChunk
                     });
-                }, 3, `embedding chunk`);
+                }, 3, `embedding chunk ${globalIdx}`);
 
                 const { error: chunkError } = await supabaseClient.from("knowledge_chunks").insert({
                     source_id: source.id,
@@ -564,15 +580,17 @@ const performIngestion = async (
                 });
 
                 if (chunkError) {
-                    console.error("❌ [CHUNK] DB Insert Error:", chunkError);
+                    console.error(`❌ [CHUNK] DB Insert Error (chunk ${globalIdx}):`, chunkError.message);
                 } else {
                     successfulChunks++;
                 }
             } catch (err: any) {
-                console.error(`⚠️ [BATCH] Failed chunk:`, err.message);
+                console.error(`⚠️ [BATCH] Failed chunk ${globalIdx}:`, err.message);
             }
         }));
+        console.log(`✅ [EMBED] Batch ${batchNum}/${totalBatches} done. Total successful: ${successfulChunks}`);
     }
+    console.log(`🏁 [EMBED] All batches complete: ${successfulChunks}/${chunks.length} chunks embedded`);
 
     // --- NEW: Trigger GraphRAG Entity Extraction ---
     console.log(`🚀 [GraphRAG] Triggering extraction for source: ${source.id}`);
@@ -936,7 +954,23 @@ serve(async (req) => {
             }
         };
 
-        // Fire Background Task
+        // For pre-extracted text/snippet content, run SYNCHRONOUSLY.
+        // Background tasks (EdgeRuntime.waitUntil) are killed after ~30s on Supabase,
+        // which is not enough time for 40+ OpenAI embedding calls.
+        // Text content has no heavy fetch step, so sync is safe here.
+        if (content && !url) {
+            console.log("⚡ [SYNC] Text content detected — running ingestion synchronously...");
+            await runEverythingBackground();
+            return new Response(JSON.stringify({
+                success: true,
+                message: "Ingestion complete"
+            }), {
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
+        }
+
+        // For URL/media content (YouTube, website, etc.) keep background processing
+        // because the fetch step itself can take minutes.
         if ((globalThis as any).EdgeRuntime?.waitUntil) {
             (globalThis as any).EdgeRuntime.waitUntil(runEverythingBackground());
         } else {

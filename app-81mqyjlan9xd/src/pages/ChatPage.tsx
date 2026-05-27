@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { InteractiveMindMap } from '../components/chat/InteractiveMindMap';
 import { MarkdownRenderer } from '../components/chat/MarkdownRenderer';
 import { VideoAvatar } from '../components/chat/VideoAvatar';
@@ -88,9 +88,7 @@ const ChatPage = () => {
     const [message, setMessage] = useState('');
     const [isAdmin, setIsAdmin] = useState(false); // Admin State
     const [copiedId, setCopiedId] = useState<number | null>(null);
-    const [messages, setMessages] = useState<Message[]>([
-        { role: 'assistant', content: "Hey, how's the Platinum Membership payment going? Need help with the balance or anything else, beta?" }
-    ]);
+    const [messages, setMessages] = useState<Message[]>([]);
 
     // Dialog States
     const [isActionCenterOpen, setIsActionCenterOpen] = useState(false);
@@ -127,6 +125,12 @@ const ChatPage = () => {
     const [sessions, setSessions] = useState<any[]>([]);
     const [profiles, setProfiles] = useState<any[]>([]);
     const [selectedProfile, setSelectedProfile] = useState<any>(null);
+
+    // Hide extra UI chrome (Sources, Socials, MindMap, TestVoice, Feedback) for support/FAQ bots
+    const isSupportProfile = useMemo(() => {
+        const name = (selectedProfile?.name || '').toLowerCase();
+        return name.includes('support') || name.includes('imk') || name.includes('faq') || name.includes('helpdesk');
+    }, [selectedProfile]);
 
     const [userFullDetails, setUserFullDetails] = useState<any>(null);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -591,9 +595,9 @@ const ChatPage = () => {
                             } catch (e) {
                                 aiResponse += dataContent;
                             }
-                        } else {
-                            aiResponse += line + (chunk.endsWith('\n') ? '\n' : '');
                         }
+                        // Non-`data:` lines are SSE separators (empty lines between events)
+                        // or partial lines from TCP chunk boundaries — never append them.
 
                         // Update UI for ALL messages
                         setMessages(prev => {
@@ -866,10 +870,17 @@ const ChatPage = () => {
             if (dbProfiles.length > 0) {
                 const primary = dbProfiles.find(p => p.is_primary) || dbProfiles[0];
                 setSelectedProfile(primary);
+                const welcomeText = primary?.experience_settings?.initialMessage || primary?.response_settings?.initialMessage;
+                if (welcomeText) {
+                    setMessages([{ role: 'assistant', content: welcomeText }]);
+                }
             }
 
+            // Don't load session history for support/FAQ bots — they don't show history UI
             if (userId) {
-                loadSessions(userId);
+                const primaryName = (dbProfiles.find(p => p.is_primary) || dbProfiles[0])?.name || '';
+                const isSupport = ['support', 'imk', 'faq', 'helpdesk'].some(k => primaryName.toLowerCase().includes(k));
+                if (!isSupport) loadSessions(userId);
             }
         };
         init();
@@ -940,7 +951,8 @@ const ChatPage = () => {
     };
 
     const handleNewConversation = () => {
-        setMessages([]);
+        const welcomeText = selectedProfile?.experience_settings?.initialMessage || selectedProfile?.response_settings?.initialMessage;
+        setMessages(welcomeText ? [{ role: 'assistant', content: welcomeText }] : []);
         setCurrentSessionId(null);
         activeSessionIdRef.current = null;
         window.history.replaceState({}, document.title, location.pathname);
@@ -1023,17 +1035,21 @@ const ChatPage = () => {
                 activeSessionIdRef.current = location.state.sessionId;
                 window.history.replaceState({}, document.title, location.pathname);
             }
-            loadSessions(stableId);
+            if (!isSupportProfile) loadSessions(stableId);
         }
-    }, [location.state, chatUserId, userFullDetails]);
+    }, [location.state, chatUserId, userFullDetails, isSupportProfile]);
 
     return (
-        <IdentityGate onVerified={handleVerified} profileId={selectedProfile?.id}>
+        <IdentityGate 
+            onVerified={handleVerified} 
+            profileId={selectedProfile?.id}
+            requireIdentityGate={selectedProfile?.experience_settings?.requireIdentityGate ?? true}
+        >
             <div className="flex bg-background h-screen w-full overflow-hidden fixed inset-0">
-                {/* Sidebar (Desktop) */}
+                {/* Sidebar (Desktop) — hidden for support/FAQ bots */}
                 <aside className={cn(
                     "hidden md:flex w-80 border-r flex-col h-full bg-card transition-all duration-300",
-                    !isSidebarOpen && "md:hidden"
+                    (!isSidebarOpen || isSupportProfile) && "md:hidden"
                 )}>
                     <div className="p-4 border-b flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -1125,13 +1141,15 @@ const ChatPage = () => {
                                 <span>⌘</span> <span>Delphi</span>
                             </div>
 
-                            {/* Mobile History Toggle */}
+                            {/* Mobile History Toggle — hidden for support/FAQ bots */}
                             <Sheet open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
+                                {!isSupportProfile && (
                                 <SheetTrigger asChild>
                                     <Button variant="ghost" size="icon" className="md:hidden">
                                         <History className="w-5 h-5" />
                                     </Button>
                                 </SheetTrigger>
+                                )}
                                 <SheetContent side="left" className="w-[300px] sm:w-[400px] p-0 flex flex-col h-full">
                                     <div className="p-4 border-b">
                                         <span className="font-bold">Chat History</span>
@@ -1175,9 +1193,11 @@ const ChatPage = () => {
                         </div>
 
                         <div className="flex items-center gap-2">
+                            {!isSupportProfile && (
                             <Button variant="ghost" size="icon" onClick={() => setVideoUrl('https://videos.heygen.ai/v1/realtime/...')}>
                                 <Video className="w-5 h-5 text-muted-foreground" />
                             </Button>
+                            )}
                             <Button variant="ghost" size="icon" onClick={() => setIsCallOpen(true)}>
                                 <Phone className="w-5 h-5 text-muted-foreground" />
                             </Button>
@@ -1211,7 +1231,7 @@ const ChatPage = () => {
                                             msg.role === 'user' ? "justify-end" : "justify-start"
                                         )}
                                     >
-                                        {msg.role === 'assistant' && (
+                                        {msg.role === 'assistant' && !isSupportProfile && (
                                             <Avatar className="w-8 h-8 flex-shrink-0">
                                                 <AvatarImage src={selectedProfile?.avatar_url || "https://miaoda-conversation-file.s3cdn.medo.dev/user-7nqges6yla0w/conv-81mqyjlan9xc/20251206/file-81ndgdtyydq8.png"} />
                                                 <AvatarFallback>{selectedProfile?.name?.substring(0, 2).toUpperCase() || "AI"}</AvatarFallback>
@@ -1237,7 +1257,7 @@ const ChatPage = () => {
                                                 ) : (
                                                     <>
                                                         <MarkdownRenderer content={msg.content} />
-                                                        {msg.sources && msg.sources.length > 0 && (
+                                                        {!isSupportProfile && msg.sources && msg.sources.length > 0 && (
                                                             <details className="mt-3 text-xs border-t border-white/10 pt-2 mb-2">
                                                                 <summary className="opacity-70 cursor-pointer hover:opacity-100 transition-opacity font-medium flex items-center gap-1">
                                                                     <div className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
@@ -1397,7 +1417,8 @@ const ChatPage = () => {
                                 </div>
                             </div>
 
-                            {/* Action Bar (Below Input) */}
+                            {/* Action Bar (Below Input) — hidden for support/FAQ bots */}
+                            {!isSupportProfile && (
                             <div className="max-w-3xl mx-auto mt-2 flex items-center justify-between px-2">
                                 <div className="flex gap-2">
                                     <Button
@@ -1438,6 +1459,7 @@ const ChatPage = () => {
                                     Feedback
                                 </Button>
                             </div>
+                            )}
 
                             {/* Collapsible Action View */}
                             {actionView === 'socials' && isActionCenterOpen && (
