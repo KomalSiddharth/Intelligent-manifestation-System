@@ -211,6 +211,102 @@ function dedupeChunks(chunks: any[]): any[] {
     });
 }
 
+// ============================================================
+// SEMANTIC SIMILARITY CACHE  (Upstash Vector)
+// ============================================================
+// Checks whether a semantically similar question was already
+// answered. Similarity is measured by cosine distance of the
+// OpenAI text-embedding-3-small vectors.
+// Threshold 0.92 = very close paraphrase, avoids wrong answers.
+// TTL is enforced via `expiresAt` in the metadata (24 h).
+// ============================================================
+
+async function checkSemanticCache(
+    vectorUrl: string,
+    vectorToken: string,
+    embedding: number[],
+    profileId: string,
+    threshold = 0.92
+): Promise<{ text: string; sources: any[] } | null> {
+    try {
+        const res = await fetch(`${vectorUrl}/query`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${vectorToken}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                vector: embedding,
+                topK: 1,
+                filter: `profileId = '${profileId}'`,
+                includeMetadata: true,
+            }),
+        }).then((r) => r.json());
+
+        const top = res.result?.[0];
+        if (!top) return null;
+
+        console.log(`🔍 [SEM-CACHE] Best match score: ${top.score?.toFixed(4)}`);
+
+        if (top.score < threshold) return null;
+
+        // Respect the 24-hour TTL stored in metadata
+        const expiresAt: number = top.metadata?.expiresAt ?? 0;
+        if (expiresAt && Date.now() > expiresAt) {
+            console.log("⏰ [SEM-CACHE] Entry expired — treating as miss");
+            return null;
+        }
+
+        const sources = (() => {
+            try { return JSON.parse(top.metadata?.sources ?? "[]"); }
+            catch { return []; }
+        })();
+
+        return { text: top.metadata?.answer ?? "", sources };
+    } catch (err) {
+        console.warn("⚠️ [SEM-CACHE] Query error:", err);
+        return null;
+    }
+}
+
+async function storeSemanticCache(
+    vectorUrl: string,
+    vectorToken: string,
+    embedding: number[],
+    profileId: string,
+    question: string,
+    answer: string,
+    sources: any[]
+): Promise<void> {
+    try {
+        const id = `${profileId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await fetch(`${vectorUrl}/upsert`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${vectorToken}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify([
+                {
+                    id,
+                    vector: embedding,
+                    metadata: {
+                        profileId,
+                        question: question.slice(0, 500),
+                        answer,
+                        sources: JSON.stringify(sources),
+                        cachedAt: Date.now(),
+                        expiresAt: Date.now() + 86_400_000, // 24 hours
+                    },
+                },
+            ]),
+        });
+        console.log(`✅ [SEM-CACHE] Stored: "${question.slice(0, 60)}"`);
+    } catch (err) {
+        console.warn("⚠️ [SEM-CACHE] Write error:", err);
+    }
+}
+
 serve(async (req) => {
     console.log(`📥 [CHAT] Request received: ${req.method}`);
     // 0. HANDLE OPTIONS (CORS)
@@ -300,9 +396,13 @@ serve(async (req) => {
         const startRoutingTime = Date.now();
         const activeProfileId = profileId;
 
-        // Redis config — shared by rate limiter, response cache, KB optimisation
+        // Redis config — rate limiter + exact-match response cache
         const redisUrl = Deno.env.get("UPSTASH_REDIS_REST_URL");
         const redisToken = Deno.env.get("UPSTASH_REDIS_REST_TOKEN");
+
+        // Upstash Vector config — semantic similarity cache (Layer 2)
+        const vectorUrl = Deno.env.get("UPSTASH_VECTOR_REST_URL");
+        const vectorToken = Deno.env.get("UPSTASH_VECTOR_REST_TOKEN");
 
         // 1. Setup OpenAI Client
         const openaiKey = Deno.env.get("OPENAI_API_KEY");
@@ -682,24 +782,48 @@ serve(async (req) => {
 
         try {
             if (useFastSupportPath) {
-                // Pre-count KB chunks. Small KBs (≤200) load ALL chunks — no embedding needed.
-                // This saves 200-500ms per request on the most common path.
-                const { count: kbCount } = await supabaseClient
-                    .from("knowledge_chunks")
-                    .select("*", { count: "exact", head: true })
-                    .eq("profile_id", activeProfileId!);
+                // ── Parallel: embedding + KB count ─────────────────────────────────────
+                // Embedding is ALWAYS computed now — needed for semantic cache lookup.
+                // Parallelising with KB count saves ~100 ms vs sequential.
+                console.log("⚡ [FAST-SUPPORT] Parallel: embedding + KB count...");
+                const [embeddingResponse, { count: kbCount }] = await Promise.all([
+                    openai.embeddings.create({ model: "text-embedding-3-small", input: query }),
+                    supabaseClient
+                        .from("knowledge_chunks")
+                        .select("*", { count: "exact", head: true })
+                        .eq("profile_id", activeProfileId!),
+                ]);
+                queryEmbedding = embeddingResponse.data[0].embedding;
                 (requestBody as any).__kbCount = kbCount ?? 0;
+                console.log(`⚡ [FAST-SUPPORT] Embedding ready | KB chunks: ${kbCount}`);
 
-                if (!kbCount || kbCount > 200) {
-                    console.log(`⚡ [FAST-SUPPORT] Large KB (${kbCount} chunks) — computing embedding for RAG...`);
-                    const embeddingResponse = await openai.embeddings.create({
-                        model: "text-embedding-3-small",
-                        input: query,
-                    });
-                    queryEmbedding = embeddingResponse.data[0].embedding;
-                } else {
-                    console.log(`⚡ [FAST-SUPPORT] Small KB (${kbCount} chunks) — skipping embedding, will load all`);
-                    // queryEmbedding stays [] — retrieval step takes the all-chunks path
+                // ── LAYER 2: Semantic Similarity Cache ─────────────────────────────────
+                // Catches paraphrases: "What's the price?" ≈ "How much does it cost?"
+                // Returns instantly without touching the KB or OpenAI chat API.
+                if (vectorUrl && vectorToken && activeProfileId) {
+                    const semHit = await checkSemanticCache(
+                        vectorUrl, vectorToken, queryEmbedding, activeProfileId
+                    );
+                    if (semHit) {
+                        console.log(`🎯 [SEM-CACHE] HIT — "${query.slice(0, 60)}"`);
+                        const enc = new TextEncoder();
+                        return new Response(
+                            new ReadableStream({
+                                start(controller) {
+                                    controller.enqueue(enc.encode(`data: ${JSON.stringify(semHit.text)}\n\n`));
+                                    if (semHit.sources?.length > 0) {
+                                        controller.enqueue(
+                                            enc.encode(`data: ${JSON.stringify(`__SOURCES__:${JSON.stringify(semHit.sources)}`)}\n\n`)
+                                        );
+                                    }
+                                    controller.enqueue(enc.encode(`data: [DONE]\n\n`));
+                                    controller.close();
+                                },
+                            }),
+                            { headers: { "Content-Type": "text/event-stream", ...corsHeaders } }
+                        );
+                    }
+                    console.log(`⚠️ [SEM-CACHE] MISS — proceeding with full pipeline`);
                 }
             } else {
             console.log("⚡ [PERF] Starting Parallel Sentiment & Embedding...");
@@ -1435,6 +1559,23 @@ PERSONALIZATION:
                             body: JSON.stringify([['SET', cacheKey, JSON.stringify({ text: fullResponse, sources: sourceChunks }), 'EX', 86400]])
                         }).catch(e => console.warn("⚠️ [RESP-CACHE] Write error:", e));
                         console.log(`⚡ [RESP-CACHE] Stored response for "${normalizedQ.slice(0, 40)}"`);
+                    }
+
+                    // ── LAYER 2 WRITE: Semantic cache ──────────────────────────────────
+                    // Store embedding + answer in Upstash Vector (fire-and-forget, 24 h TTL).
+                    // Future users asking similar questions will get this answer instantly.
+                    if (
+                        useFastSupportPath &&
+                        fullResponse &&
+                        !fullResponse.startsWith("Error:") &&
+                        queryEmbedding.length > 0 &&
+                        vectorUrl && vectorToken &&
+                        activeProfileId
+                    ) {
+                        storeSemanticCache(
+                            vectorUrl, vectorToken, queryEmbedding,
+                            activeProfileId, query, fullResponse, sourceChunks
+                        ).catch((e) => console.warn("⚠️ [SEM-CACHE] Background write error:", e));
                     }
 
                     // Background Tasks (Intent Detection & Fact Extraction)
