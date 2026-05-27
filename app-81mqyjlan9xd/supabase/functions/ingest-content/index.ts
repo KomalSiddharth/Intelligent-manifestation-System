@@ -539,6 +539,11 @@ const parseTestimonialFilename = (filename: string): { personName: string | null
  * After a knowledge_source is saved, if the file lives in a "testimonials"
  * folder (or its name contains "testimonial"), also insert a structured row
  * into the `testimonials` table so we can filter by date / person later.
+ *
+ * Detection priority:
+ *  1. driveFolderPath  — ancestor Drive folder names from sync-drive, e.g. ['Health','Testimonials']
+ *  2. folderId         — our DB folder id (manual uploads via Mind page)
+ *  3. title            — filename itself contains "testimonial"
  */
 const maybeInsertTestimonial = async (
     sourceId: string,
@@ -546,22 +551,26 @@ const maybeInsertTestimonial = async (
     folderId: string | undefined,
     title: string,
     text: string,
-    supabaseClient: SupabaseClient
+    supabaseClient: SupabaseClient,
+    driveFolderPath: string[] = []
 ): Promise<void> => {
     // 1. Decide if this is a testimonial
     const titleIsTestimonial = /testimonial/i.test(title);
-    let folderIsTestimonial = false;
+    const drivePathIsTestimonial = driveFolderPath.some(name => /testimonial/i.test(name));
+    let dbFolderIsTestimonial = false;
 
-    if (folderId && !titleIsTestimonial) {
+    if (folderId && !titleIsTestimonial && !drivePathIsTestimonial) {
         const { data: folder } = await supabaseClient
             .from('folders')
             .select('name')
             .eq('id', folderId)
             .single();
-        folderIsTestimonial = /testimonial/i.test(folder?.name ?? '');
+        dbFolderIsTestimonial = /testimonial/i.test(folder?.name ?? '');
     }
 
-    if (!titleIsTestimonial && !folderIsTestimonial) return;
+    if (!titleIsTestimonial && !drivePathIsTestimonial && !dbFolderIsTestimonial) return;
+
+    console.log(`🎤 [TESTIMONIAL] Detected via: ${drivePathIsTestimonial ? 'drive-path' : titleIsTestimonial ? 'filename' : 'db-folder'}`);
 
     // 2. Parse metadata from filename
     const { personName, testimonialDate } = parseTestimonialFilename(title);
@@ -590,8 +599,9 @@ const performIngestion = async (
     title: string, text: string, type: string, url: string | undefined,
     userId: string, profileId: string | undefined,
     supabaseClient: SupabaseClient, openai: OpenAI,
-    existingSourceId?: string, // Optional ID for updating pending record
-    folderId?: string // Folder association
+    existingSourceId?: string,  // Optional ID for updating pending record
+    folderId?: string,          // Folder association (DB folder id for manual uploads)
+    driveFolderPath: string[] = [] // Ancestor Drive folder names e.g. ['Health','Testimonials']
 ) => {
     if (!text || text.trim().length < 5) {
         console.warn(`⚠️ [INGEST] Content too short to ingest: "${text?.slice(0, 20)}..."`);
@@ -663,7 +673,7 @@ const performIngestion = async (
 
     // ── Testimonial structured record (non-blocking, best-effort) ──────────
     if (profileId) {
-        maybeInsertTestimonial(source.id, profileId, folderId, title, text, supabaseClient)
+        maybeInsertTestimonial(source.id, profileId, folderId, title, text, supabaseClient, driveFolderPath)
             .catch(e => console.warn('⚠️ [TESTIMONIAL] Background write failed:', e.message));
     }
 
@@ -768,7 +778,9 @@ serve(async (req) => {
         const openai = new OpenAI({ apiKey: Deno.env.get("OPENAI_API_KEY") });
         const body = await req.json().catch(() => ({}));
 
-        let { action, type, url, title, content, userId, profileId, folderId } = body;
+        let { action, type, url, title, content, userId, profileId, folderId, driveFolderPath } = body;
+        // driveFolderPath: string[] — ancestor Drive folder names, e.g. ['Health', 'Testimonials']
+        // Passed by sync-drive when recursively ingesting subfolder files
 
         // Resolve User ID (Body priority, then Auth Header)
         if (!userId) {
@@ -992,7 +1004,7 @@ serve(async (req) => {
                     console.log(`📝 [BACKGROUND] Success! Updating DB for ${fileName} (${transcript.length} chars)`);
 
                     // Final Update - Now optimized to save word count FIRST
-                    const ingestResult = await performIngestion(fileName, transcript, "file", filePath, userId, profileId, supabaseAdmin, openai, pendingSource?.id, folderId);
+                    const ingestResult = await performIngestion(fileName, transcript, "file", filePath, userId, profileId, supabaseAdmin, openai, pendingSource?.id, folderId, driveFolderPath || []);
                     console.log(`✅ [BACKGROUND] Word count and source record finalized. Chunks generated: ${ingestResult.chunks}`);
                     console.log(`✅ [BACKGROUND] DB Updated successfully. SourceID: ${ingestResult.sourceId}`);
                     console.log(`✅ [BACKGROUND] Completed for ${fileName}`);
@@ -1072,7 +1084,8 @@ serve(async (req) => {
                     supabaseAdmin,
                     openai,
                     undefined,
-                    folderId
+                    folderId,
+                    driveFolderPath || []
                 );
                 console.log(`✅ [BACKGROUND] Successfully ingested: ${finalTitle}`);
             } catch (err: any) {

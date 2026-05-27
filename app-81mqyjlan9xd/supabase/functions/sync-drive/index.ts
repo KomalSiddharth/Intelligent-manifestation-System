@@ -137,7 +137,9 @@ async function syncOneProfile(supabase: SupabaseClient, profileId: string, supab
     ];
 
     // Helper to recursively find files if it's a folder
-    async function getFilesRecursively(fid: string, depth = 0): Promise<any[]> {
+    // ancestorFolders tracks the names of all parent folders so we can
+    // detect files inside a "Testimonials" subfolder even after flattening.
+    async function getFilesRecursively(fid: string, depth = 0, ancestorFolders: string[] = []): Promise<any[]> {
         if (depth > 3) return []; // Limit depth to prevent infinite loops/timeouts
         const q = `'${fid}' in parents and trashed = false`;
         const url = `https://www.googleapis.com/drive/v3/files?pageSize=100&fields=files(id, name, mimeType, parents)&q=${encodeURIComponent(q)}&supportsAllDrives=true&includeItemsFromAllDrives=true`;
@@ -147,10 +149,13 @@ async function syncOneProfile(supabase: SupabaseClient, profileId: string, supab
         let all: any[] = [];
         for (const f of (foundFiles || [])) {
             if (f.mimeType === 'application/vnd.google-apps.folder') {
-                const sub = await getFilesRecursively(f.id, depth + 1);
+                // Pass this folder's name down so children know their full path
+                const sub = await getFilesRecursively(f.id, depth + 1, [...ancestorFolders, f.name]);
                 all = [...all, ...sub];
             } else {
-                all.push(f);
+                // Attach the ancestor folder names so ingest-content can detect
+                // e.g. Health > Testimonials > Swasti.mp4 → folderPath: ['Health','Testimonials']
+                all.push({ ...f, folderPath: ancestorFolders });
             }
         }
         return all;
@@ -263,7 +268,8 @@ async function syncOneProfile(supabase: SupabaseClient, profileId: string, supab
                                     filePath: storagePath,
                                     fileName: file.name,
                                     fileType: file.mimeType,
-                                    folderId: folderUrl?.match(/folders\/([a-zA-Z0-9_-]+)/)?.[1] // Extract from URL if possible
+                                    folderId: folderUrl?.match(/folders\/([a-zA-Z0-9_-]+)/)?.[1], // Extract from URL if possible
+                                    driveFolderPath: file.folderPath || [] // e.g. ['Health', 'Testimonials']
                                 })
                             });
 
@@ -284,7 +290,14 @@ async function syncOneProfile(supabase: SupabaseClient, profileId: string, supab
                 const response = await fetch(ingestUrl, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userId, profileId, title: file.name, content: content, type: 'file', url: `https://docs.google.com/document/d/${file.id}` })
+                    body: JSON.stringify({
+                        userId, profileId,
+                        title: file.name,
+                        content: content,
+                        type: 'file',
+                        url: `https://docs.google.com/document/d/${file.id}`,
+                        driveFolderPath: file.folderPath || [] // e.g. ['Health', 'Testimonials']
+                    })
                 });
                 const result = await response.json();
                 if (result.success) processed++;
