@@ -12,92 +12,99 @@ const CallbackPage = () => {
     const [errorMessage, setErrorMessage] = useState('');
 
     useEffect(() => {
-        const profileId = searchParams.get('profileId');
-        const platform = searchParams.get('platform') || 'google_drive';
+        const handleCallback = async () => {
+            try {
+                const profileId = searchParams.get('profileId');
+                const platform = searchParams.get('platform') || 'google_drive';
 
-        if (!profileId) {
-            setStatus('error');
-            setErrorMessage("Missing profileId in callback URL");
-            return;
-        }
+                if (!profileId) throw new Error("Missing profileId in callback URL");
 
-        // Use onAuthStateChange so we catch the SIGNED_IN event which fires
-        // AFTER Supabase has parsed the URL hash and populated provider_token.
-        // The old getSession() approach had a race condition where session was
-        // null at call time, causing provider_token to be lost forever.
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(
-            async (event, session) => {
-                if (event !== 'SIGNED_IN' && event !== 'TOKEN_REFRESHED') return;
-                if (!session) return;
+                // ── Strategy 1: Read provider_token directly from URL hash ──────────
+                // When Supabase redirects back after OAuth it puts tokens in the hash:
+                // /callback?profileId=X#access_token=...&provider_token=ya29.xxx&...
+                // Reading the hash directly is 100% reliable — no async race conditions.
+                const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
+                const tokenFromHash     = hashParams.get('provider_token');
+                const refreshFromHash   = hashParams.get('provider_refresh_token');
 
-                try {
-                    const providerToken = session.provider_token;
-                    const providerRefreshToken = session.provider_refresh_token;
+                console.log('✅ [CALLBACK] Hash token present:', !!tokenFromHash);
 
-                    console.log("✅ [CALLBACK] Auth event:", event);
-                    console.log("✅ [CALLBACK] Provider tokens captured:", {
-                        hasAccessToken: !!providerToken,
-                        hasRefreshToken: !!providerRefreshToken
-                    });
+                if (tokenFromHash) {
+                    // Make sure Supabase session is also established (it processes the
+                    // same hash, usually synchronously before our useEffect runs)
+                    await supabase.auth.getSession(); // ensure session is in localStorage
 
-                    if (!providerToken) {
-                        console.warn("⚠️ [CALLBACK] provider_token is null — Google may not have issued one. Saving integration without token.");
-                    }
-
+                    const { data: { session } } = await supabase.auth.getSession();
                     await saveIntegration({
-                        profile_id: profileId,
-                        platform: platform,
-                        access_token: providerToken || undefined,
-                        refresh_token: providerRefreshToken || undefined,
-                        is_active: true,
+                        profile_id:    profileId,
+                        platform:      platform,
+                        access_token:  tokenFromHash,
+                        refresh_token: refreshFromHash || undefined,
+                        is_active:     true,
                         metadata: {
-                            user_email: session.user?.email,
-                            last_sync: new Date().toISOString()
+                            user_email: session?.user?.email,
+                            last_sync:  new Date().toISOString()
                         }
                     });
 
-                    subscription.unsubscribe();
+                    console.log('✅ [CALLBACK] Saved from hash. Token:', tokenFromHash.slice(0, 10) + '...');
                     setStatus('success');
                     setTimeout(() => navigate('/mind'), 2000);
-
-                } catch (err: any) {
-                    console.error("❌ [CALLBACK] Save integration error:", err);
-                    subscription.unsubscribe();
-                    setStatus('error');
-                    setErrorMessage(err.message || "Failed to save integration");
+                    return;
                 }
-            }
-        );
 
-        // Also try getSession() immediately in case the event already fired
-        // (e.g. user refreshed the callback page)
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            if (session?.provider_token) {
-                // Session already has provider_token — save it directly
-                saveIntegration({
-                    profile_id: profileId,
-                    platform: platform,
-                    access_token: session.provider_token,
-                    refresh_token: session.provider_refresh_token || undefined,
-                    is_active: true,
-                    metadata: {
-                        user_email: session.user?.email,
-                        last_sync: new Date().toISOString()
-                    }
-                }).then(() => {
-                    subscription.unsubscribe();
-                    setStatus('success');
-                    setTimeout(() => navigate('/mind'), 2000);
-                }).catch((err) => {
-                    subscription.unsubscribe();
-                    setStatus('error');
-                    setErrorMessage(err.message);
+                // ── Strategy 2: Wait for onAuthStateChange SIGNED_IN event ──────────
+                // Fallback if hash was already cleared (e.g. hard refresh on callback page)
+                console.warn('⚠️ [CALLBACK] No token in hash — waiting for onAuthStateChange...');
+
+                await new Promise<void>((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        subscription.unsubscribe();
+                        reject(new Error('Timed out waiting for Google auth session. Please try reconnecting.'));
+                    }, 10_000);
+
+                    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+                        async (event, session) => {
+                            if (event !== 'SIGNED_IN' && event !== 'TOKEN_REFRESHED') return;
+                            if (!session) return;
+
+                            clearTimeout(timeout);
+                            subscription.unsubscribe();
+
+                            const providerToken        = session.provider_token;
+                            const providerRefreshToken = session.provider_refresh_token;
+
+                            console.log('✅ [CALLBACK] onAuthStateChange fired:', event, 'hasToken:', !!providerToken);
+
+                            await saveIntegration({
+                                profile_id:    profileId,
+                                platform:      platform,
+                                access_token:  providerToken  || undefined,
+                                refresh_token: providerRefreshToken || undefined,
+                                is_active:     true,
+                                metadata: {
+                                    user_email: session.user?.email,
+                                    last_sync:  new Date().toISOString()
+                                }
+                            });
+
+                            resolve();
+                        }
+                    );
                 });
-            }
-        });
 
-        return () => subscription.unsubscribe();
-    }, [searchParams, navigate]);
+                setStatus('success');
+                setTimeout(() => navigate('/mind'), 2000);
+
+            } catch (err: any) {
+                console.error('❌ [CALLBACK] Error:', err);
+                setStatus('error');
+                setErrorMessage(err.message || 'Failed to complete authentication');
+            }
+        };
+
+        handleCallback();
+    }, []); // run once on mount — searchParams/navigate don't need to be deps here
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background">
