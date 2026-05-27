@@ -12,56 +12,91 @@ const CallbackPage = () => {
     const [errorMessage, setErrorMessage] = useState('');
 
     useEffect(() => {
-        const handleCallback = async () => {
-            try {
-                const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        const profileId = searchParams.get('profileId');
+        const platform = searchParams.get('platform') || 'google_drive';
 
-                if (sessionError) throw sessionError;
-                if (!session) {
-                    // If no session yet, wait a bit or redirect to login
-                    // Sometimes the redirect happens before the session is fully established in local storage
-                    return;
+        if (!profileId) {
+            setStatus('error');
+            setErrorMessage("Missing profileId in callback URL");
+            return;
+        }
+
+        // Use onAuthStateChange so we catch the SIGNED_IN event which fires
+        // AFTER Supabase has parsed the URL hash and populated provider_token.
+        // The old getSession() approach had a race condition where session was
+        // null at call time, causing provider_token to be lost forever.
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(
+            async (event, session) => {
+                if (event !== 'SIGNED_IN' && event !== 'TOKEN_REFRESHED') return;
+                if (!session) return;
+
+                try {
+                    const providerToken = session.provider_token;
+                    const providerRefreshToken = session.provider_refresh_token;
+
+                    console.log("✅ [CALLBACK] Auth event:", event);
+                    console.log("✅ [CALLBACK] Provider tokens captured:", {
+                        hasAccessToken: !!providerToken,
+                        hasRefreshToken: !!providerRefreshToken
+                    });
+
+                    if (!providerToken) {
+                        console.warn("⚠️ [CALLBACK] provider_token is null — Google may not have issued one. Saving integration without token.");
+                    }
+
+                    await saveIntegration({
+                        profile_id: profileId,
+                        platform: platform,
+                        access_token: providerToken || undefined,
+                        refresh_token: providerRefreshToken || undefined,
+                        is_active: true,
+                        metadata: {
+                            user_email: session.user?.email,
+                            last_sync: new Date().toISOString()
+                        }
+                    });
+
+                    subscription.unsubscribe();
+                    setStatus('success');
+                    setTimeout(() => navigate('/mind'), 2000);
+
+                } catch (err: any) {
+                    console.error("❌ [CALLBACK] Save integration error:", err);
+                    subscription.unsubscribe();
+                    setStatus('error');
+                    setErrorMessage(err.message || "Failed to save integration");
                 }
+            }
+        );
 
-                const profileId = searchParams.get('profileId');
-                const platform = searchParams.get('platform') || 'google_drive';
-
-                if (!profileId) {
-                    throw new Error("Missing profileId in callback URL");
-                }
-
-                // Supabase Auth provides the provider tokens in the session metadata or alongside the session
-                // Note: provider_refresh_token is only available if access_type=offline was used (which we did)
-                const providerToken = session.provider_token;
-                const providerRefreshToken = session.provider_refresh_token;
-
-                console.log("Captured Provider Tokens:", { providerToken: !!providerToken, providerRefreshToken: !!providerRefreshToken });
-
-                await saveIntegration({
+        // Also try getSession() immediately in case the event already fired
+        // (e.g. user refreshed the callback page)
+        supabase.auth.getSession().then(({ data: { session } }) => {
+            if (session?.provider_token) {
+                // Session already has provider_token — save it directly
+                saveIntegration({
                     profile_id: profileId,
                     platform: platform,
-                    access_token: providerToken || undefined,
-                    refresh_token: providerRefreshToken || undefined,
+                    access_token: session.provider_token,
+                    refresh_token: session.provider_refresh_token || undefined,
                     is_active: true,
                     metadata: {
                         user_email: session.user?.email,
                         last_sync: new Date().toISOString()
                     }
+                }).then(() => {
+                    subscription.unsubscribe();
+                    setStatus('success');
+                    setTimeout(() => navigate('/mind'), 2000);
+                }).catch((err) => {
+                    subscription.unsubscribe();
+                    setStatus('error');
+                    setErrorMessage(err.message);
                 });
-
-                setStatus('success');
-                setTimeout(() => {
-                    navigate('/mind');
-                }, 2000);
-
-            } catch (err: any) {
-                console.error("Callback Error:", err);
-                setStatus('error');
-                setErrorMessage(err.message || "Failed to complete authentication");
             }
-        };
+        });
 
-        handleCallback();
+        return () => subscription.unsubscribe();
     }, [searchParams, navigate]);
 
     return (
