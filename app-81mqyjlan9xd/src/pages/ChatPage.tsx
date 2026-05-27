@@ -132,6 +132,13 @@ const ChatPage = () => {
         return name.includes('support') || name.includes('imk') || name.includes('faq') || name.includes('helpdesk');
     }, [selectedProfile]);
 
+    // Keep localStorage in sync so refreshing ChatPage restores the same persona
+    useEffect(() => {
+        if (selectedProfile?.id) {
+            localStorage.setItem('globalSelectedProfileId', selectedProfile.id);
+        }
+    }, [selectedProfile?.id]);
+
     const [userFullDetails, setUserFullDetails] = useState<any>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [playingMessageId, setPlayingMessageId] = useState<string | number | null>(null);
@@ -868,7 +875,13 @@ const ChatPage = () => {
             const dbProfiles = await getMindProfiles();
             setProfiles(dbProfiles);
             if (dbProfiles.length > 0) {
-                const primary = dbProfiles.find(p => p.is_primary) || dbProfiles[0];
+                // Prefer the persona the user last selected in Mind page (stored by MindPage in
+                // localStorage as 'globalSelectedProfileId'). Fall back to is_primary, then first.
+                const savedProfileId = localStorage.getItem('globalSelectedProfileId');
+                const primary =
+                    (savedProfileId && dbProfiles.find(p => p.id === savedProfileId)) ||
+                    dbProfiles.find(p => p.is_primary) ||
+                    dbProfiles[0];
                 setSelectedProfile(primary);
                 const welcomeText = primary?.experience_settings?.initialMessage || primary?.response_settings?.initialMessage;
                 if (welcomeText) {
@@ -878,8 +891,13 @@ const ChatPage = () => {
 
             // Don't load session history for support/FAQ bots — they don't show history UI
             if (userId) {
-                const primaryName = (dbProfiles.find(p => p.is_primary) || dbProfiles[0])?.name || '';
-                const isSupport = ['support', 'imk', 'faq', 'helpdesk'].some(k => primaryName.toLowerCase().includes(k));
+                const savedProfileId = localStorage.getItem('globalSelectedProfileId');
+                const chosenProfile =
+                    (savedProfileId && dbProfiles.find((p: any) => p.id === savedProfileId)) ||
+                    dbProfiles.find((p: any) => p.is_primary) ||
+                    dbProfiles[0];
+                const chosenName = (chosenProfile?.name || '').toLowerCase();
+                const isSupport = ['support', 'imk', 'faq', 'helpdesk'].some(k => chosenName.includes(k));
                 if (!isSupport) loadSessions(userId);
             }
         };
