@@ -769,9 +769,16 @@ serve(async (req) => {
         const dynamicProfile = await getMindProfileSettings(activeProfileId);
         const profileName = (dynamicProfile?.name || "").toLowerCase();
         const isMiteshAiProfile = profileName.includes("miteshai") || profileName.includes("mitesh ai");
-        const useFastSupportPath =
-            isSupportStyleProfile(dynamicProfile?.name) ||
-            (!!activeProfileId && activeProfileId !== "anonymous" && !isMiteshAiProfile);
+
+        // useFastSupportPath = true ONLY for actual customer-support / FAQ bots
+        // (profile name contains "support", "imk", "faq", "helpdesk").
+        // All other profiles — coaching clones, the main MiteshAI persona, etc. — MUST use
+        // the full pipeline (sentiment analysis, graph search, query expansion, reranking,
+        // full system prompt, intelligent routing). The old second condition
+        //   `|| (!!activeProfileId && !isMiteshAiProfile)`
+        // was treating every custom coaching persona as a support bot, which caused it to
+        // search only FAQ chunks, skip graph/sentiment, and cap responses at 400 tokens.
+        const useFastSupportPath = isSupportStyleProfile(dynamicProfile?.name);
 
         // ⚡ RESPONSE CACHE — for support bots, serve identical questions from Redis (24h TTL)
         // This skips embedding + KB load + OpenAI call entirely — fastest possible path.
