@@ -883,7 +883,15 @@ const ChatPage = () => {
                     dbProfiles.find(p => p.is_primary) ||
                     dbProfiles[0];
                 setSelectedProfile(primary);
-                const welcomeText = primary?.experience_settings?.initialMessage || primary?.response_settings?.initialMessage;
+                // Use saved initial message; if DB value is null (settings never saved), fall back
+                // to a persona-specific greeting derived from the profile name so the chat never
+                // opens to a blank screen.
+                const welcomeText =
+                    primary?.experience_settings?.initialMessage ||
+                    primary?.response_settings?.initialMessage ||
+                    (primary?.name
+                        ? `Hey! I'm ${primary.name}. 😊 How can I help you today?`
+                        : null);
                 if (welcomeText) {
                     setMessages([{ role: 'assistant', content: welcomeText }]);
                 }
@@ -969,7 +977,12 @@ const ChatPage = () => {
     };
 
     const handleNewConversation = () => {
-        const welcomeText = selectedProfile?.experience_settings?.initialMessage || selectedProfile?.response_settings?.initialMessage;
+        const welcomeText =
+            selectedProfile?.experience_settings?.initialMessage ||
+            selectedProfile?.response_settings?.initialMessage ||
+            (selectedProfile?.name
+                ? `Hey! I'm ${selectedProfile.name}. 😊 How can I help you today?`
+                : null);
         setMessages(welcomeText ? [{ role: 'assistant', content: welcomeText }] : []);
         setCurrentSessionId(null);
         activeSessionIdRef.current = null;
