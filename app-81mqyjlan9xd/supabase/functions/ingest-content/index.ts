@@ -463,6 +463,126 @@ const processYoutube = async (videoId: string, videoUrl: string, openai: OpenAI)
     throw new Error(`YouTube ingestion failed. Details: ${errors.join(' | ')}`);
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Testimonials: parse person name + date from filename
+// Handles patterns like:
+//   "Swasti Goyal - 15 March 2024.mp4"
+//   "2024-03-15 John Doe testimonial.txt"
+//   "Rahul Singh March 2024.mp4"
+//   "15.03.2024 Priya testimonial.docx"
+// ──────────────────────────────────────────────────────────────────────────────
+const MONTH_MAP: Record<string, number> = {
+    jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+    apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+    aug: 8, august: 8, sep: 9, sept: 9, september: 9,
+    oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12
+};
+
+const parseTestimonialFilename = (filename: string): { personName: string | null; testimonialDate: string | null } => {
+    // Strip extension, normalise underscores → spaces
+    let base = filename.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim();
+    let testimonialDate: string | null = null;
+    let removedStr = '';
+
+    // Pattern 1: ISO  2024-03-15
+    const iso = base.match(/\b(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})\b/);
+    if (iso) {
+        testimonialDate = `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
+        removedStr = iso[0];
+    }
+
+    // Pattern 2: "15 March 2024" / "15 Mar 2024"
+    if (!testimonialDate) {
+        const m = base.match(/\b(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})\b/i);
+        if (m) {
+            const mon = MONTH_MAP[m[2].toLowerCase()];
+            testimonialDate = `${m[3]}-${String(mon).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+            removedStr = m[0];
+        }
+    }
+
+    // Pattern 3: "March 2024" / "Mar 2024"  (day defaults to 01)
+    if (!testimonialDate) {
+        const m = base.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})\b/i);
+        if (m) {
+            const mon = MONTH_MAP[m[1].toLowerCase()];
+            testimonialDate = `${m[2]}-${String(mon).padStart(2, '0')}-01`;
+            removedStr = m[0];
+        }
+    }
+
+    // Pattern 4: DD.MM.YYYY or DD/MM/YYYY
+    if (!testimonialDate) {
+        const m = base.match(/\b(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})\b/);
+        if (m) {
+            testimonialDate = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+            removedStr = m[0];
+        }
+    }
+
+    // Clean up: remove matched date string + "testimonial(s)" noise word, tidy separators
+    if (removedStr) base = base.replace(removedStr, '');
+    base = base
+        .replace(/\btestimonials?\b/gi, '')
+        .replace(/[-–—|,]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const personName = base.length > 1
+        ? base.replace(/\b\w/g, c => c.toUpperCase()).trim()
+        : null;
+
+    return { personName, testimonialDate };
+};
+
+/**
+ * After a knowledge_source is saved, if the file lives in a "testimonials"
+ * folder (or its name contains "testimonial"), also insert a structured row
+ * into the `testimonials` table so we can filter by date / person later.
+ */
+const maybeInsertTestimonial = async (
+    sourceId: string,
+    profileId: string,
+    folderId: string | undefined,
+    title: string,
+    text: string,
+    supabaseClient: SupabaseClient
+): Promise<void> => {
+    // 1. Decide if this is a testimonial
+    const titleIsTestimonial = /testimonial/i.test(title);
+    let folderIsTestimonial = false;
+
+    if (folderId && !titleIsTestimonial) {
+        const { data: folder } = await supabaseClient
+            .from('folders')
+            .select('name')
+            .eq('id', folderId)
+            .single();
+        folderIsTestimonial = /testimonial/i.test(folder?.name ?? '');
+    }
+
+    if (!titleIsTestimonial && !folderIsTestimonial) return;
+
+    // 2. Parse metadata from filename
+    const { personName, testimonialDate } = parseTestimonialFilename(title);
+
+    // 3. Upsert into testimonials table (match on source_id to avoid duplicates)
+    const { error } = await supabaseClient.from('testimonials').upsert({
+        profile_id: profileId,
+        source_id:  sourceId,
+        person_name: personName,
+        testimonial_date: testimonialDate,
+        raw_content: text.slice(0, 10_000),
+        file_name: title,
+    }, { onConflict: 'source_id' });
+
+    if (error) {
+        console.warn('⚠️ [TESTIMONIAL] Failed to store structured record:', error.message);
+    } else {
+        console.log(`✅ [TESTIMONIAL] Stored → person: "${personName ?? 'unknown'}", date: "${testimonialDate ?? 'unknown'}"`);
+    }
+};
+
 /**
  * Main Ingestion Logic (Embeddings + Storage)
  */
@@ -540,6 +660,12 @@ const performIngestion = async (
     // BREAKPOINT: Return source info early for some cases or just ensure it's saved
     // We update word_count BEFORE chunking to ensure UI shows it even if chunking/timeout happens
     console.log(`📊 [DEBUG] Word count ${wordCount} saved for ${source.id}`);
+
+    // ── Testimonial structured record (non-blocking, best-effort) ──────────
+    if (profileId) {
+        maybeInsertTestimonial(source.id, profileId, folderId, title, text, supabaseClient)
+            .catch(e => console.warn('⚠️ [TESTIMONIAL] Background write failed:', e.message));
+    }
 
     // Chunking
     const chunks: string[] = [];

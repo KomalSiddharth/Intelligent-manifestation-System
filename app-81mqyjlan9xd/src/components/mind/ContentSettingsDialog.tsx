@@ -48,10 +48,11 @@ export default function ContentSettingsDialog({ item, isOpen, onClose, onSave, f
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-[600px] gap-6">
-        <DialogHeader className="flex flex-row items-center justify-between border-b pb-4">
+      <DialogContent className="sm:max-w-[600px] gap-0 p-0 max-h-[85vh] flex flex-col">
+        <DialogHeader className="flex flex-row items-center justify-between border-b p-6 pb-4">
           <DialogTitle className="text-xl font-semibold">Content Settings</DialogTitle>
         </DialogHeader>
+        <div className="flex-1 overflow-y-auto p-6 pt-2 space-y-6">
 
         <div className="flex items-center gap-6 mb-2">
           <div className="space-y-1.5">
@@ -152,7 +153,9 @@ export default function ContentSettingsDialog({ item, isOpen, onClose, onSave, f
           </div>
         </div>
 
-        <div className="flex items-center gap-3 pt-2">
+        </div>
+
+        <div className="flex items-center gap-3 p-6 pt-0 mt-auto">
           <Button variant="outline" onClick={onClose} className="flex-1 rounded-full border-border/50">
             Cancel
           </Button>

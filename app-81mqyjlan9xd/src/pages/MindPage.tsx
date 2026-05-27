@@ -1,3 +1,4 @@
+'use client';
 import { useEffect, useState } from 'react';
 import { Search, AlertCircle, Filter } from 'lucide-react';
 import MainLayout from '@/components/layout/MainLayout';
@@ -106,6 +107,12 @@ const MindPage = () => {
     };
   }, [selectedFolder, selectedProfileId, activeTab]);
 
+  useEffect(() => {
+    if (selectedProfileId && selectedProfileId !== 'all') {
+      localStorage.setItem('globalSelectedProfileId', selectedProfileId);
+    }
+  }, [selectedProfileId]);
+
   const initProfiles = async () => {
     try {
       const dbProfiles = await getMindProfiles();
@@ -113,9 +120,12 @@ const MindPage = () => {
 
       if (dbProfiles.length > 0) {
         setProfiles(dbProfiles);
-        // Prioritize primary, then latest update
-        const primary = dbProfiles.find((p: any) => p.is_primary) || dbProfiles[0];
-        setSelectedProfileId(primary.id);
+        
+        const savedId = localStorage.getItem('globalSelectedProfileId');
+        const exists = savedId ? dbProfiles.some((p: any) => p.id === savedId) : false;
+        const targetId = exists ? savedId : (dbProfiles.find((p: any) => p.is_primary)?.id || dbProfiles[0].id);
+        
+        setSelectedProfileId(targetId);
 
         // Ensure at least one is marked primary in DB if none are
         if (!dbProfiles.some((p: any) => p.is_primary)) {
@@ -208,9 +218,9 @@ const MindPage = () => {
       setLoading(true);
       const [items, foldersList, failed, words] = await Promise.all([
         getContentItems(selectedFolder || undefined, selectedProfileId === 'all' ? undefined : (selectedProfileId || undefined)),
-        getFolders(),
-        getFailedContentCount(selectedProfileId || undefined),
-        getTotalWordCount(selectedProfileId || undefined),
+        getFolders(selectedProfileId === 'all' ? undefined : (selectedProfileId || undefined)),
+        getFailedContentCount(selectedProfileId === 'all' ? undefined : (selectedProfileId || undefined)),
+        getTotalWordCount(selectedProfileId === 'all' ? undefined : (selectedProfileId || undefined)),
       ]);
 
       console.log('📦 [MindPage] Content items fetched:', items.length);
@@ -442,6 +452,9 @@ const MindPage = () => {
                       </Button>
                     </DialogTrigger>
                     <DialogContent className="!max-w-[95vw] !h-[95vh] p-0 overflow-hidden">
+                      <DialogHeader>
+                        <DialogTitle>Add Content</DialogTitle>
+                      </DialogHeader>
                       <AddContentDialog
                         onClose={() => setIsUploadDialogOpen(false)}
                         onUpload={handleUpload}

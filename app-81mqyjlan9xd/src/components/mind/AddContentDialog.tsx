@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+'use client';
+import { useState, useEffect, useRef } from 'react';
 import mammoth from 'mammoth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,6 +13,8 @@ import {
     Table,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+
 import * as pdfjsLib from 'pdfjs-dist';
 // @ts-ignore
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -120,6 +123,7 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
     const [uploadingFiles, setUploadingFiles] = useState<string[]>([]); // Track which files are currently being uploaded
     const [folders, setFolders] = useState<any[]>([]);
     const [targetFolderId, setTargetFolderId] = useState<string>("");
+    const folderInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         const fetchFolders = async () => {
@@ -138,30 +142,12 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
     const handleUpload = async (type: 'text' | 'youtube' | 'pdf' | 'audio' | 'file' | 'social' | 'web' | 'spreadsheet', contentValue: string, titleValue: string, urlValue?: string) => {
         try {
             setLoading(true);
-            const { ingestContent } = await import('@/db/api');
-            await ingestContent(titleValue, contentValue, type as any, urlValue, undefined, profileId, targetFolderId || undefined);
-
-            // Update the uploaded content with the selected access group
             const { supabase } = await import('@/db/supabase');
-            const { data: latestContent } = await supabase
-                .from('knowledge_sources')
-                .select('*')
-                .eq('profile_id', profileId)
-                .order('created_at', { ascending: false })
-                .limit(1)
-                .single();
+            const { data: { user: authUser } } = await supabase.auth.getUser();
+            const authUserId = authUser?.id;
 
-            if (latestContent) {
-                await supabase
-                    .from('knowledge_sources')
-                    .update({
-                        metadata: {
-                            ...latestContent.metadata,
-                            accessGroup: selectedAccessGroup
-                        }
-                    })
-                    .eq('id', latestContent.id);
-            }
+            const { ingestContent } = await import('@/db/api');
+            await ingestContent(titleValue, contentValue, type as any, urlValue, authUserId, profileId, targetFolderId || undefined);
 
             onUpload({ title: titleValue, type });
             onClose();
@@ -221,6 +207,12 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
             const fileType = file.type;
             const fileName = file.name.toLowerCase();
 
+            // Get the authenticated admin user ID so ingestion is always tied to the
+            // real Supabase user — not the guest chat_user_id from localStorage.
+            const { supabase } = await import('@/db/supabase');
+            const { data: { user: authUser } } = await supabase.auth.getUser();
+            const authUserId = authUser?.id;
+
             const isMedia = fileType.startsWith('audio/') || fileType.startsWith('video/') ||
                 fileName.endsWith('.mp3') || fileName.endsWith('.mp4') ||
                 fileName.endsWith('.mpeg') || fileName.endsWith('.wav') ||
@@ -229,30 +221,6 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
             if (isMedia) {
                 const { ingestMedia } = await import('@/db/api');
                 await ingestMedia(file, profileId, targetFolderId || undefined);
-
-                // Update the uploaded media with the selected access group
-                const { supabase } = await import('@/db/supabase');
-                const { data: latestContent } = await supabase
-                    .from('knowledge_sources')
-                    .select('*')
-                    .eq('profile_id', profileId)
-                    .eq('title', file.name)
-                    .order('created_at', { ascending: false })
-                    .limit(1)
-                    .single();
-
-                if (latestContent) {
-                    await supabase
-                        .from('knowledge_sources')
-                        .update({
-                            metadata: {
-                                ...latestContent.metadata,
-                                accessGroup: selectedAccessGroup
-                            }
-                        })
-                        .eq('id', latestContent.id);
-                }
-
                 onUpload({ title: file.name, type: 'file' });
                 return;
             }
@@ -264,38 +232,13 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                 } catch (pdfErr: any) {
                     console.warn("Client-side PDF extraction failed, falling back to server-side:", pdfErr.message);
                     const { ingestMedia } = await import('@/db/api');
-                    await ingestMedia(file, profileId, targetFolderId || undefined); // Pass targetFolderId here
-
-                    // Update the uploaded PDF with the selected access group
-                    const { supabase } = await import('@/db/supabase');
-                    const { data: latestContent } = await supabase
-                        .from('knowledge_sources')
-                        .select('*')
-                        .eq('profile_id', profileId)
-                        .eq('title', file.name)
-                        .order('created_at', { ascending: false })
-                        .limit(1)
-                        .single();
-
-                    if (latestContent) {
-                        await supabase
-                            .from('knowledge_sources')
-                            .update({
-                                metadata: {
-                                    ...latestContent.metadata,
-                                    accessGroup: selectedAccessGroup
-                                }
-                            })
-                            .eq('id', latestContent.id);
-                    }
-
+                    await ingestMedia(file, profileId, targetFolderId || undefined);
                     onUpload({ title: file.name, type: 'pdf' });
                     return;
                 }
             } else if (
                 fileType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-                fileName.endsWith('.docx') ||
-                fileName.endsWith('.doc')
+                fileName.endsWith('.docx')
             ) {
                 extractedText = await extractTextFromDocx(file);
             } else if (fileType.startsWith('text/') || fileName.endsWith('.txt') || fileName.endsWith('.md')) {
@@ -305,37 +248,16 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                 try {
                     extractedText = await file.text();
                 } catch (e) {
-                    throw new Error(`Unsupported file type: ${fileType}. Only documents, text, and media are supported.`);
+                    throw new Error(`Unsupported file type: ${fileType}. Only PDF, DOCX, TXT, MD and media files are supported.`);
                 }
             }
 
-            if (!extractedText || !extractedText.trim()) throw new Error(`Could not extract text from file (${fileName}).`);
+            if (!extractedText || !extractedText.trim()) throw new Error(`Could not extract text from file (${fileName}). Make sure it's a valid .docx, .pdf or .txt file.`);
 
             const { ingestContent } = await import('@/db/api');
-            await ingestContent(file.name, extractedText, 'text', '', undefined, profileId, targetFolderId || undefined); // Pass targetFolderId here
-
-            // Update the uploaded content with the selected access group
-            const { supabase } = await import('@/db/supabase');
-            const { data: latestContent } = await supabase
-                .from('knowledge_sources')
-                .select('*')
-                .eq('profile_id', profileId)
-                .eq('title', file.name)
-                .order('created_at', { ascending: false })
-                .limit(1)
-                .single();
-
-            if (latestContent) {
-                await supabase
-                    .from('knowledge_sources')
-                    .update({
-                        metadata: {
-                            ...latestContent.metadata,
-                            accessGroup: selectedAccessGroup
-                        }
-                    })
-                    .eq('id', latestContent.id);
-            }
+            // Pass authUserId so the edge function always has the real Supabase user ID,
+            // even when chat_user_id is absent from localStorage (admin / Mind page context).
+            await ingestContent(file.name, extractedText, 'text', '', authUserId, profileId, targetFolderId || undefined);
 
             onUpload({ title: file.name, type: 'text' });
         } catch (error: any) {
@@ -386,7 +308,18 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
 
     const renderPopular = () => (
         <div className="space-y-6">
-            <div className="border-2 border-dashed rounded-lg p-12 text-center bg-muted/20">
+            {/* Fully functional drop zone — same handlers as the Files tab */}
+            <div
+                className={cn(
+                    "border-2 border-dashed rounded-lg p-12 text-center transition-colors cursor-pointer",
+                    dragActive ? "border-primary bg-primary/5" : "bg-muted/20"
+                )}
+                onClick={() => document.getElementById('popular-file-upload')?.click()}
+                onDragEnter={handleDrag}
+                onDragLeave={handleDrag}
+                onDragOver={handleDrag}
+                onDrop={(e) => { handleDrop(e); setSelectedCategory('files'); }}
+            >
                 <div className="w-16 h-16 mx-auto mb-4 bg-muted rounded-lg flex items-center justify-center">
                     <Upload className="w-8 h-8 text-muted-foreground" />
                 </div>
@@ -396,6 +329,14 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                         click here to browse
                     </span>
                 </p>
+                <p className="text-xs text-muted-foreground mt-1">PDF, DOCX, TXT, MP3, MP4 and more</p>
+                <input
+                    id="popular-file-upload"
+                    type="file"
+                    className="hidden"
+                    multiple
+                    onChange={(e) => { handleFileSelect(e); setSelectedCategory('files'); }}
+                />
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -613,8 +554,31 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
             >
                 <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
                 <p className="text-sm font-medium">Click to browse or drag and drop</p>
-                <p className="text-xs text-muted-foreground mt-1">Accepts multiple documents, audio, or video files</p>
+                <p className="text-xs text-muted-foreground mt-1">PDF, DOCX, TXT, MP3, MP4 and more</p>
                 <input id="file-upload" type="file" className="hidden" multiple onChange={handleFileSelect} />
+            </div>
+
+            {/* Folder upload button */}
+            <div className="flex items-center gap-2">
+                <button
+                    type="button"
+                    onClick={() => folderInputRef.current?.click()}
+                    className="flex items-center gap-2 px-3 py-2 text-sm border rounded-md hover:bg-muted/50 transition-colors text-muted-foreground"
+                >
+                    <Upload className="w-4 h-4" />
+                    Upload entire folder
+                </button>
+                <span className="text-xs text-muted-foreground">Select a folder — all supported files inside will be queued</span>
+                {/* webkitdirectory lets the browser pick an entire folder */}
+                <input
+                    ref={folderInputRef}
+                    type="file"
+                    className="hidden"
+                    multiple
+                    // @ts-ignore – webkitdirectory is non-standard but widely supported
+                    webkitdirectory=""
+                    onChange={handleFileSelect}
+                />
             </div>
 
             {selectedFiles.length > 0 && (
@@ -690,7 +654,12 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
             </div>
             <div className="space-y-2">
                 <Label>Content</Label>
-                <textarea className="w-full p-3 border rounded-md min-h-[200px]" value={snippetContent} onChange={(e) => setSnippetContent(e.target.value)} />
+                <textarea
+                    className="w-full p-3 border rounded-md min-h-[200px]"
+                    value={snippetContent}
+                    onChange={(e) => setSnippetContent(e.target.value)}
+                    placeholder="Paste FAQ Q&A here. Include full Enroll links (https://...) so the bot can share clickable enrollment URLs."
+                />
             </div>
             <Button className="w-full" onClick={() => handleUpload('text', snippetContent, snippetTitle)} disabled={loading || !snippetTitle || !snippetContent}>
                 Add Snippet

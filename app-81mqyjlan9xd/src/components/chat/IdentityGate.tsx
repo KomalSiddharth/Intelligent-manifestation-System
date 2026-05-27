@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,6 +7,7 @@ import { supabase } from '@/db/supabase';
 
 import { Lock, ArrowRight, ShieldCheck, Mail, ChevronLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
 import {
     InputOTP,
     InputOTPGroup,
@@ -16,18 +17,22 @@ import {
 interface IdentityGateProps {
     onVerified: (user: any) => void;
     profileId?: string;
+    requireIdentityGate?: boolean;
+    /** When true, use h-full instead of min-h-screen (fixes blank iframe previews). */
+    embedded?: boolean;
     children: React.ReactNode;
 }
 
-export default function IdentityGate({ onVerified, profileId, children }: IdentityGateProps) {
+export default function IdentityGate({ onVerified, profileId, requireIdentityGate = true, embedded = false, children }: IdentityGateProps) {
     const [email, setEmail] = useState('');
     const [otpValue, setOtpValue] = useState('');
     const [step, setStep] = useState<'email' | 'otp'>('email');
-    const [isLoading, setIsLoading] = useState(true);
-    const [isVerified, setIsVerified] = useState(false);
+    const [isLoading, setIsLoading] = useState(requireIdentityGate);
+    const [isVerified, setIsVerified] = useState(!requireIdentityGate);
     const [tempUser, setTempUser] = useState<any>(null);
+    const bypassedRef = useRef(false);
 
-    console.log("🔒 IdentityGate State:", { isVerified, isLoading, step });
+    console.log("🔒 IdentityGate State:", { isVerified, isLoading, step, requireIdentityGate });
     const { toast } = useToast();
 
     // Development mode flag - set to true to bypass OTP
@@ -39,11 +44,24 @@ export default function IdentityGate({ onVerified, profileId, children }: Identi
         return () => console.log("🔒 [IDENTITY_GATE] Unmounting!");
     }, []);
 
-    // Check for existing session
+    // Check for existing session or disabled gate
     useEffect(() => {
+        if (!requireIdentityGate) {
+            if (!bypassedRef.current) {
+                bypassedRef.current = true;
+                console.log("🔓 [IDENTITY_GATE] Protection disabled for this profile. Bypassing.");
+                setIsVerified(true);
+                const guestId = localStorage.getItem('chat_user_id') || 'guest_' + Date.now();
+                onVerified({ id: guestId, user_id: guestId, name: 'Guest User' });
+            }
+            setIsLoading(false);
+            return;
+        }
+
+        bypassedRef.current = false;
+
         // If already verified, don't trigger a blocking reload that unmounts children
         if (isVerified) {
-            console.log("🔒 [IDENTITY_GATE] Already verified, skipping blocking check.");
             setIsLoading(false);
             return;
         }
@@ -54,7 +72,7 @@ export default function IdentityGate({ onVerified, profileId, children }: Identi
         } else {
             setIsLoading(false);
         }
-    }, [profileId, isVerified]); // Added isVerified to deps but guarded inside
+    }, [profileId, requireIdentityGate]);
 
 
     // Fast verify for existing sessions (skip OTP if already logged in)
@@ -302,9 +320,13 @@ export default function IdentityGate({ onVerified, profileId, children }: Identi
         }
     }
 
+    const shellClass = embedded
+        ? "flex items-center justify-center h-full min-h-0 bg-background"
+        : "flex items-center justify-center min-h-screen bg-background";
+
     if (isLoading && step === 'email' && !isVerified) {
         return (
-            <div className="flex items-center justify-center min-h-screen bg-background">
+            <div className={shellClass}>
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
             </div>
         );
@@ -315,7 +337,7 @@ export default function IdentityGate({ onVerified, profileId, children }: Identi
     }
 
     return (
-        <div className="flex items-center justify-center min-h-screen bg-background p-4 font-sans">
+        <div className={cn(shellClass, "p-4 font-sans")}>
             <Card className="w-full max-w-md border-orange-100 shadow-2xl overflow-hidden rounded-2xl">
                 <div className="h-2 bg-gradient-to-r from-orange-400 to-pink-500" />
                 <CardHeader className="text-center space-y-2 pb-2 mt-4">

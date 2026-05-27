@@ -517,10 +517,16 @@ export const updateContentItem = async (id: string, updates: {
   folder_id?: string | null;
 }): Promise<void> => {
   try {
+    const dbUpdates: any = { ...updates };
+    if ('url' in dbUpdates) {
+      dbUpdates.source_url = dbUpdates.url;
+      delete dbUpdates.url;
+    }
+
     // Update knowledge_sources table
     const { error: ksError } = await supabase
       .from('knowledge_sources')
-      .update(updates)
+      .update(dbUpdates)
       .eq('id', id);
 
     if (ksError) {
@@ -1379,6 +1385,53 @@ export const getInsights = async (limit: number = 5): Promise<any[]> => {
     console.error('Unexpected error in getInsights:', err);
     return [];
   }
+};
+
+// ─── Testimonials API ───────────────────────────────────────────────────────
+
+export interface Testimonial {
+  id: string;
+  profile_id: string;
+  source_id: string | null;
+  person_name: string | null;
+  testimonial_date: string | null; // ISO date "YYYY-MM-DD"
+  raw_content: string | null;
+  file_name: string | null;
+  tags: string[];
+  source_title?: string | null;
+  created_at: string;
+}
+
+/** Fetch all testimonials for a profile, ordered newest date first */
+export const getTestimonials = async (profileId: string): Promise<Testimonial[]> => {
+  const { data, error } = await supabase.rpc('get_testimonials', { p_profile_id: profileId });
+  if (error) {
+    console.error('Error fetching testimonials:', error);
+    return [];
+  }
+  return Array.isArray(data) ? data : [];
+};
+
+/** Search testimonials by partial person name */
+export const searchTestimonialsByPerson = async (profileId: string, name: string): Promise<Testimonial[]> => {
+  const { data, error } = await supabase.rpc('search_testimonials', {
+    p_profile_id: profileId,
+    p_name: name,
+  });
+  if (error) {
+    console.error('Error searching testimonials:', error);
+    return [];
+  }
+  return Array.isArray(data) ? data : [];
+};
+
+/** Update tags on a testimonial (e.g. ['platinum', 'march-challenge']) */
+export const updateTestimonialTags = async (testimonialId: string, tags: string[]): Promise<void> => {
+  const { error } = await supabase
+    .from('testimonials')
+    .update({ tags, updated_at: new Date().toISOString() })
+    .eq('id', testimonialId);
+  if (error) throw error;
 };
 
 // Trending Topics API

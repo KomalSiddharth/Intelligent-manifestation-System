@@ -30,6 +30,8 @@ const SuggestedQuestionsView = ({ profileId, initialData }: SuggestedQuestionsVi
     const [visibleQuestions, setVisibleQuestions] = useState<Question[]>(initialData?.suggested_questions as Question[] || []);
     const [isLoading, setIsLoading] = useState(false);
 
+    const [newQuestion, setNewQuestion] = useState("");
+
     useEffect(() => {
         loadProfile();
     }, [profileId]);
@@ -42,6 +44,8 @@ const SuggestedQuestionsView = ({ profileId, initialData }: SuggestedQuestionsVi
             } else if (profile?.response_settings?.suggestedQuestions) {
                 // Fallback for legacy data
                 setVisibleQuestions(profile.response_settings.suggestedQuestions as Question[]);
+            } else {
+                setVisibleQuestions([]);
             }
         } catch (error) {
             console.error('Error loading profile:', error);
@@ -79,6 +83,15 @@ const SuggestedQuestionsView = ({ profileId, initialData }: SuggestedQuestionsVi
         }
     };
 
+    const handleAddCustom = () => {
+        if (!newQuestion.trim()) return;
+        const q: Question = { id: Date.now().toString(), text: newQuestion.trim() };
+        const updated = [...visibleQuestions, q];
+        setVisibleQuestions(updated);
+        handleSave(updated);
+        setNewQuestion("");
+    };
+
     const removeFromVisible = (id: string) => {
         const updated = visibleQuestions.filter(v => v.id !== id);
         setVisibleQuestions(updated);
@@ -93,30 +106,50 @@ const SuggestedQuestionsView = ({ profileId, initialData }: SuggestedQuestionsVi
             </div>
 
             <div className="grid grid-cols-2 gap-8">
-                {/* Generated Questions Column */}
-                <div className="space-y-4">
-                    <h3 className="text-lg font-medium">Generated Questions</h3>
-                    <div className="relative">
-                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                            placeholder="Search your questions"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="pl-9 rounded-full bg-muted/30"
-                        />
+                {/* Custom and Generated Questions Column */}
+                <div className="space-y-8">
+                    {/* Add Custom Question */}
+                    <div className="space-y-4">
+                        <h3 className="text-lg font-medium">Add Custom Question</h3>
+                        <div className="flex gap-2">
+                            <Input
+                                placeholder="Type a suggested question..."
+                                value={newQuestion}
+                                onChange={(e) => setNewQuestion(e.target.value)}
+                                className="bg-background rounded-lg"
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleAddCustom();
+                                }}
+                            />
+                            <Button onClick={handleAddCustom}>Add</Button>
+                        </div>
                     </div>
-                    <div className="space-y-3">
-                        {generatedQuestions.map((q) => (
-                            <div
-                                key={q.id}
-                                className="flex items-center gap-3 p-4 border rounded-lg bg-background group hover:border-orange-200 transition-colors cursor-pointer"
-                                onClick={() => addToVisible(q)}
-                            >
-                                <GripVertical className="w-4 h-4 text-muted-foreground" />
-                                <p className="flex-1 text-sm font-medium">{q.text}</p>
-                                <Plus className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100" />
-                            </div>
-                        ))}
+
+                    {/* Generated Questions */}
+                    <div className="space-y-4">
+                        <h3 className="text-lg font-medium">Generated Questions</h3>
+                        <div className="relative">
+                            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                            <Input
+                                placeholder="Search your questions"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="pl-9 rounded-full bg-muted/30"
+                            />
+                        </div>
+                        <div className="space-y-3">
+                            {generatedQuestions.filter(q => q.text.toLowerCase().includes(searchQuery.toLowerCase())).map((q) => (
+                                <div
+                                    key={q.id}
+                                    className="flex items-center gap-3 p-4 border rounded-lg bg-background group hover:border-orange-200 transition-colors cursor-pointer"
+                                    onClick={() => addToVisible(q)}
+                                >
+                                    <GripVertical className="w-4 h-4 text-muted-foreground" />
+                                    <p className="flex-1 text-sm font-medium">{q.text}</p>
+                                    <Plus className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100" />
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
 
