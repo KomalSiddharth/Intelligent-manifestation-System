@@ -1129,9 +1129,9 @@ export const getMessages = async (sessionId: string): Promise<Message[]> => {
 };
 
 export const saveMessage = async (sessionId: string, role: string, content: string, id?: string) => {
-  const logPrefix = `[saveMessage][${role}]`;
-  console.log(`${logPrefix} START - Session: ${sessionId}, Length: ${content.length}`);
-
+  // ⚡ PERF: Only 2 awaited DB trips (get conv + insert message).
+  // Steps 3-5 (conv timestamp, audience count) run in background — they are
+  // analytics-only and don't affect the chat response path at all.
   try {
     // 1. Get User ID from Conversation
     const { data: convData, error: fetchErr } = await supabase
@@ -1141,13 +1141,12 @@ export const saveMessage = async (sessionId: string, role: string, content: stri
       .single();
 
     if (fetchErr || !convData) {
-      console.error(`${logPrefix} Conversation not found for sessionId:`, sessionId);
       throw new Error("Conversation not found");
     }
 
-    // 2. Insert Message
+    // 2. Insert Message (critical — must complete before returning)
     const { data: savedMsg, error: msgError } = await supabase.from('messages').insert({
-      id: id || undefined, // Use explicit ID if provided
+      id: id || undefined,
       conversation_id: sessionId,
       user_id: convData.user_id,
       role,
@@ -1156,50 +1155,44 @@ export const saveMessage = async (sessionId: string, role: string, content: stri
       .select()
       .single();
 
-    if (msgError) {
-      console.error(`${logPrefix} Insert error:`, msgError);
-      throw msgError;
-    }
+    if (msgError) throw msgError;
 
-    // 3. Update Conversation Timestamp
-    const { error: convError } = await supabase.from('conversations')
-      .update({
-        last_message_at: new Date().toISOString(),
-      })
-      .eq('id', sessionId);
+    // 3-5. Background tasks — fire-and-forget, never block the caller
+    const now = new Date().toISOString();
+    const bgTasks: Promise<any>[] = [
+      supabase.from('conversations')
+        .update({ last_message_at: now })
+        .eq('id', sessionId)
+        .then(({ error }) => { if (error) console.warn('[saveMessage] conv timestamp update failed:', error); })
+    ];
 
-    if (convError) console.error(`${logPrefix} Conv update error:`, convError);
-
-    // 4. Increment Message Count for Audience User (if user message)
     if (role === 'user') {
-      console.log(`${logPrefix} Incrementing count for user_id:`, convData.user_id);
-      const { data: users, error: audError } = await supabase
-        .from('audience_users')
-        .select('*')
-        .eq('user_id', convData.user_id);
-
-      if (audError) {
-        console.error(`${logPrefix} Audience fetch error:`, audError);
-      }
-
-      const audienceUser = users && users.length > 0 ? users[0] : null;
-
-      if (audienceUser) {
-        console.log(`${logPrefix} Audience user found, updating count`);
-        await supabase.from('audience_users')
-          .update({
-            message_count: (Number(audienceUser.message_count) || 0) + 1,
-            last_active: new Date().toISOString()
+      bgTasks.push(
+        supabase.from('audience_users')
+          .select('id, message_count')
+          .eq('user_id', convData.user_id)
+          .limit(1)
+          .maybeSingle()
+          .then(({ data: au }) => {
+            if (au) {
+              return supabase.from('audience_users')
+                .update({
+                  message_count: (Number(au.message_count) || 0) + 1,
+                  last_active: now
+                })
+                .eq('id', au.id);
+            }
           })
-          .eq('id', audienceUser.id);
-      } else {
-        console.warn(`${logPrefix} No audience user found to increment count`);
-      }
+          .catch(err => console.warn('[saveMessage] audience count update failed:', err))
+      );
     }
-    console.log(`${logPrefix} END - Success`);
+
+    // Run in background — intentionally not awaited
+    Promise.all(bgTasks).catch(() => {});
+
     return savedMsg;
   } catch (err) {
-    console.error(`${logPrefix} CRITICAL FAILURE:`, err);
+    console.error('[saveMessage] CRITICAL FAILURE:', err);
     throw err;
   }
 };

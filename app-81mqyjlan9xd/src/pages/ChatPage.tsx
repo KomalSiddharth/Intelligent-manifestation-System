@@ -117,6 +117,8 @@ const ChatPage = () => {
     const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
     const isSendingRef = useRef(false);
     const abortControllerRef = useRef<AbortController | null>(null);
+    // Cache feature flags per profile — avoids a DB round-trip on every message
+    const featureFlagsCacheRef = useRef<{ profileId: string; flags: Record<string, any> } | null>(null);
 
     // Identity & Session State
     const [chatUserId, setChatUserId] = useState<string>('');
@@ -441,22 +443,21 @@ const ChatPage = () => {
             // ALWAYS add to chat UI and DB
             setMessages(prev => [...prev, { role: 'user', content: text }]);
 
-            try {
-                const savedUserMsg = await saveMessage(sessionId, 'user', text);
-                if (savedUserMsg) {
-                    setMessages(prev => {
-                        const newMsgs = [...prev];
-                        // Update the last user message with real ID
-                        const lastUserIdx = newMsgs.findLastIndex(m => m.role === 'user' && m.content === text);
-                        if (lastUserIdx !== -1) {
-                            newMsgs[lastUserIdx] = { ...newMsgs[lastUserIdx], id: savedUserMsg.id };
-                        }
-                        return newMsgs;
-                    });
-                }
-            } catch (err) {
-                console.error("❌ [ChatPage] Failed to save user message:", err);
-            }
+            // ⚡ PERF: Fire-and-forget — don't block LLM call waiting for DB write
+            saveMessage(sessionId, 'user', text)
+                .then((savedUserMsg) => {
+                    if (savedUserMsg) {
+                        setMessages(prev => {
+                            const newMsgs = [...prev];
+                            const lastUserIdx = newMsgs.findLastIndex(m => m.role === 'user' && m.content === text);
+                            if (lastUserIdx !== -1) {
+                                newMsgs[lastUserIdx] = { ...newMsgs[lastUserIdx], id: savedUserMsg.id };
+                            }
+                            return newMsgs;
+                        });
+                    }
+                })
+                .catch(err => console.error("❌ [ChatPage] Failed to save user message:", err));
 
             // --- ALERT DETECTION ---
             const lowerText = text.toLowerCase();
@@ -497,32 +498,32 @@ const ChatPage = () => {
                     return v.toString(16);
                 });
 
-            // Get feature flags - Database first (permanent), localStorage as fallback
-            let featureFlags = {};
-
-            try {
-                // Try to get from database first (authoritative source)
-                if (selectedProfile?.id) {
-                    const { data: profileData } = await supabase
-                        .from('mind_profile')
-                        .select('feature_flags')
-                        .eq('id', selectedProfile.id)
-                        .single();
-
-                    if (profileData?.feature_flags) {
-                        featureFlags = profileData.feature_flags;
-                        console.log('✅ Feature flags loaded from database:', featureFlags);
+            // ⚡ PERF: Feature flags cached in memory — DB only on first message per profile
+            let featureFlags: Record<string, any> = {};
+            if (featureFlagsCacheRef.current?.profileId === selectedProfile?.id) {
+                featureFlags = featureFlagsCacheRef.current.flags;
+            } else {
+                try {
+                    if (selectedProfile?.id) {
+                        const { data: profileData } = await supabase
+                            .from('mind_profile')
+                            .select('feature_flags')
+                            .eq('id', selectedProfile.id)
+                            .single();
+                        if (profileData?.feature_flags) {
+                            featureFlags = profileData.feature_flags;
+                        }
                     }
+                } catch (err) {
+                    console.warn('⚠️ Could not load feature flags from database, using localStorage:', err);
                 }
-            } catch (err) {
-                console.warn('⚠️ Could not load feature flags from database, using localStorage:', err);
-            }
-
-            // Fallback to localStorage if database fetch failed
-            if (Object.keys(featureFlags).length === 0) {
-                const featureFlagsStr = localStorage.getItem('advanced_features_enabled');
-                featureFlags = featureFlagsStr ? JSON.parse(featureFlagsStr) : {};
-                console.log('📦 Feature flags loaded from localStorage:', featureFlags);
+                // Fallback to localStorage if database fetch failed
+                if (Object.keys(featureFlags).length === 0) {
+                    const featureFlagsStr = localStorage.getItem('advanced_features_enabled');
+                    featureFlags = featureFlagsStr ? JSON.parse(featureFlagsStr) : {};
+                }
+                // Store in cache (null-safe)
+                featureFlagsCacheRef.current = { profileId: selectedProfile?.id ?? '', flags: featureFlags };
             }
 
             const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat-engine`, {
@@ -652,30 +653,22 @@ const ChatPage = () => {
                 }
             }
 
-            // Save to DB for ALL messages if response exists
+            // ⚡ PERF: Fire-and-forget assistant save — user can send next message immediately
             if (aiResponse) {
-                const savedAssistantMsg = await saveMessage(sessionId, 'assistant', aiResponse)
-                    .then((msg) => {
-                        console.log("✅ Assistant message saved to DB");
-                        return msg;
-                    })
-                    .catch(err => {
-                        console.error("❌ Failed to save assistant message:", err);
-                        return null;
-                    });
-
-                if (savedAssistantMsg) {
-                    setMessages(prev => {
-                        const newMsgs = [...prev];
-                        // Update the assistant message with real ID
-                        // It should be the last message or close to it
-                        const lastAssistIdx = newMsgs.findLastIndex(m => m.role === 'assistant');
-                        if (lastAssistIdx !== -1) {
-                            newMsgs[lastAssistIdx] = { ...newMsgs[lastAssistIdx], id: savedAssistantMsg.id };
+                saveMessage(sessionId, 'assistant', aiResponse)
+                    .then((savedAssistantMsg) => {
+                        if (savedAssistantMsg) {
+                            setMessages(prev => {
+                                const newMsgs = [...prev];
+                                const lastAssistIdx = newMsgs.findLastIndex(m => m.role === 'assistant');
+                                if (lastAssistIdx !== -1) {
+                                    newMsgs[lastAssistIdx] = { ...newMsgs[lastAssistIdx], id: savedAssistantMsg.id };
+                                }
+                                return newMsgs;
+                            });
                         }
-                        return newMsgs;
-                    });
-                }
+                    })
+                    .catch(err => console.error("❌ Failed to save assistant message:", err));
             }
 
             // Clear ref if this request finished normally
