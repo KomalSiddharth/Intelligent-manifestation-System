@@ -1,5 +1,8 @@
 services:
-  # Frontend — serves the pre-built React app via nginx on port 8080
+
+  # ── 1. Frontend ──────────────────────────────────────────────────────────
+  # Serves the pre-built React app via nginx on port 8080.
+  # VITE_ vars are already baked into dist/ — no build args needed.
   frontend:
     build:
       context: .
@@ -8,11 +11,39 @@ services:
       - "8080:80"
     restart: unless-stopped
 
-  # Sync Worker — automated Google Drive sync every 30 minutes
+  # ── 2. Sync Worker (Node.js) ─────────────────────────────────────────────
+  # Calls the sync-drive Supabase Edge Function every 30 minutes.
   sync-worker:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  # ── 3. Omni Sync Worker (Python) ─────────────────────────────────────────
+  # Python periodic sync — triggers sync-drive for all active integrations.
+  # Lightweight (no heavy deps).
+  omni-sync-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.omni
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  # ── 4. Voice Bot AI (Python / pipecat 1.2.1) ─────────────────────────────
+  # Real-time voice pipeline using Daily.co + OpenAI GPT-4o + ElevenLabs TTS.
+  # Exposes HTTP API on port 8765:
+  #   GET  /health       — health check
+  #   POST /create-room  — creates a Daily.co room (needs DAILY_API_KEY)
+  #   POST /start        — starts a bot session in a given room
+  voice-bot-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    ports:
+      - "8765:8765"
     env_file:
       - .env
     restart: unless-stopped

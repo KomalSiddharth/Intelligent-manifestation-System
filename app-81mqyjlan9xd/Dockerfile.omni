@@ -1,0 +1,14 @@
+# Omni Sync Worker
+# Lightweight Python 3.11 image — only uses stdlib + requests
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install Python dependencies first (cached layer)
+COPY requirements.omni.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy only the sync worker script
+COPY omni_sync.py .
+
+CMD ["python", "omni_sync.py"]

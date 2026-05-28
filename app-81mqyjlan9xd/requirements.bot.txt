@@ -1,0 +1,12 @@
+# Voice Bot AI dependencies — pipecat 1.2.1
+# We skip the [silero] extra (PyTorch ~1.8 GB) and rely on Daily's built-in VAD instead.
+pipecat-ai[daily,openai,elevenlabs]==1.2.1
+
+# HTTP server for /start and /health endpoints
+aiohttp==3.10.0
+
+# Logging
+loguru==0.7.2
+
+# Environment
+python-dotenv==1.0.1

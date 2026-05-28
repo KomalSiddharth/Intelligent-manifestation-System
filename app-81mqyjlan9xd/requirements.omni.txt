@@ -1,0 +1,4 @@
+# Omni Sync Worker dependencies
+# No heavy frameworks needed — only stdlib + requests for HTTP calls
+requests==2.31.0
+python-dotenv==1.0.1
