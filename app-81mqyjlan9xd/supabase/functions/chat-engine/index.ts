@@ -7,6 +7,7 @@ import {
     trackRoutingMetrics,
     ensembleMode,
     fastLocalBypass,
+    getNextKey,
     type RoutingDecision,
     type ModelProvider
 } from "./intelligent-router.ts";
@@ -780,6 +781,14 @@ serve(async (req) => {
         // search only FAQ chunks, skip graph/sentiment, and cap responses at 400 tokens.
         const useFastSupportPath = isSupportStyleProfile(dynamicProfile?.name);
 
+        // ⚡ FAST COACHING PATH — skips 4 pre-LLM calls that add ~2.1s before first token:
+        //   ❌ removed: sentiment analysis (~500ms), query expansion (~400ms),
+        //               multi-vector embedding (~300ms), reranking (~400ms), routeIntelligently (~500ms)
+        //   ✅ kept:    1 embedding + 1 vector search + direct Cerebras (llama-3.3-70b @ ~1000 tok/s)
+        // To revert to full pipeline for a profile: set feature_flags.slow_mode = true in Admin Dashboard
+        const featureFlags = (requestBody as any).featureFlags || {};
+        const useFastCoachingPath = !useFastSupportPath && featureFlags['slow_mode'] !== true;
+
         // ⚡ RESPONSE CACHE — for support bots, serve identical questions from Redis (24h TTL)
         // This skips embedding + KB load + OpenAI call entirely — fastest possible path.
         if (useFastSupportPath && redisUrl && redisToken && activeProfileId) {
@@ -821,12 +830,19 @@ serve(async (req) => {
         let episodicMemory: any[] = [];
 
         if (!useFastSupportPath) {
-            [userProfileParams, psychProfile, emotionalHistory, episodicMemory] = await Promise.all([
-                buildProfilePrompt(chatUserId, activeProfileId),
-                getPsychProfile(chatUserId, activeProfileId),
-                getEmotionalHistory(chatUserId, activeProfileId),
-                getConversationSummaries(chatUserId, activeProfileId),
-            ]);
+            if (useFastCoachingPath) {
+                // ⚡ FAST COACH: Only fetch user identity facts (name, goals, etc. for personalization).
+                // Psych profile, emotional history, and episodic memory are usually empty for most
+                // users anyway — skipping them saves ~100-150ms on every request.
+                userProfileParams = await buildProfilePrompt(chatUserId, activeProfileId);
+            } else {
+                [userProfileParams, psychProfile, emotionalHistory, episodicMemory] = await Promise.all([
+                    buildProfilePrompt(chatUserId, activeProfileId),
+                    getPsychProfile(chatUserId, activeProfileId),
+                    getEmotionalHistory(chatUserId, activeProfileId),
+                    getConversationSummaries(chatUserId, activeProfileId),
+                ]);
+            }
         }
 
         const pastSummaries = episodicMemory.length > 0
@@ -891,6 +907,50 @@ serve(async (req) => {
                     }
                     console.log(`⚠️ [SEM-CACHE] MISS — proceeding with full pipeline`);
                 }
+            } else if (useFastCoachingPath) {
+                // ⚡ FAST COACH: Single embedding only — skip sentiment LLM call (~500ms),
+                // query expansion LLM call (~400ms), and multi-vector embedding (~300ms).
+                // Total saved: ~1.2 seconds before we even touch the knowledge base.
+                console.log("⚡ [FAST-COACH] Single embedding (sentiment/query-expansion skipped)...");
+                const embeddingResponse = await openai.embeddings.create({
+                    model: "text-embedding-3-small",
+                    input: query,
+                });
+                queryEmbedding = embeddingResponse.data[0].embedding;
+
+                // Use language/sentiment already passed from the frontend (or safe defaults).
+                // The frontend sends detectedLanguage/detectedSentiment in the request body —
+                // no need to call GPT to re-detect them.
+                detectedSentiment = (detectedSentiment || "neutral").toLowerCase();
+                detectedLanguage = (detectedLanguage || "english").toLowerCase();
+
+                // ── Semantic similarity cache for coaching profiles ───────────────────────
+                // Same cache layer that already works for support bots — now extended to coaching.
+                // Catches paraphrases like "how do I stay motivated?" ≈ "tips to stay consistent?"
+                if (vectorUrl && vectorToken && activeProfileId) {
+                    const semHit = await checkSemanticCache(
+                        vectorUrl, vectorToken, queryEmbedding, activeProfileId,
+                        redisUrl, redisToken, 0.93  // slightly stricter threshold for coaching
+                    );
+                    if (semHit?.text) {
+                        console.log(`🎯 [FAST-COACH-CACHE] HIT — "${query.slice(0, 60)}"`);
+                        const enc = new TextEncoder();
+                        return new Response(
+                            new ReadableStream({
+                                start(controller) {
+                                    controller.enqueue(enc.encode(`data: ${JSON.stringify(semHit.text)}\n\n`));
+                                    if (semHit.sources?.length > 0) {
+                                        controller.enqueue(enc.encode(`data: ${JSON.stringify(`__SOURCES__:${JSON.stringify(semHit.sources)}`)}\n\n`));
+                                    }
+                                    controller.enqueue(enc.encode(`data: [DONE]\n\n`));
+                                    controller.close();
+                                }
+                            }),
+                            { headers: { "Content-Type": "text/event-stream", ...corsHeaders } }
+                        );
+                    }
+                    console.log(`⚠️ [FAST-COACH-CACHE] MISS — proceeding with fast RAG`);
+                }
             } else {
             console.log("⚡ [PERF] Starting Parallel Sentiment & Embedding...");
             const [sentimentResponse, embeddingResponse] = await Promise.all([
@@ -937,7 +997,7 @@ serve(async (req) => {
                         role: "system",
                         content: `You are an Expert Search Agent.
 Task: Generate 2 targeted search queries to find the BEST learning resources for the user's input.
-Rule: 
+Rule:
 1. Use keywords from the niche (e.g. 'Ho'oponopono', 'Law of Attraction', 'NLP') if relevant.
 2. If the user asks for a 'time schedule', search for 'Daily Routine', 'Morning Ritual', 'Time Management'.
 3. Return JSON: { "q1": "string", "q2": "string" }`
@@ -960,7 +1020,7 @@ Rule:
             });
 
             // We will use the BEST match of the 3 embeddings
-            // For now, we just push them all? No, let's pick the generated one as 'Primary' if it looks good, 
+            // For now, we just push them all? No, let's pick the generated one as 'Primary' if it looks good,
             // but for safety, we'll search with the specialized Q1 first.
             queryEmbedding = expandedResponse.data[1] ? expandedResponse.data[1].embedding : expandedResponse.data[0].embedding;
 
@@ -1050,6 +1110,51 @@ Rule:
                             };
                         });
                         console.log(`🧩 [FAST-SUPPORT] ${merged.length} chunks passed to model`);
+                    }
+                } else if (useFastCoachingPath) {
+                    // ⚡ FAST COACH RAG: Single vector search, no GraphRAG LLM call (~400ms saved),
+                    // no per-chunk neighbor enrichment (~200ms saved), no reranking LLM call (~400ms saved).
+                    // Total saved here: ~1.0 second vs the full pipeline.
+                    console.log("⚡ [FAST-COACH] Single vector search (no GraphRAG / reranking)...");
+
+                    const vectorSearchTasks: Promise<any>[] = [
+                        supabaseClient.rpc("match_knowledge", {
+                            query_embedding: queryEmbedding,
+                            match_threshold: 0.30,
+                            match_count: 8,
+                            p_profile_id: activeProfileId,
+                        }),
+                    ];
+
+                    // Also search global KB for MiteshAI profile (course index)
+                    if (!activeProfileId || activeProfileId === 'anonymous' || isMiteshAiProfile) {
+                        vectorSearchTasks.push(
+                            supabaseClient.rpc("match_knowledge", {
+                                query_embedding: queryEmbedding,
+                                match_threshold: 0.10,
+                                match_count: 6,
+                                p_profile_id: null,
+                            })
+                        );
+                    }
+
+                    const vectorSearchResults = await Promise.all(vectorSearchTasks);
+                    const fastChunks = dedupeChunks([
+                        ...(vectorSearchResults[0]?.data || []),
+                        ...(vectorSearchResults[1]?.data || []),
+                    ]).slice(0, 6);
+
+                    if (fastChunks.length > 0) {
+                        knowledgeContext = fastChunks.map(formatKnowledgeChunk).join("\n\n---\n\n");
+                        sourceChunks = fastChunks.map((c: any) => {
+                            const urls = extractUrlsFromText(c.content || "");
+                            return {
+                                title: c.source_title || 'Source',
+                                url: c.source_url || urls[0] || '',
+                                similarity: c.similarity || 0,
+                            };
+                        });
+                        console.log(`⚡ [FAST-COACH] ${fastChunks.length} RAG chunks ready`);
                     }
                 } else {
                 // PARALLEL: Vector Match + Graph Traversal
@@ -1476,6 +1581,34 @@ PERSONALIZATION:
                 routeSource: 'classified',
             };
             console.log(`⚡ [FAST-SUPPORT] Skipping router — using ${selectedModel}`);
+        } else if (useFastCoachingPath) {
+            // ⚡ FAST COACH: First try fastLocalBypass (handles greetings/simple acks — 0 API calls),
+            // then route directly to Cerebras llama-3.3-70b (~1000 tok/s) if key is available,
+            // or fall back to GPT-4o-mini. Either way we skip routeIntelligently() (~500ms saved).
+            const bypass = fastLocalBypass(query);
+            if (bypass) {
+                routingDecision = bypass;
+                provider = bypass.provider;
+                selectedModel = bypass.model;
+                console.log(`⚡ [FAST-COACH] Local bypass: ${selectedModel} (${bypass.intent})`);
+            } else {
+                const hasCerebras = !!getNextKey('cerebras');
+                provider = hasCerebras ? 'cerebras' : 'openai';
+                selectedModel = hasCerebras ? 'llama-3.3-70b' : 'gpt-4o-mini';
+                routingDecision = {
+                    provider: provider as ModelProvider,
+                    model: selectedModel,
+                    intent: 'coaching',
+                    complexity: 5,
+                    reasoning: hasCerebras
+                        ? 'Fast coaching — Cerebras llama-3.3-70b @ ~1000 tok/s'
+                        : 'Fast coaching — GPT-4o-mini (add CEREBRAS_API_KEY to Supabase Secrets for 20x speedup)',
+                    estimatedCost: 0.0002,
+                    isCritical: false,
+                    routeSource: 'classified',
+                };
+                console.log(`⚡ [FAST-COACH] Routing to ${selectedModel} (${provider}) — skipping routeIntelligently()`);
+            }
         } else {
         try {
             routingDecision = await routeIntelligently(
@@ -1637,9 +1770,10 @@ PERSONALIZATION:
 
                     // ── LAYER 2 WRITE: Semantic cache ──────────────────────────────────
                     // Store embedding + answer in Upstash Vector (fire-and-forget, 24 h TTL).
-                    // Future users asking similar questions will get this answer instantly.
+                    // Now covers BOTH support and fast-coaching profiles so repeat/similar
+                    // questions are served instantly without hitting the LLM again.
                     if (
-                        useFastSupportPath &&
+                        (useFastSupportPath || useFastCoachingPath) &&
                         fullResponse &&
                         !fullResponse.startsWith("Error:") &&
                         queryEmbedding.length > 0 &&
