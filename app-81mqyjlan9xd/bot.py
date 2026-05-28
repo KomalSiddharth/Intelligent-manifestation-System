@@ -1,328 +1,213 @@
 #!/usr/bin/env python3
 """
-Voice Bot AI — Real-time voice conversation using pipecat 1.2.1.
+Voice Bot AI — HTTP service for voice session management.
 
-Architecture:
-  ┌─────────────┐    HTTP /start     ┌──────────────────┐
-  │  Frontend   │ ─────────────────▶ │  This HTTP Server │
-  │ (Daily.co)  │                    │  (aiohttp :8765)  │
-  └─────┬───────┘                    └────────┬──────────┘
-        │  WebRTC                             │ asyncio task
-        │  (audio)                   ┌────────▼──────────┐
-        └──────────────────────────▶ │  pipecat Pipeline  │
-                                     │  Daily transport   │
-                                     │  → OpenAI GPT-4o   │
-                                     │  → ElevenLabs TTS  │
-                                     └───────────────────┘
+This service:
+  - Creates Daily.co rooms on demand
+  - Returns room URLs + tokens to the frontend
+  - Forwards voice queries to the Supabase voice-engine Edge Function
+  - Acts as a health-check-able container for voice features
 
-Required environment variables (set in .env / docker-compose env_file):
-  OPENAI_API_KEY
-  ELEVEN_LABS_API_KEY
-  ELEVEN_LABS_VOICE_ID   (optional, default: ErXwobaYiN019PkySvjV)
-  DAILY_API_KEY          (used to create rooms programmatically)
-  VITE_SUPABASE_URL      (to fetch profile/knowledge context)
-  SUPABASE_SERVICE_ROLE_KEY
-  BOT_PORT               (optional, default: 8765)
+NO pipecat dependency — uses direct REST APIs for reliability.
+
+Endpoints:
+  GET  /health        — liveness check
+  POST /create-room   — create a Daily.co room, returns {url, token}
+  POST /voice-query   — STT → LLM → TTS via voice-engine Edge Function
 """
 
 import asyncio
 import json
 import os
-import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Optional
 
 from aiohttp import web
 from loguru import logger
-
-# ── pipecat 1.2.1 imports ────────────────────────────────────────────────────
-# Note: We do NOT import SileroVADAnalyzer here — it requires PyTorch (~1.8 GB).
-# Daily.co's transport has its own built-in VAD which we use instead.
-from pipecat.frames.frames import EndFrame, LLMMessagesFrame
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.services.openai import OpenAILLMService
-from pipecat.services.elevenlabs import ElevenLabsTTSService
-from pipecat.transports.services.daily import (
-    DailyParams,
-    DailyTranscriptionSettings,
-    DailyTransport,
-)
+import sys
 
 # ── Environment ──────────────────────────────────────────────────────────────
-OPENAI_API_KEY       = os.environ.get("OPENAI_API_KEY", "")
-ELEVEN_LABS_API_KEY  = os.environ.get("ELEVEN_LABS_API_KEY", "")
-ELEVEN_LABS_VOICE_ID = os.environ.get("ELEVEN_LABS_VOICE_ID", "ErXwobaYiN019PkySvjV")
 DAILY_API_KEY        = os.environ.get("DAILY_API_KEY", "")
 SUPABASE_URL         = os.environ.get("VITE_SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+ELEVEN_LABS_API_KEY  = os.environ.get("ELEVEN_LABS_API_KEY", "")
+OPENAI_API_KEY       = os.environ.get("OPENAI_API_KEY", "")
 PORT                 = int(os.environ.get("BOT_PORT", "8765"))
 
-DEFAULT_SYSTEM_PROMPT = """You are an AI clone of Mitesh Khatri — a globally acclaimed Law of Attraction Coach.
 
-Your Speaking Style: Warm, energetic, high-vibe, and very human.
+# ── Daily.co helpers ──────────────────────────────────────────────────────────
 
-Instructions:
-- Keep every reply SHORT — this is a live voice call.
-- Use casual, uplifting language: "Hey champion", "Absolutely", "Got it!".
-- If the knowledge base has an answer, explain it simply in 1-2 sentences.
-- If you don't know, say warmly: "I don't have that handy, but let's focus on what matters most to you!"
-- NEVER sound like a robot. Speak with heart.
-"""
-
-
-# ── Supabase helpers ─────────────────────────────────────────────────────────
-
-def _sb_headers() -> dict:
-    return {
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "apikey":        SUPABASE_SERVICE_KEY,
-        "Content-Type":  "application/json",
-    }
-
-
-async def fetch_profile_prompt(profile_id: Optional[str]) -> str:
-    """Fetch the AI clone's profile from Supabase and build a system prompt."""
-    if not profile_id or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        return DEFAULT_SYSTEM_PROMPT
-
-    try:
-        import aiohttp as _aio
-        url = (
-            f"{SUPABASE_URL}/rest/v1/mind_profile"
-            f"?id=eq.{profile_id}&select=name,headline,description,speaking_style,eleven_labs_voice_id"
-        )
-        async with _aio.ClientSession() as sess:
-            async with sess.get(url, headers=_sb_headers(), timeout=_aio.ClientTimeout(total=8)) as resp:
-                if resp.status != 200:
-                    return DEFAULT_SYSTEM_PROMPT
-                rows = await resp.json()
-                if not rows:
-                    return DEFAULT_SYSTEM_PROMPT
-                p = rows[0]
-
-        name   = p.get("name")   or "Mitesh Khatri"
-        style  = p.get("speaking_style") or "Warm, energetic, high-vibe, and very human."
-        desc   = p.get("description")    or ""
-        prompt = f"""You are an AI clone of {name}.
-{('Biography: ' + desc) if desc else ''}
-Speaking Style: {style}
-
-Instructions:
-- Keep every reply SHORT — this is a live voice call.
-- Use casual, uplifting language: "Hey champion", "Absolutely", "Got it!".
-- If you don't know, say warmly: "I don't have that handy, but let's focus on what matters most to you!"
-- NEVER sound like a robot. Speak with heart.
-"""
-        return prompt.strip()
-
-    except Exception as exc:
-        logger.warning(f"Could not fetch profile ({exc}) — using default prompt")
-        return DEFAULT_SYSTEM_PROMPT
-
-
-# ── Daily.co room helper ──────────────────────────────────────────────────────
-
-def create_daily_room() -> Optional[dict]:
-    """Create a short-lived Daily.co room via REST API. Returns {url, token} or None."""
+def _daily_request(path: str, payload: dict) -> Optional[dict]:
+    """Make a POST request to Daily.co REST API. Returns parsed JSON or None."""
     if not DAILY_API_KEY:
+        logger.warning("DAILY_API_KEY not set — cannot create rooms")
         return None
-
     try:
-        payload = json.dumps({
-            "privacy": "private",
-            "properties": {"exp": int(__import__("time").time()) + 3600},
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.daily.co/v1/rooms",
-            data=payload,
+        data = json.dumps(payload).encode()
+        req  = urllib.request.Request(
+            f"https://api.daily.co/v1{path}",
+            data=data,
             headers={
                 "Authorization": f"Bearer {DAILY_API_KEY}",
-                "Content-Type": "application/json",
+                "Content-Type":  "application/json",
             },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            room = json.loads(resp.read())
-
-        # Create a meeting token for the bot
-        token_payload = json.dumps({"properties": {"room_name": room["name"], "is_owner": True}}).encode()
-        token_req = urllib.request.Request(
-            "https://api.daily.co/v1/meeting-tokens",
-            data=token_payload,
-            headers={
-                "Authorization": f"Bearer {DAILY_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(token_req, timeout=10) as resp:
-            token_data = json.loads(resp.read())
-
-        return {"url": room["url"], "token": token_data["token"]}
-
+            return json.loads(resp.read())
     except Exception as exc:
-        logger.error(f"Could not create Daily room: {exc}")
+        logger.error(f"Daily API error ({path}): {exc}")
         return None
 
 
-# ── pipecat pipeline ──────────────────────────────────────────────────────────
+def create_daily_room() -> Optional[dict]:
+    """Create a new private Daily.co room valid for 1 hour. Returns {url, token}."""
+    exp  = int(time.time()) + 3600
+    room = _daily_request("/rooms", {"privacy": "private", "properties": {"exp": exp}})
+    if not room:
+        return None
 
-async def run_bot(room_url: str, token: Optional[str], profile_id: Optional[str]):
-    """Run one pipecat voice session connected to the given Daily.co room."""
-    logger.info(f"🤖 Bot starting — room={room_url}  profile={profile_id}")
+    token_data = _daily_request(
+        "/meeting-tokens",
+        {"properties": {"room_name": room["name"], "is_owner": True, "exp": exp}},
+    )
+    if not token_data:
+        return {"url": room["url"], "token": None}
 
-    system_prompt = await fetch_profile_prompt(profile_id)
-
-    try:
-        transport = DailyTransport(
-            room_url,
-            token,
-            "AI Voice Bot",
-            DailyParams(
-                audio_out_enabled=True,
-                transcription_enabled=True,
-                vad_enabled=True,
-                # vad_analyzer omitted → Daily uses its own built-in VAD (no PyTorch needed)
-                transcription_settings=DailyTranscriptionSettings(
-                    language="en",
-                    tier="nova",
-                    model="2-conversationalai",
-                ),
-            ),
-        )
-
-        llm = OpenAILLMService(
-            api_key=OPENAI_API_KEY,
-            model="gpt-4o",
-        )
-
-        tts = ElevenLabsTTSService(
-            api_key=ELEVEN_LABS_API_KEY,
-            voice_id=ELEVEN_LABS_VOICE_ID,
-            model="eleven_multilingual_v2",
-        )
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            # Seed an opening so the bot speaks first
-            {"role": "user",   "content": "Hello!"},
-        ]
-        context      = OpenAILLMContext(messages)
-        context_aggr = llm.create_context_aggregator(context)
-
-        pipeline = Pipeline([
-            transport.input(),
-            context_aggr.user(),
-            llm,
-            tts,
-            transport.output(),
-            context_aggr.assistant(),
-        ])
-
-        task = PipelineTask(
-            pipeline,
-            PipelineParams(allow_interruptions=True),
-        )
-
-        @transport.event_handler("on_first_participant_joined")
-        async def on_first_participant_joined(transport, participant):
-            pid = participant.get("id", "unknown")
-            logger.info(f"👤 Participant joined: {pid}")
-            await transport.capture_participant_transcription(pid)
-            # Trigger the LLM to deliver the opening greeting
-            await task.queue_frames([context_aggr.user().get_context_frame()])
-
-        @transport.event_handler("on_participant_left")
-        async def on_participant_left(transport, participant, reason):
-            logger.info(f"👋 Participant left ({reason})")
-            await task.queue_frame(EndFrame())
-
-        @transport.event_handler("on_call_state_updated")
-        async def on_call_state_updated(transport, state):
-            if state == "left":
-                await task.queue_frame(EndFrame())
-
-        runner = PipelineRunner()
-        await runner.run(task)
-        logger.info("✅ Bot session ended cleanly")
-
-    except Exception:
-        logger.exception("❌ Bot session crashed")
+    return {"url": room["url"], "token": token_data.get("token")}
 
 
-# ── HTTP API ──────────────────────────────────────────────────────────────────
+# ── HTTP handlers ─────────────────────────────────────────────────────────────
 
 async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({
-        "status": "ok",
-        "service": "voice-bot-ai",
-        "openai":      bool(OPENAI_API_KEY),
-        "elevenlabs":  bool(ELEVEN_LABS_API_KEY),
+        "status":      "ok",
+        "service":     "voice-bot-ai",
         "daily":       bool(DAILY_API_KEY),
+        "supabase":    bool(SUPABASE_URL),
+        "elevenlabs":  bool(ELEVEN_LABS_API_KEY),
+        "openai":      bool(OPENAI_API_KEY),
     })
 
 
 async def handle_create_room(request: web.Request) -> web.Response:
-    """Create a new Daily.co room and return its URL + user token."""
-    room = create_daily_room()
+    """
+    Create a Daily.co room for a real-time voice session.
+    Returns: { "url": "https://...", "token": "..." }
+    """
+    loop = asyncio.get_event_loop()
+    room = await loop.run_in_executor(None, create_daily_room)
+
     if not room:
         return web.json_response(
             {"error": "Could not create Daily room. Check DAILY_API_KEY."},
             status=500,
         )
+    logger.info(f"🏠 Room created: {room['url']}")
     return web.json_response(room)
+
+
+async def handle_voice_query(request: web.Request) -> web.Response:
+    """
+    Proxy a voice query to the Supabase voice-engine Edge Function.
+
+    Expected body (multipart/form-data):
+      audio      — audio file (webm/mp3/wav)
+      profileId  — UUID of the AI clone profile
+
+    Returns: audio/mpeg stream from ElevenLabs
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return web.json_response({"error": "Supabase not configured"}, status=500)
+
+    try:
+        import aiohttp as _aio
+        reader     = await request.multipart()
+        form_data  = _aio.FormData()
+
+        async for part in reader:
+            data = await part.read()
+            if part.name == "audio":
+                form_data.add_field(
+                    "audio", data,
+                    filename=part.filename or "audio.webm",
+                    content_type=part.content_type or "audio/webm",
+                )
+            else:
+                form_data.add_field(part.name, data.decode())
+
+        edge_url = f"{SUPABASE_URL}/functions/v1/voice-engine"
+        headers  = {"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"}
+
+        async with _aio.ClientSession() as session:
+            async with session.post(edge_url, data=form_data, headers=headers) as resp:
+                body = await resp.read()
+                ct   = resp.headers.get("Content-Type", "audio/mpeg")
+                response_text = resp.headers.get("X-Response-Text", "")
+                tts_failed    = resp.headers.get("X-TTS-Failed", "")
+
+                result_headers = {}
+                if response_text:
+                    result_headers["X-Response-Text"] = response_text
+                if tts_failed:
+                    result_headers["X-TTS-Failed"] = tts_failed
+
+                return web.Response(body=body, content_type=ct, headers=result_headers)
+
+    except Exception as exc:
+        logger.exception(f"Voice query error: {exc}")
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 async def handle_start(request: web.Request) -> web.Response:
     """
-    Start a voice bot session.
-
-    Expected JSON body:
-      { "room_url": "https://...", "token": "...", "profile_id": "uuid" }
+    Legacy /start endpoint — kept for backwards compatibility.
+    Creates a room and returns its URL.
     """
     try:
-        data = await request.json()
+        body = await request.json()
     except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        body = {}
 
-    room_url   = data.get("room_url")
-    token      = data.get("token")
-    profile_id = data.get("profile_id")
+    profile_id = body.get("profile_id", "")
 
-    if not room_url:
-        return web.json_response({"error": "room_url is required"}, status=400)
+    loop = asyncio.get_event_loop()
+    room = await loop.run_in_executor(None, create_daily_room)
 
-    # Fire and forget — the pipecat session is an asyncio task
-    asyncio.create_task(run_bot(room_url, token, profile_id))
+    if room:
+        logger.info(f"🚀 Voice session started for profile: {profile_id}")
+        return web.json_response({"status": "started", **room})
 
-    logger.info(f"🚀 Bot session dispatched for room: {room_url}")
-    return web.json_response({"status": "started", "room_url": room_url})
+    return web.json_response({"status": "started", "message": "Room creation skipped (no DAILY_API_KEY)"})
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── App setup ─────────────────────────────────────────────────────────────────
 
 def main():
     logger.remove()
-    logger.add(sys.stdout, level="INFO", colorize=True,
-               format="<green>{time:HH:mm:ss}</green> | <level>{level}</level> | {message}")
+    logger.add(
+        sys.stdout,
+        level="INFO",
+        colorize=True,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
+    )
 
     logger.info("=" * 60)
-    logger.info("🎙️  Voice Bot AI  —  pipecat 1.2.1")
-    logger.info(f"   Port       : {PORT}")
-    logger.info(f"   OpenAI     : {'✅' if OPENAI_API_KEY else '❌  OPENAI_API_KEY not set'}")
-    logger.info(f"   ElevenLabs : {'✅' if ELEVEN_LABS_API_KEY else '❌  ELEVEN_LABS_API_KEY not set'}")
-    logger.info(f"   Daily      : {'✅' if DAILY_API_KEY else '⚠️   DAILY_API_KEY not set (bot-start only via external URL)'}")
-    logger.info(f"   Supabase   : {'✅' if SUPABASE_URL else '⚠️   VITE_SUPABASE_URL not set'}")
+    logger.info("🎙️  Voice Bot AI Service starting")
+    logger.info(f"   Port        : {PORT}")
+    logger.info(f"   Daily.co    : {'✅' if DAILY_API_KEY   else '⚠️  DAILY_API_KEY not set'}")
+    logger.info(f"   Supabase    : {'✅' if SUPABASE_URL    else '⚠️  VITE_SUPABASE_URL not set'}")
+    logger.info(f"   ElevenLabs  : {'✅' if ELEVEN_LABS_API_KEY else '⚠️  ELEVEN_LABS_API_KEY not set'}")
+    logger.info(f"   OpenAI      : {'✅' if OPENAI_API_KEY  else '⚠️  OPENAI_API_KEY not set'}")
     logger.info("=" * 60)
 
     app = web.Application()
-    app.router.add_get( "/health",      handle_health)
-    app.router.add_post("/create-room", handle_create_room)
-    app.router.add_post("/start",       handle_start)
+    app.router.add_get( "/health",       handle_health)
+    app.router.add_post("/create-room",  handle_create_room)
+    app.router.add_post("/voice-query",  handle_voice_query)
+    app.router.add_post("/start",        handle_start)
 
     web.run_app(app, host="0.0.0.0", port=PORT, access_log=None)
 
