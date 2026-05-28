@@ -1,28 +1,9 @@
-# Build Stage (Auto-builds the React app just like Vercel does)
-FROM node:20-alpine as build
-WORKDIR /app
-
-# Install dependencies
-COPY package*.json ./
-RUN npm install
-
-# Copy source code
-COPY . .
-
-# Pass environment variables for Vite to bake into the build
-ARG VITE_SUPABASE_URL
-ARG VITE_SUPABASE_ANON_KEY
-ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
-ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
-
-# Build the app
-RUN npm run build
-
-# Production Stage (Nginx)
+# Use pre-built dist/ from the repo directly — no build step needed.
+# VITE_ variables are already baked into the committed dist/index.html.
+# This avoids the need to pass build args on the VPS.
 FROM nginx:stable-alpine
 
-# Copy the freshly built files from the previous stage
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY dist /usr/share/nginx/html
 
 # Custom Nginx config to handle React routing
 RUN echo 'server { \
