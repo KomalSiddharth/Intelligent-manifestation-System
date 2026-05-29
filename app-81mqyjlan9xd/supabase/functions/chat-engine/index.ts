@@ -1061,7 +1061,7 @@ Rule:
 
                     let merged: any[] = [];
 
-                    if (totalKbChunks && totalKbChunks <= 200) {
+                    if (totalKbChunks && totalKbChunks <= 40) {
                         console.log(`📚 [FAST-SUPPORT] Small KB (${totalKbChunks} chunks) — loading ALL for 100% recall`);
 
                         // Fetch all sources for title/url mapping
@@ -1612,11 +1612,15 @@ PERSONALIZATION:
         let routingDecision: RoutingDecision;
         const startTime = Date.now();
         if (useFastSupportPath) {
-            provider = 'openai';
-            selectedModel = 'gpt-4o-mini';
+            // ⚡ FAST SUPPORT: route to Cerebras llama-3.3-70b (~1000 tok/s) when a key is
+            // available — ~20x faster generation than gpt-4o-mini for the same FAQ answer.
+            // Falls back to gpt-4o-mini only if no Cerebras key is configured.
+            const hasCerebras = !!getNextKey('cerebras');
+            provider = hasCerebras ? 'cerebras' : 'openai';
+            selectedModel = hasCerebras ? 'llama-3.3-70b' : 'gpt-4o-mini';
             routingDecision = {
-                provider: 'openai',
-                model: 'gpt-4o-mini',
+                provider,
+                model: selectedModel,
                 intent: 'course_inquiry',
                 complexity: 2,
                 reasoning: 'Fast support FAQ path',
@@ -1624,7 +1628,7 @@ PERSONALIZATION:
                 isCritical: false,
                 routeSource: 'classified',
             };
-            console.log(`⚡ [FAST-SUPPORT] Skipping router — using ${selectedModel}`);
+            console.log(`⚡ [FAST-SUPPORT] Skipping router — using ${provider}/${selectedModel}`);
         } else if (useFastCoachingPath) {
             // ⚡ FAST COACH: First try fastLocalBypass (handles greetings/simple acks — 0 API calls),
             // then route directly to Cerebras llama-3.3-70b (~1000 tok/s) if key is available,
