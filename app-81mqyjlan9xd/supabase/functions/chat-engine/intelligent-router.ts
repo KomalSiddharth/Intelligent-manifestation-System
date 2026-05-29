@@ -649,10 +649,19 @@ export async function executeWithFallback(
                         "Content-Type": "application/json",
                         "x-api-key": getNextKey('anthropic') || "",
                         "anthropic-version": "2023-06-01",
+                        // Enable prompt caching — the large system prompt is cached for 5 min,
+                        // so repeat requests with the same system prompt skip re-processing it.
+                        "anthropic-beta": "prompt-caching-2024-07-31",
                     },
                     body: JSON.stringify({
                         model,
-                        system: messages.find(m => m.role === 'system')?.content || '',
+                        // System prompt sent as a cacheable block (cache_control: ephemeral).
+                        // Anthropic caches everything up to this breakpoint → cheaper + faster on repeat.
+                        system: [{
+                            type: "text",
+                            text: messages.find(m => m.role === 'system')?.content || '',
+                            cache_control: { type: "ephemeral" },
+                        }],
                         max_tokens: 4096,
                         messages: messages.filter(m => m.role !== 'system').map(m => ({
                             role: m.role === 'assistant' ? 'assistant' : 'user',

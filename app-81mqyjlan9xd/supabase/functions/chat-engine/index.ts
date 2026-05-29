@@ -251,7 +251,7 @@ async function checkSemanticCache(
     profileId: string,
     redisUrl: string | undefined,
     redisToken: string | undefined,
-    threshold = 0.92
+    threshold = 0.88
 ): Promise<{ text: string; sources: any[] } | null> {
     try {
         const res = await fetch(`${vectorUrl}/query`, {
@@ -789,6 +789,14 @@ serve(async (req) => {
         const featureFlags = (requestBody as any).featureFlags || {};
         const useFastCoachingPath = !useFastSupportPath && featureFlags['slow_mode'] !== true;
 
+        // Cache namespace — support answers are generic FAQ (shareable across all users), but
+        // coaching answers are personalized (user name/goals/history). So coaching MUST cache
+        // PER-USER, otherwise one user's personalized answer could be served to another user.
+        // Anonymous users have no personalization → they share one "anonymous" namespace.
+        const cacheNamespace = useFastCoachingPath
+            ? `${activeProfileId}::${chatUserId}`
+            : (activeProfileId || '');
+
         // ⚡ RESPONSE CACHE — for support bots, serve identical questions from Redis (24h TTL)
         // This skips embedding + KB load + OpenAI call entirely — fastest possible path.
         if (useFastSupportPath && redisUrl && redisToken && activeProfileId) {
@@ -883,7 +891,7 @@ serve(async (req) => {
                 // Returns instantly without touching the KB or OpenAI chat API.
                 if (vectorUrl && vectorToken && activeProfileId) {
                     const semHit = await checkSemanticCache(
-                        vectorUrl, vectorToken, queryEmbedding, activeProfileId,
+                        vectorUrl, vectorToken, queryEmbedding, cacheNamespace,
                         redisUrl, redisToken
                     );
                     if (semHit) {
@@ -929,8 +937,8 @@ serve(async (req) => {
                 // Catches paraphrases like "how do I stay motivated?" ≈ "tips to stay consistent?"
                 if (vectorUrl && vectorToken && activeProfileId) {
                     const semHit = await checkSemanticCache(
-                        vectorUrl, vectorToken, queryEmbedding, activeProfileId,
-                        redisUrl, redisToken, 0.93  // slightly stricter threshold for coaching
+                        vectorUrl, vectorToken, queryEmbedding, cacheNamespace,
+                        redisUrl, redisToken, 0.90  // per-user namespace, slightly stricter than support
                     );
                     if (semHit?.text) {
                         console.log(`🎯 [FAST-COACH-CACHE] HIT — "${query.slice(0, 60)}"`);
@@ -1472,6 +1480,25 @@ Rule:
                 "Never invent URLs. Copy enroll links exactly from the knowledge context.",
                 "For pricing, enrollment, course access, or FAQ questions, quote the matching FAQ text.",
             ].join("\n");
+        } else if (useFastCoachingPath) {
+            // ⚡ COMPACT RULESET — the 37 verbose BASE_INSTRUCTIONS condensed to 12 tight rules.
+            // Keeps every distinct behavior (coaching structure, linking, anti-hallucination,
+            // formatting, named rituals, edge cases) but cuts ~2500 tokens → ~300 tokens.
+            // Smaller prompt = faster Cerebras prefill (faster first token) + lower cost on every msg.
+            customInstructions = [
+                "You ARE Mitesh Khatri — a warm, world-class Transformational & Law of Attraction coach. Never break character; never invent facts about Mitesh's products.",
+                "COACHING FLOW: Briefly acknowledge the user's feeling/state first, give the quick WHY, then actionable steps. For 'I'm stuck' / 'what next?', run a mini breakthrough session.",
+                "80/20 KNOWLEDGE: Base ~80% of your answer on the KNOWLEDGE provided below (Mitesh's actual lessons); use ~20% general wisdom only to bridge gaps. Reference the specific lesson/technique by name.",
+                "LINKS: If a URL exists in the KNOWLEDGE, you MUST share it as a markdown link, e.g. [Lesson Name](url). NEVER invent or guess URLs or use placeholders — if none is present, say '(link unavailable)'.",
+                "NAMED TECHNIQUES: Prescribe specific named rituals/tools, not generic advice. E.g. 'The Mirror Technique', 'Ho'oponopono', 'Superbrain Yoga', 'The 5-Why Analysis', or tools like Canva/Shopify. Give step-by-step.",
+                "PHYSIOLOGY FIRST: For any fast state-change or 'fix', suggest a physical action first (movement, breathing, write-and-burn).",
+                "FORMATTING: Be scannable — bold headers, numbered steps with a blank line between each, no dense paragraphs. For long answers start with a bold '**TL;DR:**' line. Use a few relevant emojis (🚀💡🔥✨).",
+                "ACTIONABLE CLOSE: End with one specific 'Task for today' the user can act on immediately.",
+                "CONTEXT WEAVING: If the user mentions a location, industry, or personal detail, weave it into your advice — make it feel made-for-them, not generic.",
+                "NO CLICHÉS / NO FLUFF: Skip generic openers like 'Let's harness that energy' or 'Dive deep'. Get to value fast.",
+                "EDGE CASES: For suicide/self-harm, gently share the 988 Suicide & Crisis Lifeline (call/text 988, https://988lifeline.org). For medical/legal/financial specifics, recommend a licensed professional.",
+                "Address the user by name if it's known in the USER CONTEXT.",
+            ].join("\n");
         }
 
         if (knowledgeContext && knowledgeContext !== "No specific knowledge.") {
@@ -1503,10 +1530,27 @@ CUSTOM INSTRUCTIONS:
 ${customInstructions}
 
 CHAT HISTORY: Use recent messages only for context, not as a knowledge source.
+` : useFastCoachingPath ? `
+IDENTITY: Mitesh Khatri — Transformational Leadership & Law of Attraction Coach.
+YOU ARE Mitesh's Companion Coach. Warm, authoritative, genuinely transformative.
+${dynamicProfile ? `
+--- ADMIN OVERRIDES (HIGHEST PRIORITY) ---
+${dynamicProfile.purpose ? `PURPOSE: ${dynamicProfile.purpose}` : ''}
+${dynamicProfile.speaking_style ? `SPEAKING STYLE: ${dynamicProfile.speaking_style}` : ''}
+${dynamicProfile.instructions && dynamicProfile.instructions.length > 0 ? `PROFILE RULES:\n${dynamicProfile.instructions.map((i: string) => `- ${i}`).join('\n')}` : ''}
+` : ''}
+TONE: ${TONE_INSTRUCTION}
+
+LANGUAGE: ${LANGUAGE_INSTRUCTION}
+
+RULES (NON-NEGOTIABLE):
+${customInstructions}
+
+USER CONTEXT: ${userProfileParams || 'New user — no saved facts yet.'}
 ` : `
 IDENTITY:
         Transformational Leadership Coach & Law of Attraction Expert Empowering Millions.
-        
+
         YOUR MISSION:
         You are ** Mitesh’s Companion Coach **.
 
@@ -1782,7 +1826,7 @@ PERSONALIZATION:
                     ) {
                         storeSemanticCache(
                             vectorUrl, vectorToken, queryEmbedding,
-                            activeProfileId, query, fullResponse, sourceChunks,
+                            cacheNamespace, query, fullResponse, sourceChunks,
                             redisUrl, redisToken
                         ).catch((e) => console.warn("⚠️ [SEM-CACHE] Background write error:", e));
                     }
