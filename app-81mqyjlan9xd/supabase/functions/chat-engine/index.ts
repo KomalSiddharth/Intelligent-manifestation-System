@@ -1066,7 +1066,7 @@ Rule:
 
                     let merged: any[] = [];
 
-                    if (totalKbChunks && totalKbChunks <= 40) {
+                    if (totalKbChunks && totalKbChunks <= 200) {
                         console.log(`📚 [FAST-SUPPORT] Small KB (${totalKbChunks} chunks) — loading ALL for 100% recall`);
 
                         // Fetch all sources for title/url mapping
