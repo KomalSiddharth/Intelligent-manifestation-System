@@ -12,6 +12,11 @@ import {
     type ModelProvider
 } from "./intelligent-router.ts";
 
+// Cerebras chat model. Configurable via Supabase secret CEREBRAS_MODEL so the
+// exact model id can be changed without a code deploy (model ids/availability
+// vary by account tier). Default is the documented Llama 3.3 70B id.
+const CEREBRAS_MODEL = Deno.env.get("CEREBRAS_MODEL") || "llama-3.3-70b";
+
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -1617,7 +1622,7 @@ PERSONALIZATION:
             // Falls back to gpt-4o-mini only if no Cerebras key is configured.
             const hasCerebras = !!getNextKey('cerebras');
             provider = hasCerebras ? 'cerebras' : 'openai';
-            selectedModel = hasCerebras ? 'llama-3.3-70b' : 'gpt-4o-mini';
+            selectedModel = hasCerebras ? CEREBRAS_MODEL : 'gpt-4o-mini';
             routingDecision = {
                 provider,
                 model: selectedModel,
@@ -1642,7 +1647,7 @@ PERSONALIZATION:
             } else {
                 const hasCerebras = !!getNextKey('cerebras');
                 provider = hasCerebras ? 'cerebras' : 'openai';
-                selectedModel = hasCerebras ? 'llama-3.3-70b' : 'gpt-4o-mini';
+                selectedModel = hasCerebras ? CEREBRAS_MODEL : 'gpt-4o-mini';
                 routingDecision = {
                     provider: provider as ModelProvider,
                     model: selectedModel,
