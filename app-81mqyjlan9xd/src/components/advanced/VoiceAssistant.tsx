@@ -24,6 +24,38 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
 
     const callRef = useRef<DailyCall | null>(null);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+    // ──────────────────────────── Audio Attach Helper ────────────────────────────
+    const attachBotAudio = useCallback((track: MediaStreamTrack) => {
+        try {
+            // Method 1: AudioContext (most reliable, bypasses autoplay policy)
+            if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+                audioContextRef.current = new AudioContext();
+            }
+            const ctx = audioContextRef.current;
+            if (ctx.state === 'suspended') {
+                ctx.resume().catch(() => {});
+            }
+            if (audioSourceRef.current) {
+                audioSourceRef.current.disconnect();
+            }
+            const stream = new MediaStream([track]);
+            audioSourceRef.current = ctx.createMediaStreamSource(stream);
+            audioSourceRef.current.connect(ctx.destination);
+            console.log('🔊 Bot audio attached via AudioContext');
+
+            // Method 2: HTML Audio element fallback
+            const audioEl = document.getElementById('daily-remote-audio') as HTMLAudioElement;
+            if (audioEl) {
+                audioEl.srcObject = stream;
+                audioEl.play().catch(() => {});
+            }
+        } catch (e) {
+            console.warn('Audio attach error:', e);
+        }
+    }, []);
 
     // ──────────────────────────── Cleanup ────────────────────────────
     const cleanup = useCallback(async () => {
@@ -45,6 +77,16 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
         // Remove audio element
         const audioEl = document.getElementById('daily-remote-audio');
         if (audioEl) audioEl.remove();
+
+        // Close AudioContext
+        if (audioSourceRef.current) {
+            audioSourceRef.current.disconnect();
+            audioSourceRef.current = null;
+        }
+        if (audioContextRef.current) {
+            audioContextRef.current.close().catch(() => {});
+            audioContextRef.current = null;
+        }
 
         setIsConnected(false);
         setIsAISpeaking(false);
@@ -165,24 +207,10 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
             // Event: Track started (AI speaking) — PLAY AUDIO
             call.on('track-started', (event) => {
                 if (!event?.participant?.local && event?.track?.kind === 'audio') {
-                    console.log('🔊 Bot audio track started — attaching to audio element');
+                    console.log('🔊 Bot audio track started — attaching');
                     setIsAISpeaking(true);
                     setStatus('Mitesh is speaking...');
-
-                    // Explicitly play remote audio track
-                    try {
-                        const existingAudio = document.getElementById('daily-remote-audio') as HTMLAudioElement;
-                        if (existingAudio && event.track) {
-                            const stream = new MediaStream([event.track]);
-                            existingAudio.srcObject = stream;
-                            existingAudio.play().catch(e => {
-                                console.warn('Audio autoplay blocked, user interaction needed:', e);
-                            });
-                            console.log('🔊 Remote audio attached and playing');
-                        }
-                    } catch (e) {
-                        console.warn('Audio attach error:', e);
-                    }
+                    attachBotAudio(event.track);
                 }
             });
 
@@ -204,6 +232,15 @@ export function VoiceAssistant({ isOpen, onClose, userId }: VoiceAssistantProps)
                     setIsUserSpeaking(false);
                     setIsAISpeaking(true);
                     setStatus('Mitesh is speaking...');
+                    // Re-attach bot audio on every new speaking turn
+                    const participants = call.participants();
+                    const botEntry = Object.values(participants).find(
+                        (p: any) => !p.local && p.session_id === event.activeSpeaker?.peerId
+                    ) as any;
+                    const botAudioTrack = botEntry?.tracks?.audio?.track;
+                    if (botAudioTrack) {
+                        attachBotAudio(botAudioTrack);
+                    }
                 }
             });
 
