@@ -2,17 +2,9 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ============================================================
-// kajabi-import
-// One-time (and re-runnable) bulk import from Kajabi CSV exports.
-//
-// How to use:
-//   POST /functions/v1/kajabi-import
-//   Body: { type: "members", csv: "<raw CSV string>" }
-//   OR:   { type: "members", rows: [...parsed array] }
-//
-// Supported types:
-//   "members"  — from Kajabi People → Members → Export
-//   "courses"  — from Kajabi Products → Members/Progress export
+// kajabi-import  (v3 — batch mode, no per-row DB queries)
+// POST /functions/v1/kajabi-import
+// Body: { type: "members"|"courses", csv: "...", courseNameOverride: "..." }
 // ============================================================
 
 const corsHeaders = {
@@ -29,63 +21,56 @@ serve(async (req) => {
   );
 
   const body = await req.json().catch(() => ({}));
-  // courseNameOverride: pass the course name when exporting from within a specific
-  // Kajabi course page (those CSVs don't include a product/course name column)
   const { type = "members", csv, rows: preRows, courseNameOverride } = body;
 
   if (!csv && !preRows) {
-    return new Response(JSON.stringify({ error: "Provide 'csv' (raw string) or 'rows' (parsed array)" }), {
-      status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: "Provide 'csv' (raw string) or 'rows' (parsed array)" }),
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 
-  // Parse CSV if raw string provided
   const rows: Record<string, string>[] = preRows ?? parseCSV(csv);
+  console.log(`📥 [KAJABI-IMPORT] type=${type}, rows=${rows.length}, course="${courseNameOverride ?? "from CSV"}"`);
 
-  console.log(`📥 [KAJABI-IMPORT] type=${type}, rows=${rows.length}, courseOverride=${courseNameOverride ?? "none"}`);
-  // Debug: log column names from first row so we can verify CSV header mapping
   if (rows.length > 0) {
-    console.log(`📋 [KAJABI-IMPORT] CSV columns found: ${Object.keys(rows[0]).join(" | ")}`);
-    console.log(`📋 [KAJABI-IMPORT] First row sample: ${JSON.stringify(rows[0]).slice(0, 200)}`);
+    console.log(`📋 CSV columns: ${Object.keys(rows[0]).join(" | ")}`);
+    console.log(`📋 First row:   ${JSON.stringify(rows[0]).slice(0, 250)}`);
   }
 
   let imported = 0, updated = 0, errors = 0;
 
-  if (type === "members") {
-    for (const row of rows) {
-      try {
-        const result = await importMemberRow(supabase, row);
-        if (result === "created") imported++;
-        else if (result === "updated") updated++;
-      } catch (e: any) {
-        errors++;
-        console.error("❌ [IMPORT] Row error:", e.message, JSON.stringify(row).slice(0, 100));
-      }
+  try {
+    if (type === "members") {
+      const result = await batchImportMembers(supabase, rows);
+      imported = result.imported;
+      updated  = result.updated;
+      errors   = result.errors;
+
+    } else if (type === "courses") {
+      const result = await batchImportCourses(supabase, rows, courseNameOverride);
+      imported = result.imported;
+      errors   = result.errors;
+
+    } else {
+      return new Response(JSON.stringify({ error: `Unknown type: ${type}` }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
-  } else if (type === "courses") {
-    for (const row of rows) {
-      try {
-        const result = await importCourseProgressRow(supabase, row, courseNameOverride);
-        if (result) imported++;
-      } catch (e: any) {
-        errors++;
-        console.error("❌ [IMPORT] Course row error:", e.message);
-      }
-    }
-  } else {
-    return new Response(JSON.stringify({ error: `Unknown type: ${type}` }), {
-      status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+  } catch (e: any) {
+    console.error("❌ [KAJABI-IMPORT] Fatal error:", e.message);
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
-  // Log the import
   await supabase.from("kajabi_sync_log").insert({
     sync_type: "csv_import",
     event_type: type,
-    kajabi_payload: { total: rows.length, imported, updated, errors },
-    status: errors === rows.length ? "error" : "success",
+    kajabi_payload: { total: rows.length, imported, updated, errors, course: courseNameOverride },
+    status: errors > 0 && imported === 0 ? "error" : "success",
     members_affected: imported + updated,
-  });
+  }).catch(() => {});
 
   const summary = { type, total: rows.length, imported, updated, errors };
   console.log("✅ [KAJABI-IMPORT] Done:", summary);
@@ -95,19 +80,282 @@ serve(async (req) => {
   });
 });
 
-// ── Member row import ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// BATCH: Members import
+// ═══════════════════════════════════════════════════════════════
+async function batchImportMembers(
+  supabase: any,
+  rows: Record<string, string>[]
+): Promise<{ imported: number; updated: number; errors: number }> {
+
+  let imported = 0, updated = 0, errors = 0;
+
+  // Parse all rows
+  const parsed = rows.map(row => {
+    const email = pick(row, "Email","email","Email Address").trim().toLowerCase();
+    const name  = pick(row, "Name","Full Name","name","First Name").trim()
+      || (row["First Name"] ? `${row["First Name"]} ${row["Last Name"] ?? ""}`.trim() : "");
+    const phone    = pick(row, "Phone","phone","Mobile").trim();
+    const kajabiId = pick(row, "ID","id","Member ID","User ID").trim();
+    const joinDate = pick(row, "Created At","Join Date","Joined","created_at");
+    const status   = pick(row, "Status","Subscription Status","status").trim().toLowerCase() || "active";
+    const planTier = status.includes("active") ? "paid"
+      : status.includes("cancel") ? "cancelled"
+      : status.includes("trial")  ? "trial"
+      : "free";
+    return { email, name, phone, kajabiId, joinDate, planTier };
+  }).filter(r => r.email);
+
+  errors += rows.length - parsed.length;
+
+  // Batch fetch existing by email (chunks of 500)
+  const CHUNK = 500;
+  const emailToId = new Map<string, string>();
+
+  for (let i = 0; i < parsed.length; i += CHUNK) {
+    const chunk = parsed.slice(i, i + CHUNK);
+    const emails = chunk.map(r => r.email);
+    const { data } = await supabase
+      .from("audience_users")
+      .select("id, email, kajabi_user_id")
+      .in("email", emails);
+    (data ?? []).forEach((u: any) => emailToId.set(u.email.toLowerCase(), u.id));
+  }
+
+  // Separate into new vs existing
+  const toInsert = parsed.filter(r => !emailToId.has(r.email));
+  const toUpdate = parsed.filter(r =>  emailToId.has(r.email));
+
+  // Batch insert new members (chunks of 200)
+  for (let i = 0; i < toInsert.length; i += 200) {
+    const chunk = toInsert.slice(i, i + 200);
+    const { data, error } = await supabase
+      .from("audience_users")
+      .insert(chunk.map(r => ({
+        name:             r.name || r.email,
+        email:            r.email,
+        kajabi_user_id:   r.kajabiId  || null,
+        phone:            r.phone     || null,
+        plan_tier:        r.planTier,
+        status:           "active",
+        tags:             [],
+        message_count:    0,
+        kajabi_joined_at: r.joinDate ? new Date(r.joinDate).toISOString() : null,
+      })))
+      .select("id, email");
+
+    if (error) {
+      console.error(`❌ [MEMBERS] Insert chunk ${i} failed:`, error.message);
+      errors += chunk.length;
+    } else {
+      (data ?? []).forEach((u: any) => emailToId.set(u.email.toLowerCase(), u.id));
+      imported += data?.length ?? 0;
+    }
+  }
+
+  // Batch update existing members (one by one — updates need individual records)
+  // Only update the Kajabi-specific fields; don't overwrite user-entered data
+  let updateOk = 0;
+  for (const r of toUpdate) {
+    const id = emailToId.get(r.email);
+    if (!id) continue;
+    const { error } = await supabase
+      .from("audience_users")
+      .update({
+        kajabi_user_id:   r.kajabiId  || undefined,
+        phone:            r.phone     || undefined,
+        plan_tier:        r.planTier  || undefined,
+        kajabi_joined_at: r.joinDate ? new Date(r.joinDate).toISOString() : undefined,
+      })
+      .eq("id", id);
+    if (error) errors++;
+    else updateOk++;
+  }
+  updated = updateOk;
+
+  console.log(`✅ [MEMBERS] inserted=${imported}, updated=${updated}, errors=${errors}`);
+  return { imported, updated, errors };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BATCH: Course progress import
+// ═══════════════════════════════════════════════════════════════
+async function batchImportCourses(
+  supabase: any,
+  rows: Record<string, string>[],
+  courseNameOverride?: string
+): Promise<{ imported: number; errors: number }> {
+
+  // ── 1. Parse all rows ──────────────────────────────────────
+  type ParsedRow = {
+    email: string; memberName: string; courseName: string;
+    pct: number; productId: string; lastLesson: string;
+    purchasedAt: string; daysSinceActivity: number;
+  };
+
+  const parsed: ParsedRow[] = [];
+  let parseErrors = 0;
+
+  for (const row of rows) {
+    const email = pick(row,
+      "Email","email","Member Email","Email Address","Customer Email"
+    ).trim().toLowerCase();
+
+    // Kajabi course-member export uses "Product Progress"
+    const rawPct = pick(row,
+      "Product Progress","Progress","Completion","Completion %","progress"
+    ) || "0";
+    const pct = parseInt(String(rawPct).replace(/[^0-9]/g, "")) || 0;
+
+    const courseName = (courseNameOverride ||
+      pick(row, "Product","Course","Product Name","course_name")
+    ).trim();
+
+    if (!email || !courseName) { parseErrors++; continue; }
+
+    const memberName   = pick(row, "Name","Full Name","Member Name").trim();
+    const productId    = pick(row, "Product ID","product_id").trim();
+    const lastLesson   = pick(row, "Last Completed Post","Last Lesson","Last Lesson Title").trim();
+    const purchasedAt  = pick(row, "Enrolled At","Purchase Date","Start Date","start_date","purchased_at");
+
+    const lastActivityRaw = pick(row, "Last Activity At","last_activity_at","Last Active");
+    let daysSinceActivity = 0;
+    if (lastActivityRaw) {
+      const d = new Date(lastActivityRaw);
+      if (!isNaN(d.getTime())) {
+        daysSinceActivity = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+      }
+    }
+
+    parsed.push({ email, memberName, courseName, pct, productId, lastLesson, purchasedAt, daysSinceActivity });
+  }
+
+  if (parseErrors > 0) console.warn(`⚠️ [COURSES] ${parseErrors} rows skipped (no email/course)`);
+
+  const allEmails = [...new Set(parsed.map(r => r.email))];
+  console.log(`📧 [COURSES] Unique emails: ${allEmails.length}`);
+
+  // ── 2. Batch-fetch existing audience_users ─────────────────
+  const emailToId = new Map<string, string>();
+  const CHUNK = 500;
+
+  for (let i = 0; i < allEmails.length; i += CHUNK) {
+    const chunk = allEmails.slice(i, i + CHUNK);
+    const { data, error } = await supabase
+      .from("audience_users")
+      .select("id, email")
+      .in("email", chunk);
+    if (error) console.error(`❌ [COURSES] Fetch chunk ${i} failed:`, error.message);
+    (data ?? []).forEach((u: any) => emailToId.set(u.email.toLowerCase(), u.id));
+  }
+
+  console.log(`👥 [COURSES] Found ${emailToId.size} existing audience_users`);
+
+  // ── 3. Batch-INSERT missing audience_users ─────────────────
+  const missingEmails = allEmails.filter(e => !emailToId.has(e));
+  console.log(`➕ [COURSES] Need to create ${missingEmails.length} new audience_users`);
+
+  if (missingEmails.length > 0) {
+    // Build insert payload, include member name where available
+    const emailToName = new Map(parsed.map(r => [r.email, r.memberName]));
+
+    for (let i = 0; i < missingEmails.length; i += 200) {
+      const chunk = missingEmails.slice(i, i + 200);
+      const { data, error } = await supabase
+        .from("audience_users")
+        .insert(chunk.map(e => ({
+          name:          emailToName.get(e) || e,
+          email:         e,
+          status:        "active",
+          tags:          [],
+          message_count: 0,
+          plan_tier:     "paid",
+        })))
+        .select("id, email");
+
+      if (error) {
+        console.error(`❌ [COURSES] Create audience_users chunk ${i} failed:`, error.message);
+        // If insert fails, try to fetch — they might have been inserted by a parallel run
+        const { data: retry } = await supabase
+          .from("audience_users")
+          .select("id, email")
+          .in("email", chunk);
+        (retry ?? []).forEach((u: any) => emailToId.set(u.email.toLowerCase(), u.id));
+      } else {
+        (data ?? []).forEach((u: any) => emailToId.set(u.email.toLowerCase(), u.id));
+        console.log(`✅ [COURSES] Created ${data?.length ?? 0} audience_users (batch ${i})`);
+      }
+    }
+  }
+
+  // ── 4. Batch-UPSERT course progress ───────────────────────
+  const progressRows = parsed
+    .filter(r => emailToId.has(r.email))
+    .map(r => {
+      const audienceId = emailToId.get(r.email)!;
+      const productKey = r.productId || r.courseName.toLowerCase().replace(/\s+/g, "_");
+      const startedAt  = r.pct > 0 || r.purchasedAt
+        ? (r.purchasedAt ? new Date(r.purchasedAt).toISOString() : new Date().toISOString())
+        : null;
+      return {
+        audience_user_id:    audienceId,
+        course_name:         r.courseName,
+        kajabi_product_id:   productKey,
+        completion_pct:      r.pct,
+        has_access:          true,
+        last_lesson_title:   r.lastLesson || null,
+        days_since_activity: r.daysSinceActivity,
+        purchased_at:        r.purchasedAt ? new Date(r.purchasedAt).toISOString() : null,
+        started_at:          startedAt,
+        completed_at:        r.pct >= 100 ? new Date().toISOString() : null,
+      };
+    });
+
+  console.log(`📚 [COURSES] Upserting ${progressRows.length} course_progress rows`);
+
+  let imported = 0, upsertErrors = 0;
+
+  for (let i = 0; i < progressRows.length; i += 200) {
+    const chunk = progressRows.slice(i, i + 200);
+    const { data, error } = await supabase
+      .from("member_course_progress")
+      .upsert(chunk, { onConflict: "audience_user_id,kajabi_product_id" })
+      .select("id");
+
+    if (error) {
+      console.error(`❌ [COURSES] Upsert chunk ${i} failed:`, error.message);
+      upsertErrors += chunk.length;
+    } else {
+      imported += data?.length ?? chunk.length;
+    }
+  }
+
+  const skipped = parsed.length - progressRows.length;
+  console.log(`✅ [COURSES] imported=${imported}, skipped=${skipped + parseErrors}, errors=${upsertErrors}`);
+
+  return { imported, errors: upsertErrors + parseErrors + skipped };
+}
+
+// ── Utility: pick first non-empty value from multiple column name variants ──
+function pick(row: Record<string, string>, ...keys: string[]): string {
+  for (const k of keys) {
+    const v = row[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+  }
+  return "";
+}
+
+// ── Member row import (used by batchImportMembers internally) ──
 async function importMemberRow(
   supabase: any,
   row: Record<string, string>
 ): Promise<"created" | "updated" | "skipped"> {
-
-  // Kajabi CSV headers vary — handle common variations
-  const email    = (row["Email"] || row["email"] || row["Email Address"] || "").trim().toLowerCase();
-  const name     = (row["Name"] || row["Full Name"] || row["name"] || row["First Name"] + " " + row["Last Name"] || "").trim();
-  const phone    = (row["Phone"] || row["phone"] || row["Mobile"] || "").trim();
-  const kajabiId = (row["ID"] || row["id"] || row["Member ID"] || row["User ID"] || "").trim();
-  const joinDate = row["Created At"] || row["Join Date"] || row["Joined"] || row["created_at"] || "";
-  const status   = (row["Status"] || row["Subscription Status"] || "active").trim().toLowerCase();
+  const email    = pick(row, "Email","email","Email Address").trim().toLowerCase();
+  const name     = pick(row, "Name","Full Name","name","First Name").trim();
+  const phone    = pick(row, "Phone","phone","Mobile").trim();
+  const kajabiId = pick(row, "ID","id","Member ID","User ID").trim();
+  const joinDate = pick(row, "Created At","Join Date","Joined","created_at");
+  const status   = pick(row, "Status","Subscription Status","status").trim().toLowerCase() || "active";
 
   if (!email) return "skipped";
 
@@ -116,7 +364,6 @@ async function importMemberRow(
     : status.includes("trial")  ? "trial"
     : "free";
 
-  // Check existing
   const { data: existing } = await supabase
     .from("audience_users")
     .select("id, kajabi_user_id")
@@ -124,173 +371,31 @@ async function importMemberRow(
     .maybeSingle();
 
   if (existing) {
-    await supabase
-      .from("audience_users")
-      .update({
-        kajabi_user_id:   kajabiId || existing.kajabi_user_id,
-        name:             name || undefined,
-        phone:            phone || undefined,
-        plan_tier:        planTier,
-        kajabi_joined_at: joinDate ? new Date(joinDate).toISOString() : undefined,
-      })
-      .eq("id", existing.id);
+    await supabase.from("audience_users").update({
+      kajabi_user_id:   kajabiId || existing.kajabi_user_id,
+      name:             name     || undefined,
+      phone:            phone    || undefined,
+      plan_tier:        planTier,
+      kajabi_joined_at: joinDate ? new Date(joinDate).toISOString() : undefined,
+    }).eq("id", existing.id);
     return "updated";
   }
 
-  // New member
   await supabase.from("audience_users").insert({
     name:             name || email,
     email,
     kajabi_user_id:   kajabiId || null,
-    phone:            phone || null,
+    phone:            phone    || null,
     plan_tier:        planTier,
     status:           "active",
     tags:             [],
     message_count:    0,
     kajabi_joined_at: joinDate ? new Date(joinDate).toISOString() : null,
   });
-
   return "created";
 }
 
-// ── Course progress row import ────────────────────────────────
-async function importCourseProgressRow(
-  supabase: any,
-  row: Record<string, string>,
-  courseNameOverride?: string
-): Promise<boolean> {
-
-  // ── Parse fields — handle every known Kajabi header variant ──
-  // Email: try all known column names (Kajabi uses "Email" in product member exports)
-  const email = (
-    row["Email"] ?? row["email"] ?? row["Member Email"] ??
-    row["Email Address"] ?? row["Customer Email"] ?? ""
-  ).trim().toLowerCase();
-
-  // Course name from override (always provided for single-course exports) or CSV column
-  const courseName = (courseNameOverride ?? (
-    row["Product"] ?? row["Course"] ?? row["Product Name"] ?? row["course_name"] ?? ""
-  )).trim();
-
-  // Progress: Kajabi exports "20%" string or plain "20"
-  const rawPct      = (row["Progress"] ?? row["Completion"] ?? row["Completion %"] ?? row["progress"] ?? "0");
-  const completePct = parseInt(String(rawPct).replace(/[^0-9]/g, "")) || 0;
-
-  const productId  = (row["Product ID"] ?? row["product_id"] ?? "").trim();
-  const lastLesson = (row["Last Completed Post"] ?? row["Last Lesson"] ?? row["Last Lesson Title"] ?? "").trim();
-  const memberName = (row["Name"] ?? row["Full Name"] ?? row["Member Name"] ?? "").trim();
-
-  // Dates — Kajabi single-course export uses "Start Date"
-  const purchasedAt =
-    row["Enrolled At"] ?? row["Purchase Date"] ?? row["Start Date"] ??
-    row["start_date"]  ?? row["purchased_at"]  ?? "";
-
-  // Days since activity
-  const lastActivityRaw = row["Last Activity At"] ?? row["last_activity_at"] ?? row["Last Active"] ?? "";
-  let daysSinceActivity = 0;
-  if (lastActivityRaw) {
-    const d = new Date(lastActivityRaw);
-    if (!isNaN(d.getTime())) {
-      daysSinceActivity = Math.floor((Date.now() - d.getTime()) / 86_400_000);
-    }
-  }
-
-  if (!email) {
-    console.warn(`⚠️ [IMPORT] Skipping — no email. Row keys: ${Object.keys(row).join(", ")}`);
-    return false;
-  }
-  if (!courseName) {
-    console.warn(`⚠️ [IMPORT] Skipping — no course name. Pass courseNameOverride in request body.`);
-    return false;
-  }
-
-  // ── Find or create audience_user ──────────────────────────────
-  let audienceId: string | null = null;
-
-  const { data: existing, error: findErr } = await supabase
-    .from("audience_users")
-    .select("id")
-    .ilike("email", email)
-    .maybeSingle();
-
-  if (findErr) {
-    console.error(`❌ [IMPORT] Find audience_user failed for ${email}:`, findErr.message);
-  }
-
-  if (existing?.id) {
-    audienceId = existing.id;
-  } else {
-    // Plain INSERT — we already confirmed this email doesn't exist above
-    const { data: created, error: insertErr } = await supabase
-      .from("audience_users")
-      .insert({
-        name:          memberName || email,
-        email,
-        status:        "active",
-        tags:          [],
-        message_count: 0,
-        plan_tier:     "paid",
-      })
-      .select("id")
-      .single();
-
-    if (insertErr) {
-      // Duplicate email from a concurrent run — try to fetch the now-existing row
-      if (insertErr.code === "23505") {
-        const { data: retry } = await supabase
-          .from("audience_users")
-          .select("id")
-          .ilike("email", email)
-          .maybeSingle();
-        audienceId = retry?.id ?? null;
-      } else {
-        console.error(`❌ [IMPORT] Create audience_user failed for ${email}:`, insertErr.message);
-      }
-    } else {
-      audienceId = created?.id ?? null;
-    }
-  }
-
-  if (!audienceId) {
-    console.warn(`⚠️ [IMPORT] No audience_id for ${email} — skipping course upsert`);
-    return false;
-  }
-
-  // ── Upsert course progress ────────────────────────────────────
-  const productKey = productId || courseName.toLowerCase().replace(/\s+/g, "_");
-  const pct        = completePct;
-  const startedAt  = pct > 0 || purchasedAt
-    ? (purchasedAt ? new Date(purchasedAt).toISOString() : new Date().toISOString())
-    : null;
-
-  const { error: upsertErr } = await supabase
-    .from("member_course_progress")
-    .upsert(
-      {
-        audience_user_id:    audienceId,
-        course_name:         courseName,
-        kajabi_product_id:   productKey,
-        completion_pct:      pct,
-        has_access:          true,
-        last_lesson_title:   lastLesson || null,
-        days_since_activity: daysSinceActivity,
-        purchased_at:        purchasedAt ? new Date(purchasedAt).toISOString() : null,
-        started_at:          startedAt,
-        completed_at:        pct >= 100 ? new Date().toISOString() : null,
-      },
-      { onConflict: "audience_user_id,kajabi_product_id" }
-    );
-
-  if (upsertErr) {
-    console.error(`❌ [IMPORT] course_progress upsert failed for ${email}:`, upsertErr.message);
-    return false;
-  }
-
-  return true;
-}
-
 // ── Simple CSV parser ─────────────────────────────────────────
-// Handles quoted fields, commas inside quotes, CRLF line endings
 function parseCSV(csv: string): Record<string, string>[] {
   const lines = csv.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   if (lines.length < 2) return [];
@@ -308,7 +413,6 @@ function parseCSV(csv: string): Record<string, string>[] {
     });
     result.push(row);
   }
-
   return result;
 }
 
