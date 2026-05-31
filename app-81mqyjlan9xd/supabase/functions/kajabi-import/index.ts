@@ -43,6 +43,11 @@ serve(async (req) => {
   const rows: Record<string, string>[] = preRows ?? parseCSV(csv);
 
   console.log(`📥 [KAJABI-IMPORT] type=${type}, rows=${rows.length}, courseOverride=${courseNameOverride ?? "none"}`);
+  // Debug: log column names from first row so we can verify CSV header mapping
+  if (rows.length > 0) {
+    console.log(`📋 [KAJABI-IMPORT] CSV columns found: ${Object.keys(rows[0]).join(" | ")}`);
+    console.log(`📋 [KAJABI-IMPORT] First row sample: ${JSON.stringify(rows[0]).slice(0, 200)}`);
+  }
 
   let imported = 0, updated = 0, errors = 0;
 
@@ -152,97 +157,127 @@ async function importMemberRow(
 async function importCourseProgressRow(
   supabase: any,
   row: Record<string, string>,
-  courseNameOverride?: string   // pass when exporting from within a specific course
+  courseNameOverride?: string
 ): Promise<boolean> {
 
+  // ── Parse fields — handle every known Kajabi header variant ──
+  // Email: try all known column names (Kajabi uses "Email" in product member exports)
   const email = (
-    row["Email"] || row["email"] || row["Member Email"] || row["Email Address"] || ""
+    row["Email"] ?? row["email"] ?? row["Member Email"] ??
+    row["Email Address"] ?? row["Customer Email"] ?? ""
   ).trim().toLowerCase();
 
-  // Course name: from CSV column OR override param (for single-course exports)
-  const courseName = courseNameOverride || (
-    row["Product"] || row["Course"] || row["Product Name"] ||
-    row["course_name"] || row["Name"] || ""   // Kajabi sometimes uses "Name" for course
-  ).trim();
+  // Course name from override (always provided for single-course exports) or CSV column
+  const courseName = (courseNameOverride ?? (
+    row["Product"] ?? row["Course"] ?? row["Product Name"] ?? row["course_name"] ?? ""
+  )).trim();
 
   // Progress: Kajabi exports "20%" string or plain "20"
-  const rawPct    = row["Progress"] || row["Completion"] || row["Completion %"] || row["progress"] || "0";
-  const completePct = parseInt(rawPct.replace("%", ""));
+  const rawPct      = (row["Progress"] ?? row["Completion"] ?? row["Completion %"] ?? row["progress"] ?? "0");
+  const completePct = parseInt(String(rawPct).replace(/[^0-9]/g, "")) || 0;
 
-  const productId   = (row["Product ID"] || row["product_id"] || "").trim();
-  const lastLesson  = (row["Last Completed Post"] || row["Last Lesson"] || row["Last Lesson Title"] || "").trim();
-  const memberName  = (row["Name"] || row["Full Name"] || row["Member Name"] || "").trim();
+  const productId  = (row["Product ID"] ?? row["product_id"] ?? "").trim();
+  const lastLesson = (row["Last Completed Post"] ?? row["Last Lesson"] ?? row["Last Lesson Title"] ?? "").trim();
+  const memberName = (row["Name"] ?? row["Full Name"] ?? row["Member Name"] ?? "").trim();
 
-  // Kajabi's single-course export uses "Start Date"; bulk uses "Enrolled At" / "Purchase Date"
+  // Dates — Kajabi single-course export uses "Start Date"
   const purchasedAt =
-    row["Enrolled At"] || row["Purchase Date"] || row["Start Date"] ||
-    row["start_date"]  || row["purchased_at"]  || "";
+    row["Enrolled At"] ?? row["Purchase Date"] ?? row["Start Date"] ??
+    row["start_date"]  ?? row["purchased_at"]  ?? "";
 
-  // Last activity (for days_since_activity calculation)
-  const lastActivityRaw =
-    row["Last Activity At"] || row["last_activity_at"] || row["Last Active"] || "";
+  // Days since activity
+  const lastActivityRaw = row["Last Activity At"] ?? row["last_activity_at"] ?? row["Last Active"] ?? "";
   let daysSinceActivity = 0;
   if (lastActivityRaw) {
-    const lastActivityDate = new Date(lastActivityRaw);
-    if (!isNaN(lastActivityDate.getTime())) {
-      daysSinceActivity = Math.floor(
-        (Date.now() - lastActivityDate.getTime()) / (1000 * 60 * 60 * 24)
-      );
+    const d = new Date(lastActivityRaw);
+    if (!isNaN(d.getTime())) {
+      daysSinceActivity = Math.floor((Date.now() - d.getTime()) / 86_400_000);
     }
   }
 
-  if (!email || !courseName) {
-    console.warn(`⚠️ [IMPORT] Skipping row — missing email or course name. Email="${email}" Course="${courseName}"`);
+  if (!email) {
+    console.warn(`⚠️ [IMPORT] Skipping — no email. Row keys: ${Object.keys(row).join(", ")}`);
+    return false;
+  }
+  if (!courseName) {
+    console.warn(`⚠️ [IMPORT] Skipping — no course name. Pass courseNameOverride in request body.`);
     return false;
   }
 
-  // Find or auto-create audience user (so course import works standalone)
-  let { data: au } = await supabase
+  // ── Find or create audience_user ──────────────────────────────
+  let audienceId: string | null = null;
+
+  const { data: existing, error: findErr } = await supabase
     .from("audience_users")
     .select("id")
     .ilike("email", email)
     .maybeSingle();
 
-  if (!au) {
-    console.log(`➕ [IMPORT] Auto-creating member: ${email}`);
-    const { data: created } = await supabase
-      .from("audience_users")
-      .insert({
-        name:          memberName || email,
-        email,
-        status:        "active",
-        tags:          [],
-        message_count: 0,
-        plan_tier:     "paid",   // if they're in a course they're a paying member
-      })
-      .select("id")
-      .single();
-    au = created;
+  if (findErr) {
+    console.error(`❌ [IMPORT] Find audience_user failed for ${email}:`, findErr.message);
   }
 
-  if (!au?.id) return false;
+  if (existing?.id) {
+    audienceId = existing.id;
+  } else {
+    // Auto-create — upsert by email to handle race conditions / duplicate runs
+    const { data: created, error: insertErr } = await supabase
+      .from("audience_users")
+      .upsert(
+        {
+          name:          memberName || email,
+          email,
+          status:        "active",
+          tags:          [],
+          message_count: 0,
+          plan_tier:     "paid",
+        },
+        { onConflict: "email", ignoreDuplicates: false }
+      )
+      .select("id")
+      .single();
 
-  const pct = isNaN(completePct) ? 0 : completePct;
+    if (insertErr) {
+      console.error(`❌ [IMPORT] Create audience_user failed for ${email}:`, insertErr.message);
+    } else {
+      audienceId = created?.id ?? null;
+    }
+  }
+
+  if (!audienceId) {
+    console.warn(`⚠️ [IMPORT] No audience_id for ${email} — skipping course upsert`);
+    return false;
+  }
+
+  // ── Upsert course progress ────────────────────────────────────
   const productKey = productId || courseName.toLowerCase().replace(/\s+/g, "_");
+  const pct        = completePct;
   const startedAt  = pct > 0 || purchasedAt
     ? (purchasedAt ? new Date(purchasedAt).toISOString() : new Date().toISOString())
     : null;
 
-  await supabase.from("member_course_progress").upsert(
-    {
-      audience_user_id:    au.id,
-      course_name:         courseName,
-      kajabi_product_id:   productKey,
-      completion_pct:      pct,
-      has_access:          true,
-      last_lesson_title:   lastLesson || null,
-      days_since_activity: daysSinceActivity,
-      purchased_at:        purchasedAt ? new Date(purchasedAt).toISOString() : null,
-      started_at:          startedAt,
-      completed_at:        pct >= 100 ? new Date().toISOString() : null,
-    },
-    { onConflict: "audience_user_id,kajabi_product_id" }
-  );
+  const { error: upsertErr } = await supabase
+    .from("member_course_progress")
+    .upsert(
+      {
+        audience_user_id:    audienceId,
+        course_name:         courseName,
+        kajabi_product_id:   productKey,
+        completion_pct:      pct,
+        has_access:          true,
+        last_lesson_title:   lastLesson || null,
+        days_since_activity: daysSinceActivity,
+        purchased_at:        purchasedAt ? new Date(purchasedAt).toISOString() : null,
+        started_at:          startedAt,
+        completed_at:        pct >= 100 ? new Date().toISOString() : null,
+      },
+      { onConflict: "audience_user_id,kajabi_product_id" }
+    );
+
+  if (upsertErr) {
+    console.error(`❌ [IMPORT] course_progress upsert failed for ${email}:`, upsertErr.message);
+    return false;
+  }
 
   return true;
 }
