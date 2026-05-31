@@ -19,7 +19,6 @@ import {
     PhoneOff,
     Send,
     X,
-    MessageSquare,
     Instagram,
     Linkedin,
     Facebook,
@@ -31,7 +30,6 @@ import {
     Copy,
     RefreshCw,
     Share2,
-    Video,
     Volume2,
     Menu,
     LogOut,
@@ -1217,11 +1215,6 @@ const ChatPage = () => {
                         </div>
 
                         <div className="flex items-center gap-2">
-                            {!isSupportProfile && (
-                            <Button variant="ghost" size="icon" onClick={() => setVideoUrl('https://videos.heygen.ai/v1/realtime/...')}>
-                                <Video className="w-5 h-5 text-muted-foreground" />
-                            </Button>
-                            )}
                             <Button variant="ghost" size="icon" onClick={() => setIsCallOpen(true)}>
                                 <Phone className="w-5 h-5 text-muted-foreground" />
                             </Button>
@@ -1268,7 +1261,7 @@ const ChatPage = () => {
                                                 </div>
                                             )}
                                             <div className={cn(
-                                                "rounded-2xl px-5 py-3.5 text-[15px] leading-relaxed shadow-sm transition-all relative overflow-hidden",
+                                                "rounded-2xl px-5 py-3.5 text-[16px] leading-relaxed shadow-sm transition-all relative overflow-hidden",
                                                 msg.role === 'user'
                                                     ? "bg-gradient-to-br from-orange-500 to-red-600 text-white rounded-tr-none shadow-orange-500/20 font-medium"
                                                     : cn(
@@ -1281,25 +1274,6 @@ const ChatPage = () => {
                                                 ) : (
                                                     <>
                                                         <MarkdownRenderer content={msg.content} />
-                                                        {!isSupportProfile && msg.sources && msg.sources.length > 0 && (
-                                                            <details className="mt-3 text-xs border-t border-white/10 pt-2 mb-2">
-                                                                <summary className="opacity-70 cursor-pointer hover:opacity-100 transition-opacity font-medium flex items-center gap-1">
-                                                                    <div className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
-                                                                    {msg.sources.length} Sources Used
-                                                                </summary>
-                                                                <ul className="mt-2 space-y-1 pl-2">
-                                                                    {msg.sources.map((source: any, idx: number) => (
-                                                                        <li key={idx}>
-                                                                            <span className="font-bold text-orange-600 dark:text-orange-400">•</span>{' '}
-                                                                            {source.title}
-                                                                            <span className="opacity-60 ml-1">
-                                                                                (Match: {(source.similarity * 100).toFixed(0)}%)
-                                                                            </span>
-                                                                        </li>
-                                                                    ))}
-                                                                </ul>
-                                                            </details>
-                                                        )}
                                                         {msg.is_verified && (
                                                             <div className="mt-4 pt-2 border-t border-green-500/20 flex items-center justify-end">
                                                                 <div className="flex items-center gap-1.5 bg-green-500/10 dark:bg-green-500/20 px-2.5 py-1 rounded-full border border-green-500/20">
@@ -1418,7 +1392,7 @@ const ChatPage = () => {
                                         }
                                     }}
                                     placeholder={isProcessing ? "K is thinking..." : "Ask K anything..."}
-                                    className="min-h-[20px] max-h-[120px] w-full resize-none border-0 focus-visible:ring-0 bg-transparent py-3 px-2 text-[15px] placeholder:text-muted-foreground/70"
+                                    className="min-h-[20px] max-h-[120px] w-full resize-none border-0 focus-visible:ring-0 bg-transparent py-3 px-2 text-[16px] placeholder:text-muted-foreground/70"
                                 />
                                 <div className="flex items-center gap-1 pb-1">
                                     <VoiceControls
@@ -1441,103 +1415,19 @@ const ChatPage = () => {
                                 </div>
                             </div>
 
-                            {/* Action Bar (Below Input) — hidden for support/FAQ bots */}
+                            {/* Action Bar — Mind Map only */}
                             {!isSupportProfile && (
-                            <div className="max-w-3xl mx-auto mt-2 flex items-center justify-between px-2">
-                                <div className="flex gap-2">
-                                    <Button
-                                        onClick={() => setActionView(actionView === 'socials' ? 'main' : 'socials')}
-                                        variant="ghost"
-                                        size="sm"
-                                        className={cn("text-xs text-muted-foreground hover:bg-orange-50 hover:text-orange-600 gap-1 rounded-full", actionView === 'socials' && 'bg-orange-50 text-orange-600')}
-                                    >
-                                        <Globe className="w-3.5 h-3.5" />
-                                        Socials
-                                    </Button>
-                                    <Button
-                                        onClick={() => handleGenerateMindMap()}
-                                        variant="ghost"
-                                        size="sm"
-                                        className="text-xs text-muted-foreground hover:bg-orange-50 hover:text-orange-600 gap-1 rounded-full"
-                                    >
-                                        <Share2 className="w-3.5 h-3.5" />
-                                        Mind Map
-                                    </Button>
-                                    <Button
-                                        onClick={() => speak("Hello! This is a test to confirm that my voice is working correctly via Eleven Labs.", selectedProfile?.id, true)}
-                                        variant="ghost"
-                                        size="sm"
-                                        className="text-xs text-muted-foreground hover:bg-green-50 hover:text-green-600 gap-1 rounded-full"
-                                    >
-                                        <Volume2 className="w-3.5 h-3.5" />
-                                        Test Voice
-                                    </Button>
-                                </div>
+                            <div className="max-w-3xl mx-auto mt-2 flex items-center justify-center px-2">
                                 <Button
+                                    onClick={() => handleGenerateMindMap()}
                                     variant="ghost"
                                     size="sm"
-                                    onClick={() => setActionView('feedback')}
-                                    className="text-xs text-muted-foreground hover:text-foreground gap-1 rounded-full"
+                                    className="text-xs text-muted-foreground hover:bg-orange-50 hover:text-orange-600 gap-1 rounded-full"
                                 >
-                                    <MessageSquare className="w-3.5 h-3.5" />
-                                    Feedback
+                                    <Share2 className="w-3.5 h-3.5" />
+                                    Mind Map
                                 </Button>
                             </div>
-                            )}
-
-                            {/* Collapsible Action View */}
-                            {actionView === 'socials' && isActionCenterOpen && (
-                                <div className="max-w-3xl mx-auto mt-4 animate-in slide-in-from-bottom-2 fade-in duration-300">
-                                    <div className="glass rounded-xl p-4 grid grid-cols-2 sm:grid-cols-3 gap-3 border shadow-sm">
-                                        {SOCIAL_LINKS.map((link, idx) => (
-                                            <a
-                                                key={idx}
-                                                href={`https://${link.label.replace('@ ', '')}`}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="flex items-center gap-2 p-2 rounded-lg hover:bg-white/50 transition-colors group"
-                                            >
-                                                <link.icon className={cn("w-4 h-4", link.color)} />
-                                                <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground truncate">{link.label}</span>
-                                            </a>
-                                        ))}
-                                    </div>
-                                    <div className="p-4 text-center text-xs text-muted-foreground border-t">
-                                        Powered by ⌘ MiteshAI
-                                    </div>
-                                </div>
-                            )}
-
-                            {actionView === 'feedback' && (
-                                <div className="max-w-3xl mx-auto mt-4 animate-in slide-in-from-bottom-2 fade-in duration-300">
-                                    <div className="glass rounded-xl p-6 border shadow-sm space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <h3 className="font-semibold">Send Feedback</h3>
-                                            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setActionView('main')}>
-                                                <X className="w-4 h-4" />
-                                            </Button>
-                                        </div>
-                                        <p className="text-sm text-muted-foreground">
-                                            If you're experiencing any problems or have suggestions for improvement, please share your thoughts with us.
-                                        </p>
-                                        <div className="space-y-2">
-                                            <label className="text-sm font-medium">Subject</label>
-                                            <Input className="bg-white/50" placeholder="Brief summary" />
-                                        </div>
-                                        <div className="space-y-2">
-                                            <label className="text-sm font-medium">Content</label>
-                                            <Textarea className="min-h-[100px] bg-white/50 resize-none" placeholder="Describe your experience..." />
-                                        </div>
-                                        <div className="flex justify-end">
-                                            <Button className="bg-orange-600 hover:bg-orange-700 text-white rounded-full">
-                                                Submit Feedback
-                                            </Button>
-                                        </div>
-                                        <div className="text-center text-xs text-muted-foreground pt-2 border-t mt-4">
-                                            Powered by ⌘ MiteshAI
-                                        </div>
-                                    </div>
-                                </div>
                             )}
                         </div>
                     </div>

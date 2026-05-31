@@ -961,6 +961,26 @@ export const revokeAudienceAccess = async (id: string): Promise<void> => {
   if (error) throw error;
 };
 
+// Grant user access (restore from revoked)
+export const grantAudienceAccess = async (id: string): Promise<void> => {
+  const { error } = await supabase
+    .from('audience_users')
+    .update({ status: 'active' })
+    .eq('id', id);
+
+  if (error) throw error;
+};
+
+// Update tags for an audience user
+export const updateAudienceUserTags = async (id: string, tags: string[]): Promise<void> => {
+  const { error } = await supabase
+    .from('audience_users')
+    .update({ tags })
+    .eq('id', id);
+
+  if (error) throw error;
+};
+
 // Conversations API (Sessions)
 export const getSessions = async (userId: string, profileId?: string): Promise<Conversation[]> => {
   let query = supabase

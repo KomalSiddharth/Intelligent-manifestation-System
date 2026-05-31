@@ -2,6 +2,7 @@
 
 import os
 import json
+import asyncio
 from loguru import logger
 from dotenv import load_dotenv
 
@@ -46,6 +47,17 @@ try:
     from pipecat.services.openai.stt import OpenAISTTService
 except ImportError:
     from pipecat.services.openai import OpenAILLMService, OpenAISTTService
+
+# Deepgram streaming STT (~300ms) — replaces batch Whisper for low latency.
+try:
+    from pipecat.services.deepgram.stt import DeepgramSTTService
+except ImportError:
+    from pipecat.services.deepgram import DeepgramSTTService
+
+try:
+    from deepgram import LiveOptions
+except ImportError:
+    LiveOptions = None
 
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.network.fastapi_transport import FastAPIParams as DailyParams
@@ -126,7 +138,17 @@ def get_profile_info_sync(profile_id):
 async def handle_search_knowledge(function_name, tool_call_id, arguments, llm, context, result_callback):
     query = arguments.get("query", "")
     logger.info(f"FUNCTION CALL: search_knowledge_base('{query}')")
-    knowledge = fetch_knowledge_sync(query)
+    # Run the blocking embedding + Supabase call in a worker thread so the
+    # asyncio event loop (audio in/out) is NOT frozen while RAG runs.
+    # This was the main cause of the bot "freezing" / giving no response.
+    try:
+        knowledge = await asyncio.wait_for(
+            asyncio.to_thread(fetch_knowledge_sync, query),
+            timeout=6.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("RAG timed out after 6s — answering without knowledge")
+        knowledge = "Knowledge search timed out."
     logger.info(f"FUNCTION RESULT: {len(knowledge)} chars")
     await result_callback({"knowledge": knowledge})
 
@@ -161,8 +183,8 @@ transport_params = {
             params=SileroVADAnalyzer.InputParams(
                 threshold=0.6,
                 min_volume=0.5,
-                start_secs=0.4,
-                stop_secs=1.2,
+                start_secs=0.2,
+                stop_secs=0.8,
                 confidence=0.7,
             )
         ),
@@ -174,8 +196,8 @@ transport_params = {
             params=SileroVADAnalyzer.InputParams(
                 threshold=0.6,
                 min_volume=0.5,
-                start_secs=0.4,
-                stop_secs=1.2,
+                start_secs=0.2,
+                stop_secs=0.8,
                 confidence=0.7,
             )
         ),
@@ -232,10 +254,22 @@ VOICE CALL RULES:
 - Talk like chatting with a close friend who trusts you.
 - Use natural transitions: "Now here's the thing...", "And you know what?", "Let me share something with you..."."""
 
-    stt = OpenAISTTService(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        model="whisper-1",
-    )
+    # Deepgram streaming STT — nova-2 multilingual handles English/Hindi/Hinglish.
+    # interim_results + endpointing keep transcription finalizing fast.
+    if LiveOptions is not None:
+        stt = DeepgramSTTService(
+            api_key=os.getenv("DEEPGRAM_API_KEY"),
+            live_options=LiveOptions(
+                model="nova-2-general",
+                language="multi",
+                smart_format=True,
+                punctuate=True,
+                interim_results=True,
+                endpointing=300,
+            ),
+        )
+    else:
+        stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
     llm = OpenAILLMService(
         api_key=os.getenv("OPENAI_API_KEY"),

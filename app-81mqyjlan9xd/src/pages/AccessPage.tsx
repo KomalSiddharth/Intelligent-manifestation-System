@@ -1,8 +1,11 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Plus, Search, Filter as FilterIcon, Users, ExternalLink, Trash2, Brain, Ghost, Info, MessageSquare as ConvIcon } from 'lucide-react';
+import { Plus, Search, Filter as FilterIcon, Users, ExternalLink, Trash2, Brain, Ghost, Info, MessageSquare as ConvIcon, Ban, UserCheck, X, Tag as TagIcon } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import MainLayout from '@/components/layout/MainLayout';
 import AccessSidebar from '@/components/access/AccessSidebar';
 import UserTable from '@/components/access/UserTable';
@@ -19,6 +22,8 @@ import {
   deleteAudienceUsers,
   deleteAllAudienceUsers,
   revokeAudienceAccess,
+  grantAudienceAccess,
+  updateAudienceUserTags,
   updateMindProfile
 } from '@/db/api';
 import type { AudienceUser, MindProfile } from '@/types/types';
@@ -67,6 +72,14 @@ const AccessPage = () => {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [idToDelete, setIdToDelete] = useState<string | 'bulk' | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // User Detail Panel State
+  const [selectedUser, setSelectedUser] = useState<AudienceUser | null>(null);
+  const [panelTags, setPanelTags] = useState<string[]>([]);
+  const [newTagInput, setNewTagInput] = useState('');
+  const [tagsModified, setTagsModified] = useState(false);
+  const [isUpdatingAccess, setIsUpdatingAccess] = useState(false);
+  const [isSavingTags, setIsSavingTags] = useState(false);
 
   const { toast } = useToast();
 
@@ -220,6 +233,73 @@ const AccessPage = () => {
     }
   };
 
+  // ── User Detail Panel Handlers ────────────────────────────────────────────
+
+  const handleUserClick = (user: AudienceUser) => {
+    setSelectedUser(user);
+    setPanelTags(user.tags || []);
+    setNewTagInput('');
+    setTagsModified(false);
+  };
+
+  const handleGrantAccess = async (id: string) => {
+    setIsUpdatingAccess(true);
+    try {
+      await grantAudienceAccess(id);
+      toast({ title: 'Access Granted', description: 'User access has been restored.' });
+      setSelectedUser(prev => prev ? { ...prev, status: 'active' } : null);
+      fetchData();
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to grant access.', variant: 'destructive' });
+    } finally {
+      setIsUpdatingAccess(false);
+    }
+  };
+
+  const handleRevokeFromPanel = async (id: string) => {
+    setIsUpdatingAccess(true);
+    try {
+      await revokeAudienceAccess(id);
+      toast({ title: 'Access Revoked', description: 'User access has been revoked.' });
+      setSelectedUser(prev => prev ? { ...prev, status: 'revoked' } : null);
+      fetchData();
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to revoke access.', variant: 'destructive' });
+    } finally {
+      setIsUpdatingAccess(false);
+    }
+  };
+
+  const handleAddTag = (tag: string) => {
+    const trimmed = tag.trim();
+    if (trimmed && !panelTags.includes(trimmed)) {
+      setPanelTags(prev => [...prev, trimmed]);
+      setTagsModified(true);
+    }
+    setNewTagInput('');
+  };
+
+  const handleRemoveTag = (tag: string) => {
+    setPanelTags(prev => prev.filter(t => t !== tag));
+    setTagsModified(true);
+  };
+
+  const handleSaveTags = async () => {
+    if (!selectedUser) return;
+    setIsSavingTags(true);
+    try {
+      await updateAudienceUserTags(selectedUser.id, panelTags);
+      toast({ title: 'Tags Saved', description: 'User tags updated successfully.' });
+      setTagsModified(false);
+      setSelectedUser(prev => prev ? { ...prev, tags: panelTags } : null);
+      setUsers(prev => prev.map(u => u.id === selectedUser.id ? { ...u, tags: panelTags } : u));
+    } catch (error) {
+      toast({ title: 'Error', description: 'Failed to save tags.', variant: 'destructive' });
+    } finally {
+      setIsSavingTags(false);
+    }
+  };
+
   const renderContent = () => {
     if (activeSection === 'users') {
       return (
@@ -357,7 +437,7 @@ const AccessPage = () => {
               onSelectUser={handleSelectUser}
               onSelectAll={handleSelectAll}
               onDeleteUser={(id) => setIdToDelete(id)}
-              onRevokeUser={handleRevokeUser}
+              onUserClick={handleUserClick}
             />
           )}
           </>
@@ -592,6 +672,153 @@ const AccessPage = () => {
         open={isAddIntegrationDialogOpen}
         onOpenChange={setIsAddIntegrationDialogOpen}
       />
+
+      {/* User Detail Panel */}
+      <Sheet open={!!selectedUser} onOpenChange={(open) => !open && setSelectedUser(null)}>
+        <SheetContent className="w-[400px] sm:w-[480px] overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>User Details</SheetTitle>
+          </SheetHeader>
+
+          {selectedUser && (
+            <div className="mt-6 space-y-6">
+              {/* User Info */}
+              <div className="flex items-center gap-4">
+                <Avatar className="h-14 w-14">
+                  <AvatarFallback className="bg-primary/10 text-primary text-lg font-semibold">
+                    {selectedUser.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold text-lg leading-tight">{selectedUser.name}</h3>
+                  {selectedUser.email && (
+                    <p className="text-sm text-muted-foreground truncate">{selectedUser.email}</p>
+                  )}
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <Badge variant={selectedUser.status === 'revoked' ? 'destructive' : 'secondary'} className="text-xs capitalize">
+                      {selectedUser.status}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">{selectedUser.message_count.toLocaleString()} messages</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Dates */}
+              <div className="grid grid-cols-2 gap-4 p-4 bg-muted/30 rounded-lg text-sm">
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Joined</p>
+                  <p className="font-medium">
+                    {new Date(selectedUser.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Last Active</p>
+                  <p className="font-medium">
+                    {selectedUser.last_active
+                      ? new Date(selectedUser.last_active).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                      : 'Never'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Access Control */}
+              <div className="space-y-2">
+                <h4 className="text-sm font-semibold">Access Control</h4>
+                <div className="flex gap-2">
+                  {selectedUser.status === 'revoked' ? (
+                    <Button
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                      onClick={() => handleGrantAccess(selectedUser.id)}
+                      disabled={isUpdatingAccess}
+                    >
+                      <UserCheck className="w-4 h-4 mr-2" />
+                      {isUpdatingAccess ? 'Granting...' : 'Grant Access'}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      className="flex-1 border-orange-300 text-orange-600 hover:bg-orange-50 hover:border-orange-400"
+                      onClick={() => handleRevokeFromPanel(selectedUser.id)}
+                      disabled={isUpdatingAccess}
+                    >
+                      <Ban className="w-4 h-4 mr-2" />
+                      {isUpdatingAccess ? 'Revoking...' : 'Revoke Access'}
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    className="flex-1 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      setSelectedUser(null);
+                      setActiveSection('conversations');
+                    }}
+                  >
+                    <ConvIcon className="w-4 h-4 mr-2" />
+                    Conversations
+                  </Button>
+                </div>
+              </div>
+
+              {/* Tags */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-semibold flex items-center gap-2">
+                  <TagIcon className="w-4 h-4 text-muted-foreground" />
+                  Tags
+                </h4>
+                <div className="flex flex-wrap gap-2 min-h-[36px] p-3 bg-muted/20 rounded-lg border border-dashed">
+                  {panelTags.length > 0 ? (
+                    panelTags.map((tag, idx) => (
+                      <Badge key={idx} variant="secondary" className="gap-1 pl-2.5 pr-1 py-1 text-sm">
+                        {tag}
+                        <button
+                          onClick={() => handleRemoveTag(tag)}
+                          className="ml-1 rounded-full hover:bg-muted/60 p-0.5 transition-colors"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </Badge>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted-foreground">No tags yet. Add one below.</span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Input
+                    value={newTagInput}
+                    onChange={(e) => setNewTagInput(e.target.value)}
+                    placeholder="Type a tag and press Enter..."
+                    className="flex-1 h-9 text-sm"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (newTagInput.trim()) handleAddTag(newTagInput.trim());
+                      }
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-9"
+                    onClick={() => { if (newTagInput.trim()) handleAddTag(newTagInput.trim()); }}
+                    disabled={!newTagInput.trim()}
+                  >
+                    Add
+                  </Button>
+                </div>
+                {tagsModified && (
+                  <Button
+                    className="w-full bg-orange-600 hover:bg-orange-700 text-white"
+                    onClick={handleSaveTags}
+                    disabled={isSavingTags}
+                  >
+                    {isSavingTags ? 'Saving...' : 'Save Tags'}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={!!idToDelete} onOpenChange={(open) => !open && setIdToDelete(null)}>

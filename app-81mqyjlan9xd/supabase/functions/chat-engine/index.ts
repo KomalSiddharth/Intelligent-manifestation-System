@@ -835,6 +835,35 @@ serve(async (req) => {
             }
         }
 
+        // ── L1 PER-USER EXACT CACHE (coaching) ───────────────────────────────────
+        // Caches the full personalized coaching response per user for 30 min.
+        // Key includes chatUserId so User A never gets User B's personalized answer.
+        // TTL 30 min — short enough that updated user facts/KB still reach the user quickly.
+        if (!useFastSupportPath && redisUrl && redisToken && chatUserId && chatUserId !== 'anonymous' && activeProfileId) {
+            const l1CoachKey = `coach:resp:${activeProfileId}:${chatUserId}:${normalizeCacheKey(query)}`;
+            try {
+                const l1Res = await fetch(
+                    `${redisUrl}/get/${encodeURIComponent(l1CoachKey)}`,
+                    { headers: { Authorization: `Bearer ${redisToken}` } }
+                ).then(r => r.json());
+                if (l1Res.result) {
+                    const l1Cached = JSON.parse(l1Res.result);
+                    console.log(`⚡ [L1-COACH] HIT — "${query.slice(0, 50)}"`);
+                    const enc = new TextEncoder();
+                    return new Response(
+                        new ReadableStream({
+                            start(controller) {
+                                controller.enqueue(enc.encode(`data: ${JSON.stringify(l1Cached.text)}\n\n`));
+                                controller.enqueue(enc.encode(`data: [DONE]\n\n`));
+                                controller.close();
+                            }
+                        }),
+                        { headers: { "Content-Type": "text/event-stream", ...corsHeaders } }
+                    );
+                }
+            } catch (e) { /* ignore — cache miss is fine */ }
+        }
+
         const sessionHistory = await getSessionHistory(sessionId, chatUserId);
 
         let userProfileParams = "";
@@ -1125,49 +1154,83 @@ Rule:
                         console.log(`🧩 [FAST-SUPPORT] ${merged.length} chunks passed to model`);
                     }
                 } else if (useFastCoachingPath) {
-                    // ⚡ FAST COACH RAG: Single vector search, no GraphRAG LLM call (~400ms saved),
-                    // no per-chunk neighbor enrichment (~200ms saved), no reranking LLM call (~400ms saved).
-                    // Total saved here: ~1.0 second vs the full pipeline.
-                    console.log("⚡ [FAST-COACH] Single vector search (no GraphRAG / reranking)...");
+                    // ── L3: RETRIEVAL CACHE ──────────────────────────────────────────────────
+                    // Cache the RAG chunks (not the final answer). Chunks are query-based, not
+                    // user-specific, so they are safe to share across all users. Saves ~400ms
+                    // (vector search + formatting) on every cache hit.
+                    // Key: rag:r:{profileId}:{normalizedQuery}   TTL: 12 h
+                    const l3Key = `rag:r:${activeProfileId}:${normalizeCacheKey(query)}`;
+                    let l3Hit = false;
 
-                    const vectorSearchTasks: Promise<any>[] = [
-                        supabaseClient.rpc("match_knowledge", {
-                            query_embedding: queryEmbedding,
-                            match_threshold: 0.30,
-                            match_count: 8,
-                            p_profile_id: activeProfileId,
-                        }),
-                    ];
-
-                    // Also search global KB for MiteshAI profile (course index)
-                    if (!activeProfileId || activeProfileId === 'anonymous' || isMiteshAiProfile) {
-                        vectorSearchTasks.push(
-                            supabaseClient.rpc("match_knowledge", {
-                                query_embedding: queryEmbedding,
-                                match_threshold: 0.10,
-                                match_count: 6,
-                                p_profile_id: null,
-                            })
-                        );
+                    if (redisUrl && redisToken) {
+                        try {
+                            const l3Res = await fetch(
+                                `${redisUrl}/get/${encodeURIComponent(l3Key)}`,
+                                { headers: { Authorization: `Bearer ${redisToken}` } }
+                            ).then(r => r.json());
+                            if (l3Res.result) {
+                                knowledgeContext = l3Res.result;
+                                l3Hit = true;
+                                console.log(`⚡ [L3-RETRIEVAL] HIT — skipped vector search for "${query.slice(0, 50)}"`);
+                            }
+                        } catch (e) { console.warn("⚠️ [L3] Read error:", e); }
                     }
 
-                    const vectorSearchResults = await Promise.all(vectorSearchTasks);
-                    const fastChunks = dedupeChunks([
-                        ...(vectorSearchResults[0]?.data || []),
-                        ...(vectorSearchResults[1]?.data || []),
-                    ]).slice(0, 6);
+                    if (!l3Hit) {
+                        // ⚡ FAST COACH RAG: Single vector search, no GraphRAG LLM call (~400ms saved),
+                        // no per-chunk neighbor enrichment (~200ms saved), no reranking LLM call (~400ms saved).
+                        // Total saved here: ~1.0 second vs the full pipeline.
+                        console.log("⚡ [FAST-COACH] Single vector search (no GraphRAG / reranking)...");
 
-                    if (fastChunks.length > 0) {
-                        knowledgeContext = fastChunks.map(formatKnowledgeChunk).join("\n\n---\n\n");
-                        sourceChunks = fastChunks.map((c: any) => {
-                            const urls = extractUrlsFromText(c.content || "");
-                            return {
-                                title: c.source_title || 'Source',
-                                url: c.source_url || urls[0] || '',
-                                similarity: c.similarity || 0,
-                            };
-                        });
-                        console.log(`⚡ [FAST-COACH] ${fastChunks.length} RAG chunks ready`);
+                        const vectorSearchTasks: Promise<any>[] = [
+                            supabaseClient.rpc("match_knowledge", {
+                                query_embedding: queryEmbedding,
+                                match_threshold: 0.30,
+                                match_count: 8,
+                                p_profile_id: activeProfileId,
+                            }),
+                        ];
+
+                        // Also search global KB for MiteshAI profile (course index)
+                        if (!activeProfileId || activeProfileId === 'anonymous' || isMiteshAiProfile) {
+                            vectorSearchTasks.push(
+                                supabaseClient.rpc("match_knowledge", {
+                                    query_embedding: queryEmbedding,
+                                    match_threshold: 0.10,
+                                    match_count: 6,
+                                    p_profile_id: null,
+                                })
+                            );
+                        }
+
+                        const vectorSearchResults = await Promise.all(vectorSearchTasks);
+                        const fastChunks = dedupeChunks([
+                            ...(vectorSearchResults[0]?.data || []),
+                            ...(vectorSearchResults[1]?.data || []),
+                        ]).slice(0, 6);
+
+                        if (fastChunks.length > 0) {
+                            knowledgeContext = fastChunks.map(formatKnowledgeChunk).join("\n\n---\n\n");
+                            sourceChunks = fastChunks.map((c: any) => {
+                                const urls = extractUrlsFromText(c.content || "");
+                                return {
+                                    title: c.source_title || 'Source',
+                                    url: c.source_url || urls[0] || '',
+                                    similarity: c.similarity || 0,
+                                };
+                            });
+                            console.log(`⚡ [FAST-COACH] ${fastChunks.length} RAG chunks ready`);
+
+                            // ── L3 WRITE: Store retrieval result (fire-and-forget, 12 h TTL) ──
+                            if (redisUrl && redisToken && knowledgeContext) {
+                                fetch(`${redisUrl}/pipeline`, {
+                                    method: "POST",
+                                    headers: { Authorization: `Bearer ${redisToken}`, "Content-Type": "application/json" },
+                                    body: JSON.stringify([["SET", l3Key, knowledgeContext, "EX", 43200]])
+                                }).catch(e => console.warn("⚠️ [L3] Write error:", e));
+                                console.log(`⚡ [L3-RETRIEVAL] Cached chunks for "${query.slice(0, 50)}"`);
+                            }
+                        }
                     }
                 } else {
                 // PARALLEL: Vector Match + Graph Traversal
@@ -1506,18 +1569,30 @@ Rule:
             ].join("\n");
         }
 
+        // ── L4 PROMPT STRUCTURE: keep KB separate from static instructions ────────
+        // For coaching paths: knowledgeContext is appended at the END of the system
+        // prompt (after USER CONTEXT) so the static prefix —
+        //   IDENTITY + ADMIN_OVERRIDES + TONE + LANGUAGE + RULES + USER_CONTEXT
+        // — stays identical across requests from the same user, maximising OpenAI's
+        // automatic prompt-prefix caching (works on 1024+ token repeated prefixes).
+        // Support paths embed KB inside customInstructions (kept as before — the
+        // support L1 exact-response cache is cheaper than prompt restructuring there).
         if (knowledgeContext && knowledgeContext !== "No specific knowledge.") {
             if (useFastSupportPath) {
                 // Support bots must answer ONLY from the KB — no general AI knowledge allowed
                 customInstructions += `\n\n--- KNOWLEDGE BASE (YOUR ONLY SOURCE) ---\n${knowledgeContext}\n--- END OF KNOWLEDGE BASE ---\n\nCRITICAL RULES:\n1. Answer STRICTLY and ONLY from the knowledge base above.\n2. Do NOT use any general AI knowledge or training data to fill gaps.\n3. Do NOT invent or assume any facts not present above.\n4. If the answer is not found above, say exactly: "I don't have that information in my knowledge base. Please contact support for help."`;
-            } else {
-                customInstructions += `\n\nUSE THIS KNOWLEDGE TO ANSWER (80% WEIGHT): \n${knowledgeContext} `;
-                customInstructions += `\n\n(System Note: If the user's question isn't perfectly matched in the knowledge base, use the 'closest concept' from the knowledge above and frame it as: "While I don't have a lesson on exactly [Subject], this lesson on [Concept] will help..." AND PROVIDE THE LINK.)`;
             }
+            // Coaching paths: knowledgeContext kept as separate variable, added at
+            // end of systemPrompt below. Do NOT append here.
         } else if (useFastSupportPath) {
             // No matching KB content found — tell the bot to admit it rather than hallucinate
             customInstructions += `\n\nIMPORTANT: No matching information was found in the knowledge base for this query. You MUST respond: "I don't have that information in my knowledge base. Please contact support for assistance." Do NOT attempt to answer from general knowledge.`;
         }
+
+        // Build the knowledge section string used by coaching prompts (end of prompt = L4 win)
+        const coachingKbSection = (knowledgeContext && knowledgeContext !== "No specific knowledge.")
+            ? `\n\nKNOWLEDGE — BASE 80% OF YOUR ANSWER ON THIS (INCLUDE ALL LINKS):\n${knowledgeContext}\n\n(If the user's question isn't perfectly matched, use the closest concept and frame it as: "While I don't have a lesson on exactly [Subject], this lesson on [Concept] will help…" AND PROVIDE THE LINK.)`
+            : "";
 
         const systemPrompt = useFastSupportPath ? `
 IDENTITY: ${dynamicProfile?.name || "Support Assistant"} — customer support bot.
@@ -1552,6 +1627,7 @@ RULES (NON-NEGOTIABLE):
 ${customInstructions}
 
 USER CONTEXT: ${userProfileParams || 'New user — no saved facts yet.'}
+${coachingKbSection}
 ` : `
 IDENTITY:
         Transformational Leadership Coach & Law of Attraction Expert Empowering Millions.
@@ -1819,6 +1895,17 @@ PERSONALIZATION:
                             body: JSON.stringify([['SET', cacheKey, JSON.stringify({ text: fullResponse, sources: sourceChunks }), 'EX', 86400]])
                         }).catch(e => console.warn("⚠️ [RESP-CACHE] Write error:", e));
                         console.log(`⚡ [RESP-CACHE] Stored response for "${query.slice(0, 40)}"`);
+                    }
+
+                    // ── L1 COACHING CACHE WRITE (30 min per-user) ──────────────────────────
+                    if (useFastCoachingPath && fullResponse && !fullResponse.startsWith('Error:') && redisUrl && redisToken && chatUserId && chatUserId !== 'anonymous' && activeProfileId) {
+                        const l1CoachKey = `coach:resp:${activeProfileId}:${chatUserId}:${normalizeCacheKey(query)}`;
+                        fetch(`${redisUrl}/pipeline`, {
+                            method: 'POST',
+                            headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify([['SET', l1CoachKey, JSON.stringify({ text: fullResponse }), 'EX', 1800]])
+                        }).catch(e => console.warn("⚠️ [L1-COACH] Write error:", e));
+                        console.log(`⚡ [L1-COACH] Stored coaching response for user "${chatUserId.slice(0, 8)}…"`);
                     }
 
                     // ── LAYER 2 WRITE: Semantic cache ──────────────────────────────────
