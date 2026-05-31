@@ -64,13 +64,15 @@ serve(async (req) => {
     });
   }
 
-  await supabase.from("kajabi_sync_log").insert({
-    sync_type: "csv_import",
-    event_type: type,
-    kajabi_payload: { total: rows.length, imported, updated, errors, course: courseNameOverride },
-    status: errors > 0 && imported === 0 ? "error" : "success",
-    members_affected: imported + updated,
-  }).catch(() => {});
+  try {
+    await supabase.from("kajabi_sync_log").insert({
+      sync_type: "csv_import",
+      event_type: type,
+      kajabi_payload: { total: rows.length, imported, updated, errors, course: courseNameOverride },
+      status: errors > 0 && imported === 0 ? "error" : "success",
+      members_affected: imported + updated,
+    });
+  } catch (_) { /* non-critical — don't fail the whole import */ }
 
   const summary = { type, total: rows.length, imported, updated, errors };
   console.log("✅ [KAJABI-IMPORT] Done:", summary);
