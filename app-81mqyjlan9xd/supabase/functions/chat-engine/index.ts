@@ -826,12 +826,17 @@ serve(async (req) => {
         async function getMemberBrief(userId: string): Promise<string> {
             if (!userId || userId === 'anonymous') return "";
             try {
+                console.log(`🔍 [MEMBER BRIEF] Looking up userId: ${userId}`);
+
                 // Step 1: resolve audience_users.id from the auth user_id
-                const { data: au } = await supabaseClient
+                const { data: au, error: auErr } = await supabaseClient
                     .from("audience_users")
                     .select("id")
                     .eq("user_id", userId)
                     .maybeSingle();
+
+                if (auErr) console.error(`❌ [MEMBER BRIEF] audience_users lookup error:`, auErr.message);
+                console.log(`👤 [MEMBER BRIEF] audience_user found: ${au?.id ?? "NOT FOUND"}`);
 
                 if (!au?.id) return "";  // user not in audience (no Kajabi data yet)
 
@@ -858,6 +863,7 @@ serve(async (req) => {
                         .gte("session_date", cutoffDate),
                 ]);
 
+                console.log(`📚 [MEMBER BRIEF] courses found: ${courses?.length ?? 0}, attendance: ${attendance?.length ?? 0}`);
                 if (!courses || courses.length === 0) return "";
 
                 // Step 3: format course lines
@@ -880,7 +886,9 @@ serve(async (req) => {
                 const dmpCount = attendance?.length ?? 0;
                 const dmpLine = dmpCount > 0 ? `\nDMP: ${dmpCount}/30 sessions last 30 days` : "";
 
-                return `\nMEMBER BRIEF:\n${courseLines.join("\n")}${dmpLine}`;
+                const brief = `\nMEMBER BRIEF:\n${courseLines.join("\n")}${dmpLine}`;
+                console.log(`✅ [MEMBER BRIEF] Injecting:`, brief.slice(0, 200));
+                return brief;
             } catch (e: any) {
                 console.warn("⚠️ [MEMBER BRIEF] Failed to fetch:", e.message);
                 return "";
