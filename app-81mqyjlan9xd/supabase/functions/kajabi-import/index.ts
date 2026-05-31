@@ -220,25 +220,32 @@ async function importCourseProgressRow(
   if (existing?.id) {
     audienceId = existing.id;
   } else {
-    // Auto-create — upsert by email to handle race conditions / duplicate runs
+    // Plain INSERT — we already confirmed this email doesn't exist above
     const { data: created, error: insertErr } = await supabase
       .from("audience_users")
-      .upsert(
-        {
-          name:          memberName || email,
-          email,
-          status:        "active",
-          tags:          [],
-          message_count: 0,
-          plan_tier:     "paid",
-        },
-        { onConflict: "email", ignoreDuplicates: false }
-      )
+      .insert({
+        name:          memberName || email,
+        email,
+        status:        "active",
+        tags:          [],
+        message_count: 0,
+        plan_tier:     "paid",
+      })
       .select("id")
       .single();
 
     if (insertErr) {
-      console.error(`❌ [IMPORT] Create audience_user failed for ${email}:`, insertErr.message);
+      // Duplicate email from a concurrent run — try to fetch the now-existing row
+      if (insertErr.code === "23505") {
+        const { data: retry } = await supabase
+          .from("audience_users")
+          .select("id")
+          .ilike("email", email)
+          .maybeSingle();
+        audienceId = retry?.id ?? null;
+      } else {
+        console.error(`❌ [IMPORT] Create audience_user failed for ${email}:`, insertErr.message);
+      }
     } else {
       audienceId = created?.id ?? null;
     }
