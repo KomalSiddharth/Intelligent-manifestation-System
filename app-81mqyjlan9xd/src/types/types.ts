@@ -32,6 +32,32 @@ export interface AudienceUser {
   user_id: string | null;
   profile_id: string | null;
   created_at: string;
+  // Kajabi unified memory fields
+  kajabi_user_id: string | null;
+  phone: string | null;
+  plan_tier: string | null;
+  lifetime_value: number | null;
+  kajabi_joined_at: string | null;
+}
+
+export interface MemberCourseProgress {
+  id: string;
+  audience_user_id: string;
+  user_id: string | null;
+  profile_id: string | null;
+  course_name: string;
+  kajabi_product_id: string | null;
+  completion_pct: number;
+  has_access: boolean;
+  last_lesson_title: string | null;
+  lessons_completed: number;
+  total_lessons: number | null;
+  days_since_activity: number;
+  purchased_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Conversation {

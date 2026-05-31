@@ -822,12 +822,81 @@ serve(async (req) => {
             return data || [];
         }
 
-        // D.2 Build Profile Prompt (Now with Persona Vibe)
-        async function buildProfilePrompt(userId: string, profileId?: string) {
-            const facts = await getLatestFacts(userId, undefined, profileId);
-            if (Object.keys(facts).length === 0) return "";
+        // D.2 Build Profile Prompt (Now with Persona Vibe + Member Brief)
+        async function getMemberBrief(userId: string): Promise<string> {
+            if (!userId || userId === 'anonymous') return "";
+            try {
+                // Step 1: resolve audience_users.id from the auth user_id
+                const { data: au } = await supabaseClient
+                    .from("audience_users")
+                    .select("id")
+                    .eq("user_id", userId)
+                    .maybeSingle();
 
-            const parts = [];
+                if (!au?.id) return "";  // user not in audience (no Kajabi data yet)
+
+                const audienceId = au.id;
+
+                // Step 2: fetch course progress rows in parallel with DMP attendance
+                const thirtyDaysAgo = new Date();
+                thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+                const cutoffDate = thirtyDaysAgo.toISOString().split("T")[0];
+
+                const [{ data: courses }, { data: attendance }] = await Promise.all([
+                    supabaseClient
+                        .from("member_course_progress")
+                        .select("course_name, completion_pct, has_access, last_lesson_title, days_since_activity, purchased_at, started_at, completed_at")
+                        .eq("audience_user_id", audienceId)
+                        .eq("has_access", true)
+                        .order("updated_at", { ascending: false })
+                        .limit(10),
+                    supabaseClient
+                        .from("member_attendance")
+                        .select("session_date")
+                        .eq("audience_user_id", audienceId)
+                        .eq("session_type", "DMP")
+                        .gte("session_date", cutoffDate),
+                ]);
+
+                if (!courses || courses.length === 0) return "";
+
+                // Step 3: format course lines
+                const courseLines = courses.map((c: any) => {
+                    const pct = c.completion_pct ?? 0;
+                    const name = c.course_name ?? "Unknown Course";
+                    const daysSince = c.days_since_activity != null ? c.days_since_activity : null;
+                    const activityNote = daysSince != null && pct > 0 && pct < 100
+                        ? ` (last activity ${daysSince}d ago)`
+                        : "";
+
+                    if (pct >= 100)      return `✅ ${name} — 100% complete`;
+                    if (pct > 0)         return `⏳ ${name} — ${pct}%${activityNote}`;
+                    if (c.started_at)    return `⏳ ${name} — <1% started`;
+                    if (c.purchased_at)  return `❌ ${name} — purchased, not started`;
+                    return `📦 ${name} — enrolled`;
+                });
+
+                // Step 4: DMP attendance summary
+                const dmpCount = attendance?.length ?? 0;
+                const dmpLine = dmpCount > 0 ? `\nDMP: ${dmpCount}/30 sessions last 30 days` : "";
+
+                return `\nMEMBER BRIEF:\n${courseLines.join("\n")}${dmpLine}`;
+            } catch (e: any) {
+                console.warn("⚠️ [MEMBER BRIEF] Failed to fetch:", e.message);
+                return "";
+            }
+        }
+
+        async function buildProfilePrompt(userId: string, profileId?: string) {
+            const [facts, memberBrief] = await Promise.all([
+                getLatestFacts(userId, undefined, profileId),
+                getMemberBrief(userId),
+            ]);
+
+            const hasFacts = Object.keys(facts).length > 0;
+            if (!hasFacts && !memberBrief) return "";
+
+            const parts: string[] = [];
             const keyOrder = ["name", "age", "location", "goal", "emotional_state", "personality_vibe", "preference", "habit"];
 
             for (const key of keyOrder) {
@@ -844,7 +913,8 @@ serve(async (req) => {
                 }
             }
 
-            return "USER IDENTITY & VIBE: " + parts.join(" | ");
+            const identityLine = parts.length > 0 ? "USER IDENTITY & VIBE: " + parts.join(" | ") : "";
+            return identityLine + memberBrief;
         }
 
         // E. Get Session History (Now with Cross-Session Continuity)
