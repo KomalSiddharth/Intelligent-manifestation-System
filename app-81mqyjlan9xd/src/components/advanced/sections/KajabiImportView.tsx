@@ -212,32 +212,40 @@ const KajabiImportView = () => {
                     <CardContent className="pt-4">
                         <div className="flex items-center gap-2 mb-3">
                             <CheckCircle className="w-5 h-5 text-green-600" />
-                            <span className="font-medium text-green-800">Import Complete</span>
+                            <span className="font-medium text-green-800">
+                                Import Complete — {result.type === 'courses' ? result.courseName || courseName : 'Members'}
+                            </span>
                         </div>
                         <div className="grid grid-cols-4 gap-2 text-center">
-                            <div className="bg-white rounded-lg p-2">
-                                <p className="text-lg font-bold">{result.total}</p>
-                                <p className="text-xs text-muted-foreground">Total rows</p>
+                            {/* total: use API value, fallback to sum of all outcomes */}
+                            <div className="bg-white rounded-lg p-3">
+                                <p className="text-2xl font-bold">
+                                    {(result.total > 0 ? result.total : (result.imported + (result.updated ?? 0) + result.errors)).toLocaleString()}
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-1">Total rows</p>
                             </div>
-                            <div className="bg-white rounded-lg p-2">
-                                <p className="text-lg font-bold text-green-600">{result.imported}</p>
-                                <p className="text-xs text-muted-foreground">New</p>
+                            <div className="bg-white rounded-lg p-3">
+                                <p className="text-2xl font-bold text-green-600">{result.imported.toLocaleString()}</p>
+                                <p className="text-xs text-muted-foreground mt-1">✅ Saved</p>
                             </div>
-                            <div className="bg-white rounded-lg p-2">
-                                <p className="text-lg font-bold text-blue-600">{result.updated}</p>
-                                <p className="text-xs text-muted-foreground">Updated</p>
+                            <div className="bg-white rounded-lg p-3">
+                                <p className="text-2xl font-bold text-blue-600">{(result.updated ?? 0).toLocaleString()}</p>
+                                <p className="text-xs text-muted-foreground mt-1">🔄 Updated</p>
                             </div>
-                            <div className="bg-white rounded-lg p-2">
-                                <p className="text-lg font-bold text-red-500">{result.errors}</p>
-                                <p className="text-xs text-muted-foreground">Errors</p>
+                            <div className="bg-white rounded-lg p-3">
+                                <p className="text-2xl font-bold text-red-500">{result.errors.toLocaleString()}</p>
+                                <p className="text-xs text-muted-foreground mt-1">❌ Skipped</p>
                             </div>
                         </div>
                         {result.errors > 0 && (
                             <p className="text-xs text-orange-600 mt-2 flex items-center gap-1">
                                 <AlertCircle className="w-3 h-3" />
-                                Some rows had errors — usually missing email. Rest imported fine.
+                                Skipped rows usually have no email address — everything else imported fine.
                             </p>
                         )}
+                        <p className="text-xs text-green-700 mt-3 font-medium">
+                            🧠 MiteshAI will now see this course data when talking to these members.
+                        </p>
                     </CardContent>
                 </Card>
             )}
