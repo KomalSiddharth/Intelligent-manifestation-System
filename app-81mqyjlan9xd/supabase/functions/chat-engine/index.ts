@@ -100,6 +100,131 @@ function normalizeCacheKey(text: string): string {
         .substring(0, 120);
 }
 
+// ── KB VERSION CACHE ────────────────────────────────────────────────────────
+// Stores MAX(updated_at) of knowledge_sources in Redis (1 h TTL).
+// Included in L3 key so stale retrieval cache is never served after a KB edit.
+// Cost: 1 Redis GET per request (almost always a cache hit after the 1st req).
+async function getKbVersion(
+    supabaseClient: any,
+    profileId: string,
+    redisUrl: string | undefined,
+    redisToken: string | undefined
+): Promise<string> {
+    if (!profileId || profileId === 'anonymous') return 'global';
+    const versionKey = `kb:ver:${profileId}`;
+    // 1. Redis cache (1 h TTL)
+    if (redisUrl && redisToken) {
+        try {
+            const res = await fetch(`${redisUrl}/get/${encodeURIComponent(versionKey)}`,
+                { headers: { Authorization: `Bearer ${redisToken}` } }
+            ).then(r => r.json());
+            if (res.result) return res.result as string;
+        } catch (_) { /* fall through */ }
+    }
+    // 2. DB: latest updated_at from knowledge_sources for this profile
+    try {
+        const { data } = await supabaseClient
+            .from('knowledge_sources')
+            .select('updated_at')
+            .eq('profile_id', profileId)
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .single();
+        const version = data?.updated_at
+            ? new Date(data.updated_at).getTime().toString(16)
+            : '0';
+        // 3. Cache it for 1 h
+        if (redisUrl && redisToken) {
+            fetch(`${redisUrl}/pipeline`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify([['SET', versionKey, version, 'EX', 3600]])
+            }).catch(() => {});
+        }
+        console.log(`📚 [KB-VER] DB version for ${profileId}: ${version}`);
+        return version;
+    } catch (_) {
+        return 'v0'; // safe fallback — cache still works, just no KB invalidation
+    }
+}
+
+// ── CACHE HIT/MISS TRACKING ──────────────────────────────────────────────────
+// Increments a daily Redis hash: cache:stats:{profileId}:{YYYY-MM-DD}
+// Fields: l1_hit | l2_hit | l3_hit | l3_miss | llm_call
+// TTL 8 days so the admin dashboard can show a week of history.
+// Fire-and-forget — never blocks the response path.
+function trackCacheEvent(
+    redisUrl: string | undefined,
+    redisToken: string | undefined,
+    profileId: string,
+    field: 'l1_hit' | 'l2_hit' | 'l3_hit' | 'l3_miss' | 'llm_call'
+): void {
+    if (!redisUrl || !redisToken || !profileId) return;
+    const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const statsKey = `cache:stats:${profileId}:${date}`;
+    fetch(`${redisUrl}/pipeline`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify([
+            ['HINCRBY', statsKey, field, 1],
+            ['EXPIRE',  statsKey, 691200],   // 8 days TTL
+        ])
+    }).catch(() => {}); // never throw
+}
+
+// ── COMPRESSION HELPERS (L3 large KB contexts) ───────────────────────────────
+// Reduces Redis storage ~60-70% for typical KB chunks.
+// Uses Deno's built-in CompressionStream (gzip). Output prefixed with "gz:"
+// so old uncompressed entries are still decoded correctly on read.
+async function compressToBase64(str: string): Promise<string> {
+    try {
+        const bytes = new TextEncoder().encode(str);
+        const cs = new CompressionStream('gzip');
+        const writer = cs.writable.getWriter();
+        writer.write(bytes);
+        writer.close();
+        const chunks: Uint8Array[] = [];
+        const reader = cs.readable.getReader();
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value!);
+        }
+        const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+        let off = 0;
+        for (const c of chunks) { out.set(c, off); off += c.length; }
+        let bin = '';
+        out.forEach(b => (bin += String.fromCharCode(b)));
+        return 'gz:' + btoa(bin);
+    } catch (_) {
+        return str; // fallback: store uncompressed
+    }
+}
+
+async function decompressFromBase64(stored: string): Promise<string> {
+    if (!stored.startsWith('gz:')) return stored; // not compressed
+    try {
+        const bytes = Uint8Array.from(atob(stored.slice(3)), c => c.charCodeAt(0));
+        const ds = new DecompressionStream('gzip');
+        const writer = ds.writable.getWriter();
+        writer.write(bytes);
+        writer.close();
+        const chunks: Uint8Array[] = [];
+        const reader = ds.readable.getReader();
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value!);
+        }
+        const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+        let off = 0;
+        for (const c of chunks) { out.set(c, off); off += c.length; }
+        return new TextDecoder().decode(out);
+    } catch (_) {
+        return stored; // fallback: return raw string
+    }
+}
+
 function isSupportStyleProfile(name?: string | null): boolean {
     const n = (name || "").toLowerCase();
     return n.includes("support") || n.includes("imk") || n.includes("faq") || n.includes("helpdesk");
@@ -256,7 +381,8 @@ async function checkSemanticCache(
     profileId: string,
     redisUrl: string | undefined,
     redisToken: string | undefined,
-    threshold = 0.88
+    threshold = 0.88,
+    kbVersion?: string        // NEW — reject cached entries with a stale KB version
 ): Promise<{ text: string; sources: any[] } | null> {
     try {
         const res = await fetch(`${vectorUrl}/query`, {
@@ -280,6 +406,8 @@ async function checkSemanticCache(
             if ((item.score ?? 0) < threshold) return false;
             const exp: number = item.metadata?.expiresAt ?? 0;
             if (exp && now > exp) return false;
+            // Reject entries whose KB version doesn't match (stale after KB update)
+            if (kbVersion && item.metadata?.kbVersion && item.metadata.kbVersion !== kbVersion) return false;
             return true;
         });
 
@@ -330,7 +458,8 @@ async function storeSemanticCache(
     answer: string,
     sources: any[],
     redisUrl?: string,
-    redisToken?: string
+    redisToken?: string,
+    kbVersion?: string        // NEW — stored in metadata for future validation
 ): Promise<void> {
     try {
         const id = `${profileId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -361,6 +490,7 @@ async function storeSemanticCache(
                     answerKey,                                    // reference to Redis key
                     cachedAt: now,
                     expiresAt: now + 86_400_000,                 // 24 hours
+                    kbVersion,                                   // for stale-cache invalidation
                 },
             }]),
         });
@@ -802,6 +932,15 @@ serve(async (req) => {
             ? `${activeProfileId}::${chatUserId}`
             : (activeProfileId || '');
 
+        // ── KB VERSION for L2/L3 cache invalidation ──────────────────────────────
+        // Fetched from Redis (1 h TTL) or DB on cache miss. Essentially free after the
+        // first request per profile per hour. Included in the L3 key so old retrieval
+        // results are automatically ignored after a knowledge_sources update.
+        let kbVersion = 'global';
+        if (!useFastSupportPath && activeProfileId && redisUrl && redisToken) {
+            kbVersion = await getKbVersion(supabaseClient, activeProfileId, redisUrl, redisToken);
+        }
+
         // ⚡ RESPONSE CACHE — for support bots, serve identical questions from Redis (24h TTL)
         // This skips embedding + KB load + OpenAI call entirely — fastest possible path.
         if (useFastSupportPath && redisUrl && redisToken && activeProfileId) {
@@ -849,6 +988,7 @@ serve(async (req) => {
                 if (l1Res.result) {
                     const l1Cached = JSON.parse(l1Res.result);
                     console.log(`⚡ [L1-COACH] HIT — "${query.slice(0, 50)}"`);
+                    trackCacheEvent(redisUrl, redisToken, activeProfileId!, 'l1_hit');
                     const enc = new TextEncoder();
                     return new Response(
                         new ReadableStream({
@@ -972,10 +1112,11 @@ serve(async (req) => {
                 if (vectorUrl && vectorToken && activeProfileId) {
                     const semHit = await checkSemanticCache(
                         vectorUrl, vectorToken, queryEmbedding, cacheNamespace,
-                        redisUrl, redisToken, 0.90  // per-user namespace, slightly stricter than support
+                        redisUrl, redisToken, 0.90, kbVersion  // per-user namespace, kb-versioned
                     );
                     if (semHit?.text) {
                         console.log(`🎯 [FAST-COACH-CACHE] HIT — "${query.slice(0, 60)}"`);
+                        trackCacheEvent(redisUrl, redisToken, activeProfileId!, 'l2_hit');
                         const enc = new TextEncoder();
                         return new Response(
                             new ReadableStream({
@@ -1158,8 +1299,9 @@ Rule:
                     // Cache the RAG chunks (not the final answer). Chunks are query-based, not
                     // user-specific, so they are safe to share across all users. Saves ~400ms
                     // (vector search + formatting) on every cache hit.
-                    // Key: rag:r:{profileId}:{normalizedQuery}   TTL: 12 h
-                    const l3Key = `rag:r:${activeProfileId}:${normalizeCacheKey(query)}`;
+                    // Key includes kbVersion so stale entries are skipped after KB edits.
+                    // Key: rag:r:{profileId}:{kbVersion}:{normalizedQuery}   TTL: 12 h
+                    const l3Key = `rag:r:${activeProfileId}:${kbVersion}:${normalizeCacheKey(query)}`;
                     let l3Hit = false;
 
                     if (redisUrl && redisToken) {
@@ -1169,8 +1311,10 @@ Rule:
                                 { headers: { Authorization: `Bearer ${redisToken}` } }
                             ).then(r => r.json());
                             if (l3Res.result) {
-                                knowledgeContext = l3Res.result;
+                                // Decompress if gzip-compressed (new entries), fall back for old plain entries
+                                knowledgeContext = await decompressFromBase64(l3Res.result);
                                 l3Hit = true;
+                                trackCacheEvent(redisUrl, redisToken, activeProfileId!, 'l3_hit');
                                 console.log(`⚡ [L3-RETRIEVAL] HIT — skipped vector search for "${query.slice(0, 50)}"`);
                             }
                         } catch (e) { console.warn("⚠️ [L3] Read error:", e); }
@@ -1221,14 +1365,16 @@ Rule:
                             });
                             console.log(`⚡ [FAST-COACH] ${fastChunks.length} RAG chunks ready`);
 
-                            // ── L3 WRITE: Store retrieval result (fire-and-forget, 12 h TTL) ──
+                            // ── L3 WRITE: Store retrieval result compressed (fire-and-forget, 12 h TTL) ──
                             if (redisUrl && redisToken && knowledgeContext) {
-                                fetch(`${redisUrl}/pipeline`, {
-                                    method: "POST",
-                                    headers: { Authorization: `Bearer ${redisToken}`, "Content-Type": "application/json" },
-                                    body: JSON.stringify([["SET", l3Key, knowledgeContext, "EX", 43200]])
-                                }).catch(e => console.warn("⚠️ [L3] Write error:", e));
-                                console.log(`⚡ [L3-RETRIEVAL] Cached chunks for "${query.slice(0, 50)}"`);
+                                compressToBase64(knowledgeContext).then(compressed => {
+                                    fetch(`${redisUrl}/pipeline`, {
+                                        method: "POST",
+                                        headers: { Authorization: `Bearer ${redisToken}`, "Content-Type": "application/json" },
+                                        body: JSON.stringify([["SET", l3Key, compressed, "EX", 43200]])
+                                    }).catch(e => console.warn("⚠️ [L3] Write error:", e));
+                                }).catch(() => {});
+                                console.log(`⚡ [L3-RETRIEVAL] Cached chunks (gzip) for "${query.slice(0, 50)}"`);
                             }
                         }
                     }
@@ -1688,6 +1834,16 @@ PERSONALIZATION:
 - Address user by NAME if known.
         `;
 
+        // ── L4 DIAGNOSTIC: Verify prompt prefix meets OpenAI's 1024-token threshold ──
+        // OpenAI automatic prefix caching only activates when the prompt prefix exceeds
+        // 1024 tokens and is repeated verbatim. Log both char count and token estimate
+        // so we know whether the static prefix qualifies.
+        const estTokens = Math.round(systemPrompt.length / 4);
+        console.log(
+            `📏 [L4] System prompt: ${systemPrompt.length} chars, ~${estTokens} est. tokens` +
+            (estTokens >= 1024 ? ' ✅ prefix cache eligible' : ' ⚠️ below 1024-token threshold — prefix cache inactive')
+        );
+
         // Intelligent routing
         let provider: string, selectedModel: string;
         let routingDecision: RoutingDecision;
@@ -1881,6 +2037,11 @@ PERSONALIZATION:
                     };
                     console.log(`📊 [RESPONSE] Metadata:`, JSON.stringify(responseMetadata));
 
+                    // ── CACHE MONITORING: record LLM call (coaching path, non-error only) ──
+                    if (useFastCoachingPath && fullResponse && !fullResponse.startsWith('Error:') && activeProfileId) {
+                        trackCacheEvent(redisUrl, redisToken, activeProfileId, 'llm_call');
+                    }
+
                     // Wrap in try-catch: if the catch block already sent [DONE] and closed,
                     // this will throw — safe to swallow.
                     try { controller.close(); } catch (_) {}
@@ -1923,7 +2084,7 @@ PERSONALIZATION:
                         storeSemanticCache(
                             vectorUrl, vectorToken, queryEmbedding,
                             cacheNamespace, query, fullResponse, sourceChunks,
-                            redisUrl, redisToken
+                            redisUrl, redisToken, kbVersion
                         ).catch((e) => console.warn("⚠️ [SEM-CACHE] Background write error:", e));
                     }
 

@@ -1,6 +1,7 @@
 import {
     Settings,
     MessageSquare,
+    BarChart3,
 } from 'lucide-react';
 import {
     Select,
@@ -96,6 +97,24 @@ const AdvancedSidebar = ({
                             isActive={activeSection === 'alerts'}
                             onClick={() => onSectionChange('alerts')}
                         />
+                    </div>
+
+                    {/* Performance Section */}
+                    <div className="space-y-1">
+                        <h3 className="px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                            Performance
+                        </h3>
+                        <button
+                            onClick={() => onSectionChange('cache-stats')}
+                            className={`flex items-center w-full px-4 py-2 text-sm font-medium transition-colors rounded-md ${
+                                activeSection === 'cache-stats'
+                                    ? 'bg-muted text-foreground'
+                                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                            }`}
+                        >
+                            <BarChart3 className="w-4 h-4 mr-2" />
+                            Cache Analytics
+                        </button>
                     </div>
                 </div>
             </ScrollArea>
