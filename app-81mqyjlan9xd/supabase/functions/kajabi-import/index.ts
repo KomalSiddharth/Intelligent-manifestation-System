@@ -29,7 +29,9 @@ serve(async (req) => {
   );
 
   const body = await req.json().catch(() => ({}));
-  const { type = "members", csv, rows: preRows } = body;
+  // courseNameOverride: pass the course name when exporting from within a specific
+  // Kajabi course page (those CSVs don't include a product/course name column)
+  const { type = "members", csv, rows: preRows, courseNameOverride } = body;
 
   if (!csv && !preRows) {
     return new Response(JSON.stringify({ error: "Provide 'csv' (raw string) or 'rows' (parsed array)" }), {
@@ -40,7 +42,7 @@ serve(async (req) => {
   // Parse CSV if raw string provided
   const rows: Record<string, string>[] = preRows ?? parseCSV(csv);
 
-  console.log(`📥 [KAJABI-IMPORT] type=${type}, rows=${rows.length}`);
+  console.log(`📥 [KAJABI-IMPORT] type=${type}, rows=${rows.length}, courseOverride=${courseNameOverride ?? "none"}`);
 
   let imported = 0, updated = 0, errors = 0;
 
@@ -58,7 +60,7 @@ serve(async (req) => {
   } else if (type === "courses") {
     for (const row of rows) {
       try {
-        const result = await importCourseProgressRow(supabase, row);
+        const result = await importCourseProgressRow(supabase, row, courseNameOverride);
         if (result) imported++;
       } catch (e: any) {
         errors++;
@@ -149,41 +151,95 @@ async function importMemberRow(
 // ── Course progress row import ────────────────────────────────
 async function importCourseProgressRow(
   supabase: any,
-  row: Record<string, string>
+  row: Record<string, string>,
+  courseNameOverride?: string   // pass when exporting from within a specific course
 ): Promise<boolean> {
 
-  const email       = (row["Email"] || row["email"] || row["Member Email"] || "").trim().toLowerCase();
-  const courseName  = (row["Product"] || row["Course"] || row["Product Name"] || row["course_name"] || "").trim();
-  const completePct = parseInt(row["Progress"] || row["Completion"] || row["Completion %"] || "0");
+  const email = (
+    row["Email"] || row["email"] || row["Member Email"] || row["Email Address"] || ""
+  ).trim().toLowerCase();
+
+  // Course name: from CSV column OR override param (for single-course exports)
+  const courseName = courseNameOverride || (
+    row["Product"] || row["Course"] || row["Product Name"] ||
+    row["course_name"] || row["Name"] || ""   // Kajabi sometimes uses "Name" for course
+  ).trim();
+
+  // Progress: Kajabi exports "20%" string or plain "20"
+  const rawPct    = row["Progress"] || row["Completion"] || row["Completion %"] || row["progress"] || "0";
+  const completePct = parseInt(rawPct.replace("%", ""));
+
   const productId   = (row["Product ID"] || row["product_id"] || "").trim();
-  const lastLesson  = (row["Last Completed Post"] || row["Last Lesson"] || "").trim();
-  const purchasedAt = row["Enrolled At"] || row["Purchase Date"] || row["purchased_at"] || "";
+  const lastLesson  = (row["Last Completed Post"] || row["Last Lesson"] || row["Last Lesson Title"] || "").trim();
+  const memberName  = (row["Name"] || row["Full Name"] || row["Member Name"] || "").trim();
 
-  if (!email || !courseName) return false;
+  // Kajabi's single-course export uses "Start Date"; bulk uses "Enrolled At" / "Purchase Date"
+  const purchasedAt =
+    row["Enrolled At"] || row["Purchase Date"] || row["Start Date"] ||
+    row["start_date"]  || row["purchased_at"]  || "";
 
-  // Find audience user
-  const { data: au } = await supabase
+  // Last activity (for days_since_activity calculation)
+  const lastActivityRaw =
+    row["Last Activity At"] || row["last_activity_at"] || row["Last Active"] || "";
+  let daysSinceActivity = 0;
+  if (lastActivityRaw) {
+    const lastActivityDate = new Date(lastActivityRaw);
+    if (!isNaN(lastActivityDate.getTime())) {
+      daysSinceActivity = Math.floor(
+        (Date.now() - lastActivityDate.getTime()) / (1000 * 60 * 60 * 24)
+      );
+    }
+  }
+
+  if (!email || !courseName) {
+    console.warn(`⚠️ [IMPORT] Skipping row — missing email or course name. Email="${email}" Course="${courseName}"`);
+    return false;
+  }
+
+  // Find or auto-create audience user (so course import works standalone)
+  let { data: au } = await supabase
     .from("audience_users")
     .select("id")
     .ilike("email", email)
     .maybeSingle();
 
   if (!au) {
-    console.warn(`⚠️ [IMPORT] Member not found for email: ${email}`);
-    return false;
+    console.log(`➕ [IMPORT] Auto-creating member: ${email}`);
+    const { data: created } = await supabase
+      .from("audience_users")
+      .insert({
+        name:          memberName || email,
+        email,
+        status:        "active",
+        tags:          [],
+        message_count: 0,
+        plan_tier:     "paid",   // if they're in a course they're a paying member
+      })
+      .select("id")
+      .single();
+    au = created;
   }
+
+  if (!au?.id) return false;
+
+  const pct = isNaN(completePct) ? 0 : completePct;
+  const productKey = productId || courseName.toLowerCase().replace(/\s+/g, "_");
+  const startedAt  = pct > 0 || purchasedAt
+    ? (purchasedAt ? new Date(purchasedAt).toISOString() : new Date().toISOString())
+    : null;
 
   await supabase.from("member_course_progress").upsert(
     {
       audience_user_id:    au.id,
       course_name:         courseName,
-      kajabi_product_id:   productId || courseName.toLowerCase().replace(/\s+/g, "_"),
-      completion_pct:      isNaN(completePct) ? 0 : completePct,
+      kajabi_product_id:   productKey,
+      completion_pct:      pct,
       has_access:          true,
       last_lesson_title:   lastLesson || null,
+      days_since_activity: daysSinceActivity,
       purchased_at:        purchasedAt ? new Date(purchasedAt).toISOString() : null,
-      started_at:          completePct > 0 ? (purchasedAt ? new Date(purchasedAt).toISOString() : new Date().toISOString()) : null,
-      completed_at:        completePct >= 100 ? new Date().toISOString() : null,
+      started_at:          startedAt,
+      completed_at:        pct >= 100 ? new Date().toISOString() : null,
     },
     { onConflict: "audience_user_id,kajabi_product_id" }
   );
