@@ -219,7 +219,7 @@ const KajabiImportView = () => {
                         <div className="grid grid-cols-4 gap-2 text-center">
                             {/* total: use API value, fallback to sum of all outcomes */}
                             <div className="bg-white rounded-lg p-3">
-                                <p className="text-2xl font-bold">
+                                <p className="text-2xl font-bold text-gray-900">
                                     {(result.total > 0 ? result.total : (result.imported + (result.updated ?? 0) + result.errors)).toLocaleString()}
                                 </p>
                                 <p className="text-xs text-muted-foreground mt-1">Total rows</p>
