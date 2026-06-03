@@ -54,21 +54,22 @@ async function getZoomToken(): Promise<string> {
   return data.access_token;
 }
 
-// ── Fetch past sessions from Dashboard API ────────────────────
-// Zoom Dashboard API max range = 1 month per request, last 6 months only
-// Tries both /metrics/webinars and /metrics/meetings
+// ── Fetch past sessions — tries 3 different API paths ─────────
+//  Path A: Dashboard API /metrics/webinars  (needs dashboard scope)
+//  Path B: Dashboard API /metrics/meetings  (needs dashboard scope)
+//  Path C: Reports API   /report/users/me/meetings (different scope — fallback)
 async function fetchPastWebinars(
   token: string,
-  _zoomUserId: string,
+  zoomUserId: string,
   fromDate: string,
   toDate: string
 ): Promise<any[]> {
   const sessions: any[] = [];
   const chunks = getMonthChunks(fromDate, toDate);
-  console.log(`📅 [ZOOM] ${chunks.length} month chunks to fetch`);
+  console.log(`📅 [ZOOM] ${chunks.length} month chunks | paths: metrics/webinars, metrics/meetings, report/users/meetings`);
 
+  // ── PATH A & B: Dashboard/Metrics API ─────────────────────
   for (const { from, to } of chunks) {
-    // Try both webinars and meetings — DMP might be either type
     for (const endpoint of ["webinars", "meetings"]) {
       let nextPageToken = "";
       let pageCount = 0;
@@ -87,29 +88,72 @@ async function fetchPastWebinars(
 
         if (!res.ok) {
           const body = await res.text();
-          // 400 code=300 = date out of 6-month range — skip silently
-          if (res.status === 400 && body.includes("300")) break;
-          console.warn(`⚠️ [ZOOM] metrics/${endpoint} ${from}→${to}: ${res.status}`);
+          if (res.status === 400 && body.includes("300")) break; // date out of range — silent
+          console.warn(`⚠️ [ZOOM] metrics/${endpoint} ${from}→${to}: ${res.status} — ${body.slice(0,100)}`);
           break;
         }
 
         const data = await res.json();
-        const items = data[endpoint] ?? [];
-        // Tag each item with its type so we know which participant endpoint to call
-        items.forEach((item: any) => { item._type = endpoint === "webinars" ? "webinar" : "meeting"; });
+        const items = (data[endpoint] ?? []) as any[];
+        items.forEach(item => { item._type = endpoint === "webinars" ? "webinar" : "meeting"; });
         sessions.push(...items);
         nextPageToken = data.next_page_token ?? "";
         pageCount++;
       } while (nextPageToken && pageCount < 20);
     }
-
     await new Promise(r => setTimeout(r, 150));
   }
 
-  console.log(`📅 [ZOOM] Total sessions found: ${sessions.length} (webinars+meetings combined)`);
-  if (sessions.length > 0) {
-    console.log(`📋 [ZOOM] Sample:`, JSON.stringify(sessions[0]).slice(0, 250));
+  console.log(`📊 [ZOOM] Path A+B (metrics): ${sessions.length} sessions found`);
+
+  // ── PATH C: Reports API (fallback if metrics returns 0) ────
+  // Uses different scopes: report:read:meeting:admin
+  if (sessions.length === 0) {
+    console.log(`🔄 [ZOOM] Trying fallback: report/users/${zoomUserId}/meetings`);
+
+    for (const { from, to } of chunks) {
+      let nextPageToken = "";
+      let pageCount = 0;
+
+      do {
+        const url = new URL(`https://api.zoom.us/v2/report/users/${zoomUserId}/meetings`);
+        url.searchParams.set("from", from);
+        url.searchParams.set("to", to);
+        url.searchParams.set("page_size", "300");
+        url.searchParams.set("type", "past");
+        if (nextPageToken) url.searchParams.set("next_page_token", nextPageToken);
+
+        const res = await fetch(url.toString(), {
+          headers: { "Authorization": `Bearer ${token}` },
+        });
+
+        if (!res.ok) {
+          const body = await res.text();
+          if (res.status === 400 && body.includes("300")) break;
+          console.warn(`⚠️ [ZOOM] report/users/meetings ${from}→${to}: ${res.status} ${body.slice(0,100)}`);
+          break;
+        }
+
+        const data = await res.json();
+        const items = (data.meetings ?? []) as any[];
+        items.forEach(item => { item._type = "meeting"; });
+        sessions.push(...items);
+        nextPageToken = data.next_page_token ?? "";
+        pageCount++;
+      } while (nextPageToken && pageCount < 20);
+
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    console.log(`📊 [ZOOM] Path C (report/users): ${sessions.length} sessions found`);
   }
+
+  if (sessions.length > 0) {
+    console.log(`✅ [ZOOM] Total: ${sessions.length} sessions | Sample: ${JSON.stringify(sessions[0]).slice(0, 200)}`);
+  } else {
+    console.warn(`⚠️ [ZOOM] ALL 3 paths returned 0 sessions. Check scopes or confirm account has past meetings/webinars.`);
+  }
+
   return sessions;
 }
 
