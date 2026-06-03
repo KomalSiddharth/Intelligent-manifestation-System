@@ -224,6 +224,33 @@ async function fetchWebinarParticipants(
   return participants;
 }
 
+// ── Auto-detect session type from meeting/webinar name ────────
+function detectSessionType(sessionName: string, fallback: string): string {
+  const name = sessionName.toLowerCase();
+
+  if (name.includes("daily magic practice") || name.includes("dmp"))
+    return "DMP";
+  if (name.includes("chakra"))
+    return "CHAKRA";
+  if (name.includes("platinum"))
+    return "PLATINUM";
+  if (name.includes("ai manifestation") || name.includes("manifestation method"))
+    return "AI_MANIFESTATION";
+  if (name.includes("brad yates"))
+    return "BRAD_YATES";
+  if (name.includes("support") || name.includes("coaching"))
+    return "SUPPORT";
+  if (name.includes("masterclass") || name.includes("master class"))
+    return "MASTERCLASS";
+  if (name.includes("workshop"))
+    return "WORKSHOP";
+  if (name.includes("q&a") || name.includes("q & a"))
+    return "QNA";
+
+  // Fallback to manually provided label
+  return fallback;
+}
+
 // ── Main handler ──────────────────────────────────────────────
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -339,6 +366,10 @@ serve(async (req) => {
 
       totalSkipped += emails.length - emailToId.size;
 
+      // Auto-detect session type from session name
+      // Falls back to the manually provided sessionType label
+      const detectedType = detectSessionType(sessionName, sessionType);
+
       // Build attendance rows
       const rows = uniqueParticipants
         .filter(p => {
@@ -346,17 +377,18 @@ serve(async (req) => {
           return email && emailToId.has(email);
         })
         .map(p => {
-          const email       = p.user_email.trim().toLowerCase();
-          const durationMin = Math.round(p.duration ?? 0); // Zoom Reports gives minutes
+          const email          = p.user_email.trim().toLowerCase();
+          // Zoom Reports API returns duration in SECONDS — convert to minutes
+          const durationMin    = Math.round((p.duration ?? 0) / 60);
           return {
-            audience_user_id:  emailToId.get(email)!,
-            session_type:      sessionType,
-            session_name:      sessionName,
-            session_date:      sessionDate,
-            attended:          true,
+            audience_user_id:    emailToId.get(email)!,
+            session_type:        detectedType,
+            session_name:        sessionName,
+            session_date:        sessionDate,
+            attended:            true,
             watch_duration_mins: durationMin,
-            source:            "zoom_api",
-            zoom_webinar_id:   webinarId,
+            source:              "zoom_api",
+            zoom_webinar_id:     webinarId,
           };
         });
 
