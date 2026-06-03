@@ -376,46 +376,70 @@ serve(async (req) => {
     // ── Step 1: Zoom auth ──────────────────────────────────────
     const token = await getZoomToken();
 
-    // ── DIRECT SESSION MODE — process one specific session by ID ──
-    // This skips the expensive "fetch all sessions" step
+    // ── DIRECT SESSION MODE — one page of participants at a time ──
     if (sessionId) {
-      const sName    = sessionName ?? "Zoom Session";
-      const sDate    = sessionDate ?? new Date().toISOString().split("T")[0];
-      const sType    = detectedLabel ?? detectSessionType(sName, sessionType);
+      const sName     = sessionName ?? "Zoom Session";
+      const sDate     = sessionDate ?? new Date().toISOString().split("T")[0];
+      const sType     = detectedLabel ?? detectSessionType(sName, sessionType);
       const sZoomType = sessionZoomType === "webinar" ? "webinar" : "meeting";
+      const pageToken = body.pageToken ?? "";   // empty = first page
+      const isFirstPage = !pageToken;
 
-      console.log(`🎯 [ZOOM-SYNC] Direct mode: "${sName}" — ${sDate} (ID: ${sessionId})`);
+      console.log(`🎯 [ZOOM-SYNC] "${sName}" page=${pageToken ? "next" : "first"} (ID: ${sessionId})`);
 
-      const participants = await fetchWebinarParticipants(token, sessionId, sZoomType);
-      console.log(`   👥 ${participants.length} participants`);
+      // On first page — clear old records for this session
+      if (isFirstPage && !dryRun) {
+        await supabase.from("member_attendance").delete().eq("zoom_webinar_id", sessionId);
+        console.log(`   🗑️  Cleared old records for session ${sessionId}`);
+      }
 
-      if (participants.length === 0) {
-        return new Response(JSON.stringify({ success: true, attendanceRecords: 0, skipped: 0 }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
+      // Fetch ONE page of participants (300 max)
+      const endpoint1 = sZoomType === "webinar"
+        ? `report/webinars/${sessionId}/participants`
+        : `report/meetings/${sessionId}/participants`;
+      const endpoint2 = sZoomType === "webinar"
+        ? `report/meetings/${sessionId}/participants`
+        : `report/webinars/${sessionId}/participants`;
+
+      let participants: any[] = [];
+      let nextPageToken = "";
+
+      for (const endpoint of [endpoint1, endpoint2]) {
+        const url = new URL(`https://api.zoom.us/v2/${endpoint}`);
+        url.searchParams.set("page_size", "300");
+        if (pageToken) url.searchParams.set("next_page_token", pageToken);
+
+        const res = await fetch(url.toString(), {
+          headers: { "Authorization": `Bearer ${token}` },
         });
+
+        if (!res.ok) {
+          if (res.status === 404 || res.status === 400) continue;
+          throw new Error(`Zoom API ${endpoint}: ${res.status}`);
+        }
+
+        const data = await res.json();
+        participants = data.participants ?? [];
+        nextPageToken = data.next_page_token ?? "";
+        if (participants.length > 0) break;
       }
 
-      // Deduplicate by email
-      const byEmail = new Map<string, any>();
-      for (const p of participants) {
-        const email = (p.user_email ?? "").trim().toLowerCase();
-        if (!email) continue;
-        const existing = byEmail.get(email);
-        if (!existing || (p.duration ?? 0) > (existing.duration ?? 0)) byEmail.set(email, p);
-      }
+      console.log(`   👥 ${participants.length} participants this page, nextToken=${nextPageToken ? "yes" : "done"}`);
 
-      const emails = [...byEmail.keys()];
+      // Match emails to audience_users
+      const emails = [...new Set(
+        participants.map((p: any) => (p.user_email ?? "").trim().toLowerCase()).filter(Boolean)
+      )];
+
       const emailToId = new Map<string, string>();
       for (let i = 0; i < emails.length; i += 500) {
-        const chunk = emails.slice(i, i + 500);
-        const { data } = await supabase.from("audience_users").select("id, email").in("email", chunk);
+        const { data } = await supabase.from("audience_users").select("id, email").in("email", emails.slice(i, i + 500));
         (data ?? []).forEach((u: any) => emailToId.set(u.email.toLowerCase(), u.id));
       }
 
-      const skipped = emails.length - emailToId.size;
-      const rows = [...byEmail.values()]
-        .filter(p => emailToId.has((p.user_email ?? "").trim().toLowerCase()))
-        .map(p => ({
+      const rows = participants
+        .filter((p: any) => emailToId.has((p.user_email ?? "").trim().toLowerCase()))
+        .map((p: any) => ({
           audience_user_id:    emailToId.get(p.user_email.trim().toLowerCase())!,
           session_type:        sType,
           session_name:        sName,
@@ -426,26 +450,20 @@ serve(async (req) => {
           zoom_webinar_id:     sessionId,
         }));
 
-      if (!dryRun) {
-        // Delete old records for this session
-        await supabase.from("member_attendance").delete().eq("zoom_webinar_id", sessionId);
-
-        // Insert fresh
-        let synced = 0;
-        for (let i = 0; i < rows.length; i += 200) {
-          const { data, error } = await supabase.from("member_attendance").insert(rows.slice(i, i + 200)).select("id");
-          if (error) { console.error(`❌ Insert error: ${error.message}`); }
-          else { synced += data?.length ?? rows.slice(i, i + 200).length; }
-        }
-        console.log(`   ✅ Synced ${synced}/${rows.length} records`);
-        return new Response(JSON.stringify({ success: true, attendanceRecords: synced, skipped }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
+      let synced = 0;
+      if (!dryRun && rows.length > 0) {
+        const { data, error } = await supabase.from("member_attendance").insert(rows).select("id");
+        if (error) console.error(`❌ Insert error: ${error.message}`);
+        else synced = data?.length ?? rows.length;
       }
 
-      return new Response(JSON.stringify({ success: true, dryRun: true, wouldSync: rows.length, skipped }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
+      return new Response(JSON.stringify({
+        success:        true,
+        attendanceRecords: synced,
+        skipped:        emails.length - emailToId.size,
+        nextPageToken,          // empty = all pages done
+        done:           !nextPageToken,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     // ── Step 2: Get past webinars ──────────────────────────────

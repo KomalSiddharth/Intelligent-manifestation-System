@@ -117,29 +117,42 @@ const ZoomSyncView = () => {
             let totalSkipped = 0;
             let failedCount  = 0;
 
-            // Step 2: Process each session by ID directly (no re-fetching session list!)
+            // Step 2: For each session, page through participants (300 at a time)
             for (let i = 0; i < allSessions.length; i++) {
                 const session = allSessions[i];
                 setSyncProgress({ done: i, total, records: totalRecords });
 
                 try {
-                    const data = await callSync({
-                        dryRun:         false,
-                        sessionId:      session.id,
-                        sessionZoomType: session.type,
-                        sessionName:    session.name,
-                        sessionDate:    session.date,
-                        detectedLabel:  session.detectedLabel,
-                        sessionType:    fallbackLabel,
-                    });
-                    totalRecords += data.attendanceRecords ?? 0;
-                    totalSkipped += data.skipped ?? 0;
+                    let pageToken = "";
+                    let pageNum   = 0;
+
+                    // Loop through all pages for this session
+                    do {
+                        const data = await callSync({
+                            dryRun:          false,
+                            sessionId:       session.id,
+                            sessionZoomType: session.type,
+                            sessionName:     session.name,
+                            sessionDate:     session.date,
+                            detectedLabel:   session.detectedLabel,
+                            sessionType:     fallbackLabel,
+                            pageToken,       // empty on first call
+                        });
+
+                        totalRecords += data.attendanceRecords ?? 0;
+                        totalSkipped += data.skipped ?? 0;
+                        pageToken     = data.nextPageToken ?? "";
+                        pageNum++;
+
+                        if (pageToken) await new Promise(r => setTimeout(r, 150));
+                    } while (pageToken);  // keep going until all pages done
+
                 } catch (err: any) {
                     console.warn(`Session "${session.name}" failed: ${err.message}`);
                     failedCount++;
                 }
 
-                await new Promise(r => setTimeout(r, 200));
+                await new Promise(r => setTimeout(r, 150));
             }
 
             setSyncProgress({ done: total, total, records: totalRecords });
