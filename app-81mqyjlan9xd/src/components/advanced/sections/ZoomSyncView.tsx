@@ -112,23 +112,30 @@ const ZoomSyncView = () => {
             let totalRecords = 0;
             let totalErrors  = 0;
             let totalSkipped = 0;
-            const BATCH = 10;
+            let failedSessions: number[] = [];
 
-            for (let offset = 0; offset < total; offset += BATCH) {
+            // Process ONE session at a time to avoid 504 timeout
+            for (let offset = 0; offset < total; offset += 1) {
                 setSyncProgress({ done: offset, total, records: totalRecords });
-                const data = await callSync({
-                    fromDate, toDate,
-                    sessionType: fallbackLabel,
-                    dryRun: false,
-                    maxSessions: BATCH,
-                    offset,
-                });
-                totalRecords += data.attendanceRecords ?? 0;
-                totalErrors  += data.errors ?? 0;
-                totalSkipped += data.skipped ?? 0;
+                try {
+                    const data = await callSync({
+                        fromDate, toDate,
+                        sessionType: fallbackLabel,
+                        dryRun: false,
+                        maxSessions: 1,
+                        offset,
+                    });
+                    totalRecords += data.attendanceRecords ?? 0;
+                    totalErrors  += data.errors ?? 0;
+                    totalSkipped += data.skipped ?? 0;
+                } catch (err: any) {
+                    // If one session fails (504), log and continue with next
+                    console.warn(`Session ${offset} failed: ${err.message}`);
+                    failedSessions.push(offset);
+                }
 
-                // Small pause to avoid rate limiting
-                if (offset + BATCH < total) await new Promise(r => setTimeout(r, 500));
+                // Small pause between calls
+                await new Promise(r => setTimeout(r, 300));
             }
 
             setSyncProgress({ done: total, total, records: totalRecords });
