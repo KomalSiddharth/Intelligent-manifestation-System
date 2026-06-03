@@ -224,67 +224,113 @@ async function fetchWebinarParticipants(
   return participants;
 }
 
+// ── Check if session is an internal/private meeting to skip ──
+function isInternalMeeting(sessionName: string, participantCount: number): boolean {
+  const name = sessionName.toLowerCase();
+
+  // Skip Mitesh's personal meeting room
+  if (name.includes("personal meeting room")) return true;
+  if (name.includes("zoom meeting") && participantCount < 10) return true;
+
+  // Skip clearly internal meetings (low participant count + meeting name pattern)
+  const internalPatterns = [
+    "meeting with", "podcast with", "shoot with", "demo with",
+    "coaching for mi", "advance law of attraction" // single entry with 1 participant
+  ];
+  if (participantCount <= 5 && internalPatterns.some(p => name.includes(p))) return true;
+
+  // Skip test meetings
+  if (name.includes("test meeting")) return true;
+
+  // Skip meetings where it's clearly a business/personal call
+  const businessPatterns = [
+    "meeting with raj shamani", "meeting with tw", "meeting with rhea",
+    "meeting with kanishka", "meeting with winter", "meeting with geetanjali",
+    "meeting with auditor", "meeting with insurance", "meeting with cashfree",
+    "meeting with pr team", "meeting with brad yates"
+  ];
+  if (businessPatterns.some(p => name.includes(p))) return true;
+
+  return false;
+}
+
 // ── Auto-detect session type from meeting/webinar name ────────
 function detectSessionType(sessionName: string, fallback: string): string {
   const name = sessionName.toLowerCase();
 
   // Daily Magic Practice
-  if (name.includes("daily magic") || name.includes("dmp"))
+  if (name.includes("daily magic") || name.startsWith("dmp"))
     return "DMP";
 
   // Chakra
   if (name.includes("chakra"))
     return "CHAKRA";
 
-  // Platinum programs
+  // Platinum (all platinum sub-types stay as PLATINUM)
   if (name.includes("platinum"))
     return "PLATINUM";
 
-  // Relationship Mastery
-  if (name.includes("relationship mastery") || name.includes("relationship"))
-    return "RELATIONSHIP_MASTERY";
-
   // Wealth Mastery
-  if (name.includes("wealth mastery") || name.includes("wealth"))
+  if (name.includes("wealth mastery") || name.includes("new wealth"))
     return "WEALTH_MASTERY";
+
+  // Relationship Mastery
+  if (name.includes("relationship mastery"))
+    return "RELATIONSHIP_MASTERY";
 
   // Mind Mastery
   if (name.includes("mind mastery"))
     return "MIND_MASTERY";
 
-  // AI / Manifestation
-  if (name.includes("ai manifestation") || name.includes("manifestation method") || name.includes("manifestation"))
+  // Ho'Oponopono
+  if (name.includes("ho'oponopono") || name.includes("hooponopono") || name.includes("ho oponopono"))
+    return "HOOPONOPONO";
+
+  // Advance LOA / Law of Attraction
+  if (name.includes("advance loa") || name.includes("advance law of attraction"))
+    return "ADVANCE_LOA";
+
+  // NLP
+  if (name.includes("nlp live") || name.startsWith("nlp"))
+    return "NLP";
+
+  // EFT
+  if (name.includes("eft live") || name.startsWith("eft"))
+    return "EFT";
+
+  // Life Coaching
+  if (name.includes("life coaching"))
+    return "LIFE_COACHING";
+
+  // AI / Manifestation Method
+  if (name.includes("ai manifestation") || name.includes("manifestation method"))
     return "AI_MANIFESTATION";
 
-  // Brad Yates collaboration
+  // Manifest with IMK
+  if (name.includes("manifest with"))
+    return "MANIFESTATION";
+
+  // Brad Yates
   if (name.includes("brad yates"))
     return "BRAD_YATES";
 
-  // Support / Coaching calls
-  if (name.includes("support call") || name.includes("coaching call"))
-    return "SUPPORT";
+  // Orientation
+  if (name.includes("orientation call"))
+    return "ORIENTATION";
 
-  // Masterclass
-  if (name.includes("masterclass") || name.includes("master class"))
-    return "MASTERCLASS";
+  // Special Events
+  if (name.includes("new year") || name.includes("celebration"))
+    return "SPECIAL_EVENT";
 
-  // Workshop
-  if (name.includes("workshop"))
-    return "WORKSHOP";
+  // Masterclass / Workshop / Q&A
+  if (name.includes("masterclass") || name.includes("master class")) return "MASTERCLASS";
+  if (name.includes("workshop")) return "WORKSHOP";
+  if (name.includes("q&a") || name.includes("q & a")) return "QNA";
 
-  // Q&A
-  if (name.includes("q&a") || name.includes("q & a") || name.includes("q and a"))
-    return "QNA";
+  // Healing / Meditation
+  if (name.includes("healing")) return "HEALING";
+  if (name.includes("meditation")) return "MEDITATION";
 
-  // Healing
-  if (name.includes("healing"))
-    return "HEALING";
-
-  // Meditation
-  if (name.includes("meditation"))
-    return "MEDITATION";
-
-  // Fallback to manually provided label
   return fallback;
 }
 
@@ -337,16 +383,29 @@ serve(async (req) => {
 
     // ── listOnly mode: just return all session names, no participant fetch ──
     if (listOnly) {
-      const allSessions = webinars.map((w: any) => ({
-        id:          String(w.id ?? w.uuid),
-        name:        w.topic ?? w.subject ?? "Unknown",
-        date:        (w.start_time ?? "").split("T")[0],
-        type:        w._type,
-        participants: w.participants_count ?? w.participants ?? 0,
-        detectedLabel: detectSessionType(w.topic ?? w.subject ?? "", sessionType),
-      }));
+      const allSessions = webinars.map((w: any) => {
+        const name    = w.topic ?? w.subject ?? "Unknown";
+        const pCount  = w.participants_count ?? w.participants ?? 0;
+        const skip    = isInternalMeeting(name, pCount);
+        const label   = skip ? "SKIP" : detectSessionType(name, sessionType);
+        return {
+          id:    String(w.id ?? w.uuid),
+          name,
+          date:  (w.start_time ?? "").split("T")[0],
+          type:  w._type,
+          participants: pCount,
+          detectedLabel: label,
+          skip,
+        };
+      });
+      const toSync   = allSessions.filter(s => !s.skip);
+      const skipped  = allSessions.filter(s => s.skip);
       return new Response(JSON.stringify({
-        success: true, total: allSessions.length, sessions: allSessions
+        success: true,
+        total:        allSessions.length,
+        toSync:       toSync.length,
+        skippedInternal: skipped.length,
+        sessions:     allSessions,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -368,11 +427,16 @@ serve(async (req) => {
 
     // ── Step 3: Process each session ──────────────────────────
     for (const webinar of toProcess) {
-      // metrics API returns both id (numeric) and uuid (string)
-      // Reports API works best with the numeric id
       const webinarId   = String(webinar.id ?? webinar.uuid);
       const sessionDate = (webinar.start_time ?? webinar.created_at ?? "").split("T")[0];
       const sessionName = webinar.topic ?? webinar.subject ?? "Zoom Webinar";
+      const pCount      = webinar.participants_count ?? webinar.participants ?? 0;
+
+      // Skip internal/personal meetings
+      if (isInternalMeeting(sessionName, pCount)) {
+        console.log(`⏭️  [ZOOM-SYNC] Skipping internal: "${sessionName}"`);
+        continue;
+      }
 
       console.log(`🎯 [ZOOM-SYNC] "${sessionName}" — ${sessionDate} (ID: ${webinarId})`);
 

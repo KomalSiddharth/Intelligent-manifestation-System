@@ -150,15 +150,19 @@ const ZoomSyncView = () => {
         }
     };
 
-    // ── Group sessions by label for display ───────────────────
+    // ── Group sessions by label for display (exclude SKIP) ───
     const grouped = sessionList
-        ? sessionList.reduce((acc, s) => {
-            const key = s.detectedLabel;
-            if (!acc[key]) acc[key] = [];
-            acc[key].push(s);
-            return acc;
-          }, {} as Record<string, SessionInfo[]>)
+        ? sessionList
+            .filter(s => s.detectedLabel !== 'SKIP')
+            .reduce((acc, s) => {
+                const key = s.detectedLabel;
+                if (!acc[key]) acc[key] = [];
+                acc[key].push(s);
+                return acc;
+            }, {} as Record<string, SessionInfo[]>)
         : null;
+
+    const skippedList = sessionList?.filter(s => s.detectedLabel === 'SKIP') ?? [];
 
     return (
         <div className="flex-1 overflow-auto p-6 max-w-3xl">
