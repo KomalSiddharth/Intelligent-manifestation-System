@@ -842,12 +842,14 @@ serve(async (req) => {
 
                 const audienceId = au.id;
 
-                // Step 2: fetch course progress rows in parallel with DMP attendance
-                const thirtyDaysAgo = new Date();
-                thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-                const cutoffDate = thirtyDaysAgo.toISOString().split("T")[0];
+                // Step 2: fetch course progress + ALL zoom attendance (last 90 days)
+                const now = new Date();
+                const d90 = new Date(now); d90.setDate(d90.getDate() - 90);
+                const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
+                const cutoff90 = d90.toISOString().split("T")[0];
+                const cutoff30 = d30.toISOString().split("T")[0];
 
-                const [{ data: courses }, { data: attendance }] = await Promise.all([
+                const [{ data: courses }, { data: allAttendance }] = await Promise.all([
                     supabaseClient
                         .from("member_course_progress")
                         .select("course_name, completion_pct, has_access, last_lesson_title, days_since_activity, purchased_at, started_at, completed_at")
@@ -857,24 +859,21 @@ serve(async (req) => {
                         .limit(10),
                     supabaseClient
                         .from("member_attendance")
-                        .select("session_date")
+                        .select("session_type, session_name, session_date, watch_duration_mins")
                         .eq("audience_user_id", audienceId)
-                        .eq("session_type", "DMP")
-                        .gte("session_date", cutoffDate),
+                        .gte("session_date", cutoff90)
+                        .order("session_date", { ascending: false }),
                 ]);
 
-                console.log(`📚 [MEMBER BRIEF] courses found: ${courses?.length ?? 0}, attendance: ${attendance?.length ?? 0}`);
-                if (!courses || courses.length === 0) return "";
+                console.log(`📚 [MEMBER BRIEF] courses: ${courses?.length ?? 0}, attendance rows: ${allAttendance?.length ?? 0}`);
 
                 // Step 3: format course lines
-                const courseLines = courses.map((c: any) => {
+                const courseLines = (courses ?? []).map((c: any) => {
                     const pct = c.completion_pct ?? 0;
                     const name = c.course_name ?? "Unknown Course";
                     const daysSince = c.days_since_activity != null ? c.days_since_activity : null;
                     const activityNote = daysSince != null && pct > 0 && pct < 100
-                        ? ` (last activity ${daysSince}d ago)`
-                        : "";
-
+                        ? ` (last activity ${daysSince}d ago)` : "";
                     if (pct >= 100)      return `✅ ${name} — 100% complete`;
                     if (pct > 0)         return `⏳ ${name} — ${pct}%${activityNote}`;
                     if (c.started_at)    return `⏳ ${name} — <1% started`;
@@ -882,12 +881,74 @@ serve(async (req) => {
                     return `📦 ${name} — enrolled`;
                 });
 
-                // Step 4: DMP attendance summary
-                const dmpCount = attendance?.length ?? 0;
-                const dmpLine = dmpCount > 0 ? `\nDMP: ${dmpCount}/30 sessions last 30 days` : "";
+                // Step 4: Build zoom attendance summary per program
+                const attendance = allAttendance ?? [];
+                const attendanceLines: string[] = [];
 
-                const brief = `\nMEMBER BRIEF:\n${courseLines.join("\n")}${dmpLine}`;
-                console.log(`✅ [MEMBER BRIEF] Injecting:`, brief.slice(0, 200));
+                if (attendance.length > 0) {
+                    // Group by session_type
+                    const byType: Record<string, { count: number; totalMins: number; lastDate: string }> = {};
+                    for (const row of attendance) {
+                        const t = row.session_type ?? "OTHER";
+                        if (!byType[t]) byType[t] = { count: 0, totalMins: 0, lastDate: row.session_date };
+                        byType[t].count++;
+                        byType[t].totalMins += row.watch_duration_mins ?? 0;
+                        if (row.session_date > byType[t].lastDate) byType[t].lastDate = row.session_date;
+                    }
+
+                    // Get total sessions available per type (global DB count for same period)
+                    const { data: globalSessions } = await supabaseClient
+                        .from("member_attendance")
+                        .select("session_type, zoom_webinar_id")
+                        .gte("session_date", cutoff90);
+
+                    const totalByType: Record<string, Set<string>> = {};
+                    for (const row of (globalSessions ?? [])) {
+                        if (!totalByType[row.session_type]) totalByType[row.session_type] = new Set();
+                        if (row.zoom_webinar_id) totalByType[row.session_type].add(row.zoom_webinar_id);
+                    }
+
+                    // Format each program
+                    const typeOrder = ["DMP","PLATINUM","CHAKRA","WEALTH_MASTERY","HOOPONOPONO",
+                        "ADVANCE_LOA","NLP","EFT","LIFE_COACHING","RELATIONSHIP_MASTERY",
+                        "BRAD_YATES","AI_MANIFESTATION"];
+                    const sortedTypes = [
+                        ...typeOrder.filter(t => byType[t]),
+                        ...Object.keys(byType).filter(t => !typeOrder.includes(t))
+                    ];
+
+                    for (const type of sortedTypes) {
+                        const { count, totalMins, lastDate } = byType[type];
+                        const total = totalByType[type]?.size ?? count;
+                        const pct = Math.round((count / total) * 100);
+                        const daysSince = Math.floor((Date.now() - new Date(lastDate).getTime()) / 86400000);
+                        const status = pct >= 75 ? "🟢 consistent" : pct >= 40 ? "🟡 moderate" : "🔴 low";
+                        const label = type.replace(/_/g, " ");
+                        attendanceLines.push(`${label}: ${count}/${total} sessions (${pct}%) ${status}, last: ${daysSince}d ago, ${totalMins}m watched`);
+                    }
+
+                    // Overall summary line
+                    const totalSessions = attendance.length;
+                    const last30Count = attendance.filter((a: any) => a.session_date >= cutoff30).length;
+                    const totalMinsAll = attendance.reduce((s: number, a: any) => s + (a.watch_duration_mins ?? 0), 0);
+                    const lastAny = attendance[0];
+                    const daysSinceAny = lastAny ? Math.floor((Date.now() - new Date(lastAny.session_date).getTime()) / 86400000) : null;
+
+                    attendanceLines.unshift(`ZOOM (last 90d): ${totalSessions} sessions | ${Object.keys(byType).length} programs | last 30d: ${last30Count} | total: ${totalMinsAll} mins`);
+                    if (daysSinceAny !== null && daysSinceAny > 14) {
+                        attendanceLines.push(`⚠️ Not attended any session in ${daysSinceAny} days`);
+                    }
+                } else {
+                    attendanceLines.push("ZOOM: No live sessions attended in last 90 days");
+                }
+
+                const hasContent = (courses?.length ?? 0) > 0 || attendance.length > 0;
+                if (!hasContent) return "";
+
+                const coursePart = courseLines.length > 0 ? `COURSE PROGRESS:\n${courseLines.join("\n")}\n` : "";
+                const attendancePart = attendanceLines.join("\n");
+                const brief = `\nMEMBER BRIEF:\n${coursePart}${attendancePart}`;
+                console.log(`✅ [MEMBER BRIEF] Injecting:`, brief.slice(0, 300));
                 return brief;
             } catch (e: any) {
                 console.warn("⚠️ [MEMBER BRIEF] Failed to fetch:", e.message);
