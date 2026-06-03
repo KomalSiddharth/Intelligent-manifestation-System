@@ -517,21 +517,26 @@ serve(async (req) => {
       }
 
       // ── DELETE existing records for this session, then INSERT fresh ──
-      // This approach needs NO unique constraints — always works cleanly
       let synced = 0;
 
-      // Step A: Delete existing records for this webinar (idempotent re-runs)
-      const deleteResult = await supabase
+      // Step A: Delete by zoom_webinar_id (most precise — works even if label changed)
+      // Also fallback delete by session_name+date in case zoom_webinar_id column is null
+      const deleteById = await supabase
         .from("member_attendance")
         .delete()
-        .eq("session_name",  sessionName)
-        .eq("session_date",  sessionDate)
-        .eq("session_type",  sessionType);
+        .eq("zoom_webinar_id", webinarId);
 
-      if (deleteResult.error) {
-        console.warn(`⚠️ [ZOOM-SYNC] Could not clear old records: ${deleteResult.error.message}`);
+      const deleteByName = await supabase
+        .from("member_attendance")
+        .delete()
+        .eq("session_name", sessionName)
+        .eq("session_date", sessionDate)
+        .is("zoom_webinar_id", null);  // only delete old rows that have no webinar_id
+
+      if (deleteById.error) {
+        console.warn(`⚠️ [ZOOM-SYNC] Delete by ID failed: ${deleteById.error.message}`);
       } else {
-        console.log(`   🗑️  Cleared old records for "${sessionName}" ${sessionDate}`);
+        console.log(`   🗑️  Cleared old records for "${sessionName}" (ID: ${webinarId})`);
       }
 
       // Step B: Insert fresh rows in batches of 200
