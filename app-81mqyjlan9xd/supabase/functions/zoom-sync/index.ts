@@ -54,44 +54,71 @@ async function getZoomToken(): Promise<string> {
   return data.access_token;
 }
 
-// ── Fetch all past webinars in date range ─────────────────────
+// ── Fetch all past webinars via Dashboard/Metrics API ────────
+// NOTE: /users/{id}/webinars does NOT support type=past.
+// The correct endpoint for past webinars is /metrics/webinars
 async function fetchPastWebinars(
   token: string,
-  zoomUserId: string,
+  _zoomUserId: string,   // unused — metrics API is account-wide
   fromDate: string,
   toDate: string
 ): Promise<any[]> {
   const webinars: any[] = [];
-  let nextPageToken = "";
 
-  do {
-    const url = new URL(`https://api.zoom.us/v2/users/${zoomUserId}/webinars`);
-    url.searchParams.set("type", "past");
-    url.searchParams.set("page_size", "300");
-    if (nextPageToken) url.searchParams.set("next_page_token", nextPageToken);
+  // Zoom metrics API max date range = 1 month per request → chunk by month
+  const chunks = getMonthChunks(fromDate, toDate);
+  console.log(`📅 [ZOOM] Fetching across ${chunks.length} month chunks`);
 
-    const res = await fetch(url.toString(), {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
+  for (const { from, to } of chunks) {
+    let nextPageToken = "";
 
-    if (!res.ok) {
-      console.error(`❌ [ZOOM] List webinars failed: ${res.status} ${await res.text()}`);
-      break;
-    }
+    do {
+      const url = new URL("https://api.zoom.us/v2/metrics/webinars");
+      url.searchParams.set("type", "past");
+      url.searchParams.set("from", from);
+      url.searchParams.set("to", to);
+      url.searchParams.set("page_size", "300");
+      if (nextPageToken) url.searchParams.set("next_page_token", nextPageToken);
 
-    const data = await res.json();
-    const batch = (data.webinars ?? []).filter((w: any) => {
-      if (!w.start_time) return false;
-      const date = w.start_time.split("T")[0];
-      return date >= fromDate && date <= toDate;
-    });
+      const res = await fetch(url.toString(), {
+        headers: { "Authorization": `Bearer ${token}` },
+      });
 
-    webinars.push(...batch);
-    nextPageToken = data.next_page_token ?? "";
-    console.log(`📅 [ZOOM] Fetched ${webinars.length} webinars so far…`);
-  } while (nextPageToken);
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`❌ [ZOOM] metrics/webinars ${from}→${to}: ${res.status} ${errText}`);
+        break;
+      }
 
+      const data = await res.json();
+      webinars.push(...(data.webinars ?? []));
+      nextPageToken = data.next_page_token ?? "";
+    } while (nextPageToken);
+
+    // Polite pause between month chunks
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  console.log(`📅 [ZOOM] Total past webinars found: ${webinars.length}`);
   return webinars;
+}
+
+// ── Split a date range into 1-month chunks (Zoom API limit) ──
+function getMonthChunks(fromDate: string, toDate: string): { from: string; to: string }[] {
+  const chunks: { from: string; to: string }[] = [];
+  let cur = new Date(fromDate);
+  const end = new Date(toDate);
+
+  while (cur < end) {
+    const chunkStart = cur.toISOString().split("T")[0];
+    const chunkEnd = new Date(cur);
+    chunkEnd.setMonth(chunkEnd.getMonth() + 1);
+    if (chunkEnd > end) chunkEnd.setTime(end.getTime());
+    chunks.push({ from: chunkStart, to: chunkEnd.toISOString().split("T")[0] });
+    cur = new Date(chunkEnd);
+    cur.setDate(cur.getDate() + 1);
+  }
+  return chunks;
 }
 
 // ── Fetch participants for one webinar (Reports API) ──────────
@@ -162,6 +189,9 @@ serve(async (req) => {
     // ── Step 2: Get past webinars ──────────────────────────────
     const webinars = await fetchPastWebinars(token, zoomUserId, from, to);
     console.log(`📋 [ZOOM-SYNC] ${webinars.length} webinars in range`);
+    if (webinars.length > 0) {
+      console.log(`📋 [ZOOM-SYNC] Sample webinar:`, JSON.stringify(webinars[0]).slice(0, 300));
+    }
 
     if (webinars.length === 0) {
       return new Response(JSON.stringify({
@@ -177,9 +207,11 @@ serve(async (req) => {
 
     // ── Step 3: Process each webinar ──────────────────────────
     for (const webinar of webinars) {
-      const webinarId   = String(webinar.id);
-      const sessionDate = webinar.start_time.split("T")[0];
-      const sessionName = webinar.topic ?? "Zoom Webinar";
+      // metrics API returns both id (numeric) and uuid (string)
+      // Reports API works best with the numeric id
+      const webinarId   = String(webinar.id ?? webinar.uuid);
+      const sessionDate = (webinar.start_time ?? webinar.created_at ?? "").split("T")[0];
+      const sessionName = webinar.topic ?? webinar.subject ?? "Zoom Webinar";
 
       console.log(`🎯 [ZOOM-SYNC] "${sessionName}" — ${sessionDate} (ID: ${webinarId})`);
 
