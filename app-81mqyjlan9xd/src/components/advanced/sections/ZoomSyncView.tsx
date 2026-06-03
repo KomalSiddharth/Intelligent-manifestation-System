@@ -4,73 +4,161 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { supabase } from '@/db/supabase';
 import { toast } from 'sonner';
-import { Video, Calendar, Users, CheckCircle, AlertCircle, Play } from 'lucide-react';
+import { Video, Calendar, Users, CheckCircle, AlertCircle, Play, List, Zap } from 'lucide-react';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+interface SessionInfo {
+    id: string;
+    name: string;
+    date: string;
+    type: string;
+    participants: number;
+    detectedLabel: string;
+}
 
 interface SyncResult {
     webinarsProcessed: number;
     attendanceRecords: number;
     skipped: number;
     errors: number;
+    totalFound?: number;
+    remaining?: number;
+    note?: string;
     dateRange: { from: string; to: string };
     webinars: { sessionName: string; sessionDate: string; participants: number; synced?: number; wouldSync?: number }[];
     dryRun?: boolean;
 }
 
+const LABEL_COLORS: Record<string, string> = {
+    DMP: 'bg-blue-100 text-blue-700',
+    CHAKRA: 'bg-purple-100 text-purple-700',
+    PLATINUM: 'bg-yellow-100 text-yellow-700',
+    RELATIONSHIP_MASTERY: 'bg-pink-100 text-pink-700',
+    WEALTH_MASTERY: 'bg-green-100 text-green-700',
+    MIND_MASTERY: 'bg-indigo-100 text-indigo-700',
+    AI_MANIFESTATION: 'bg-cyan-100 text-cyan-700',
+    BRAD_YATES: 'bg-orange-100 text-orange-700',
+    SUPPORT: 'bg-gray-100 text-gray-700',
+    MASTERCLASS: 'bg-red-100 text-red-700',
+    HEALING: 'bg-teal-100 text-teal-700',
+    MEDITATION: 'bg-violet-100 text-violet-700',
+};
+
 const ZoomSyncView = () => {
     const [loading, setLoading] = useState(false);
+    const [sessionList, setSessionList] = useState<SessionInfo[] | null>(null);
     const [result, setResult] = useState<SyncResult | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [syncProgress, setSyncProgress] = useState<{ done: number; total: number; records: number } | null>(null);
+
     const [fromDate, setFromDate] = useState(() => {
         const d = new Date();
-        d.setMonth(d.getMonth() - 6); // Zoom API max = 6 months
+        d.setFullYear(d.getFullYear() - 1);
         return d.toISOString().split('T')[0];
     });
     const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0]);
-    const [sessionType, setSessionType] = useState('DMP');
-    const [dryRun, setDryRun] = useState(true); // default to preview first
+    const [fallbackLabel, setFallbackLabel] = useState('OTHER');
 
-    const runSync = async (preview: boolean) => {
+    const getToken = async () => {
+        const { data: { session } } = await supabase.auth.getSession();
+        return session?.access_token ?? SUPABASE_ANON_KEY;
+    };
+
+    const callSync = async (body: object) => {
+        const token = await getToken();
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/zoom-sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+        return data;
+    };
+
+    // ── List all sessions without fetching participants ────────
+    const listAllSessions = async () => {
+        setLoading(true);
+        setSessionList(null);
+        setError(null);
+        setResult(null);
+        try {
+            const data = await callSync({ fromDate, toDate, listOnly: true, sessionType: fallbackLabel });
+            setSessionList(data.sessions ?? []);
+            toast.info(`Found ${data.total} sessions in Zoom`);
+        } catch (e: any) {
+            setError(e.message);
+            toast.error('Failed: ' + e.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // ── Sync ALL sessions in auto-batches of 10 ───────────────
+    const syncAll = async () => {
         setLoading(true);
         setResult(null);
         setError(null);
+        setSyncProgress(null);
 
         try {
-            const { data: { session } } = await supabase.auth.getSession();
-            const token = session?.access_token ?? SUPABASE_ANON_KEY;
+            // First get total count
+            const listData = await callSync({ fromDate, toDate, listOnly: true, sessionType: fallbackLabel });
+            const total = listData.total ?? 0;
+            if (total === 0) { toast.info('No sessions found'); setLoading(false); return; }
 
-            const res = await fetch(`${SUPABASE_URL}/functions/v1/zoom-sync`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`,
-                },
-                body: JSON.stringify({
-                    fromDate,
-                    toDate,
-                    sessionType,
-                    dryRun: preview,
-                }),
-            });
+            let totalRecords = 0;
+            let totalErrors  = 0;
+            let totalSkipped = 0;
+            const BATCH = 10;
 
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Sync failed');
+            for (let offset = 0; offset < total; offset += BATCH) {
+                setSyncProgress({ done: offset, total, records: totalRecords });
+                const data = await callSync({
+                    fromDate, toDate,
+                    sessionType: fallbackLabel,
+                    dryRun: false,
+                    maxSessions: BATCH,
+                    offset,
+                });
+                totalRecords += data.attendanceRecords ?? 0;
+                totalErrors  += data.errors ?? 0;
+                totalSkipped += data.skipped ?? 0;
 
-            setResult(data);
-            if (preview) {
-                toast.info(`Preview: ${data.webinarsProcessed} webinars, ${data.attendanceRecords} records would be saved`);
-            } else {
-                toast.success(`Synced! ${data.attendanceRecords} attendance records saved`);
+                // Small pause to avoid rate limiting
+                if (offset + BATCH < total) await new Promise(r => setTimeout(r, 500));
             }
+
+            setSyncProgress({ done: total, total, records: totalRecords });
+            toast.success(`✅ All done! ${totalRecords} attendance records saved`);
+            setResult({
+                webinarsProcessed: total,
+                attendanceRecords: totalRecords,
+                skipped: totalSkipped,
+                errors: totalErrors,
+                dateRange: { from: fromDate, to: toDate },
+                webinars: [],
+            });
         } catch (e: any) {
             setError(e.message);
             toast.error('Sync failed: ' + e.message);
         } finally {
             setLoading(false);
+            setSyncProgress(null);
         }
     };
+
+    // ── Group sessions by label for display ───────────────────
+    const grouped = sessionList
+        ? sessionList.reduce((acc, s) => {
+            const key = s.detectedLabel;
+            if (!acc[key]) acc[key] = [];
+            acc[key].push(s);
+            return acc;
+          }, {} as Record<string, SessionInfo[]>)
+        : null;
 
     return (
         <div className="flex-1 overflow-auto p-6 max-w-3xl">
@@ -80,7 +168,7 @@ const ZoomSyncView = () => {
                     <h2 className="text-xl font-semibold">Zoom Attendance Sync</h2>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                    Fetch webinar attendance from Zoom → store in DB → AI sees member consistency
+                    Fetch all Zoom meetings & webinars → store attendance → AI sees member journey
                 </p>
             </div>
 
@@ -88,102 +176,125 @@ const ZoomSyncView = () => {
             <Card className="mb-4">
                 <CardHeader className="pb-3">
                     <CardTitle className="text-sm font-medium flex items-center gap-2">
-                        <Calendar className="w-4 h-4" />
-                        Date Range
+                        <Calendar className="w-4 h-4" /> Date Range
                     </CardTitle>
-                    <CardDescription className="text-xs">
-                        Zoom Reports API supports up to 12 months of history
-                    </CardDescription>
+                    <CardDescription className="text-xs">Zoom supports up to 12 months history</CardDescription>
                 </CardHeader>
                 <CardContent>
                     <div className="grid grid-cols-2 gap-3">
                         <div>
                             <label className="text-xs text-muted-foreground mb-1 block">From</label>
-                            <input
-                                type="date"
-                                value={fromDate}
-                                onChange={e => setFromDate(e.target.value)}
-                                className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                            />
+                            <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
+                                className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/50" />
                         </div>
                         <div>
                             <label className="text-xs text-muted-foreground mb-1 block">To</label>
-                            <input
-                                type="date"
-                                value={toDate}
-                                onChange={e => setToDate(e.target.value)}
-                                className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                            />
+                            <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
+                                className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/50" />
                         </div>
                     </div>
-                </CardContent>
-            </Card>
-
-            {/* Session Type */}
-            <Card className="mb-4">
-                <CardHeader className="pb-3">
-                    <CardTitle className="text-sm font-medium">Session Type Label</CardTitle>
-                    <CardDescription className="text-xs">
-                        How to categorise these sessions in DB (e.g. DMP, Webinar, Coaching)
-                    </CardDescription>
-                </CardHeader>
-                <CardContent>
-                    <input
-                        type="text"
-                        value={sessionType}
-                        onChange={e => setSessionType(e.target.value)}
-                        placeholder="DMP"
-                        className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                    />
+                    <p className="text-xs text-muted-foreground mt-2">
+                        Session types (DMP, CHAKRA, WEALTH_MASTERY etc.) are auto-detected from session names.
+                        Fallback label for unrecognised sessions:
+                    </p>
+                    <input type="text" value={fallbackLabel} onChange={e => setFallbackLabel(e.target.value)}
+                        placeholder="OTHER"
+                        className="mt-1 w-full px-3 py-1.5 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/50" />
                 </CardContent>
             </Card>
 
             {/* Action Buttons */}
             <div className="grid grid-cols-2 gap-3 mb-4">
-                <Button
-                    onClick={() => runSync(true)}
-                    disabled={loading}
-                    variant="outline"
-                    className="border-blue-300 text-blue-700 hover:bg-blue-50"
-                >
-                    {loading ? 'Running...' : '👁️ Preview (dry run)'}
+                <Button onClick={listAllSessions} disabled={loading} variant="outline"
+                    className="border-blue-300 text-blue-700 hover:bg-blue-50">
+                    <List className="w-4 h-4 mr-2" />
+                    {loading ? 'Loading...' : 'List All Sessions'}
                 </Button>
-                <Button
-                    onClick={() => runSync(false)}
-                    disabled={loading}
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
-                >
-                    {loading ? (
-                        <span className="flex items-center gap-2">
-                            <Play className="w-4 h-4 animate-pulse" /> Syncing...
-                        </span>
-                    ) : (
-                        <span className="flex items-center gap-2">
-                            <Play className="w-4 h-4" /> Sync Now
-                        </span>
-                    )}
+                <Button onClick={syncAll} disabled={loading}
+                    className="bg-blue-600 hover:bg-blue-700 text-white">
+                    <Zap className="w-4 h-4 mr-2" />
+                    {loading ? 'Syncing...' : 'Sync All Sessions'}
                 </Button>
             </div>
 
-            {/* Result */}
+            {/* Sync Progress Bar */}
+            {syncProgress && (
+                <Card className="mb-4 border-blue-200 bg-blue-50">
+                    <CardContent className="pt-4">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-sm font-medium text-blue-800">
+                                Syncing... {syncProgress.done}/{syncProgress.total} sessions
+                            </span>
+                            <span className="text-sm text-blue-600">{syncProgress.records} records saved</span>
+                        </div>
+                        <div className="w-full bg-blue-200 rounded-full h-2">
+                            <div className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                style={{ width: `${(syncProgress.done / syncProgress.total) * 100}%` }} />
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
+
+            {/* Session List grouped by type */}
+            {grouped && (
+                <Card className="mb-4">
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            <List className="w-4 h-4" />
+                            All Sessions Found — {sessionList!.length} total
+                        </CardTitle>
+                        <CardDescription className="text-xs">
+                            Grouped by auto-detected type. Click "Sync All" to save attendance for all.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
+                            {Object.entries(grouped)
+                                .sort(([a], [b]) => b.localeCompare(a))
+                                .map(([label, sessions]) => (
+                                <div key={label}>
+                                    <div className="flex items-center gap-2 mb-1.5">
+                                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${LABEL_COLORS[label] ?? 'bg-gray-100 text-gray-700'}`}>
+                                            {label}
+                                        </span>
+                                        <span className="text-xs text-muted-foreground">{sessions.length} sessions</span>
+                                    </div>
+                                    <div className="space-y-1 ml-2">
+                                        {sessions.map((s, i) => (
+                                            <div key={i} className="flex items-center justify-between bg-muted/30 rounded px-2 py-1">
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-xs font-medium truncate">{s.name}</p>
+                                                    <p className="text-xs text-muted-foreground">{s.date}</p>
+                                                </div>
+                                                <span className="text-xs text-muted-foreground ml-2 flex-shrink-0">
+                                                    <Users className="w-3 h-3 inline mr-1" />{s.participants}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
+
+            {/* Final Sync Result */}
             {result && (
-                <Card className={`mb-4 ${result.dryRun ? 'border-blue-200 bg-blue-50' : 'border-green-200 bg-green-50'}`}>
+                <Card className="mb-4 border-green-200 bg-green-50">
                     <CardContent className="pt-4">
                         <div className="flex items-center gap-2 mb-3">
-                            <CheckCircle className={`w-5 h-5 ${result.dryRun ? 'text-blue-600' : 'text-green-600'}`} />
-                            <span className={`font-medium ${result.dryRun ? 'text-blue-800' : 'text-green-800'}`}>
-                                {result.dryRun ? '👁️ Preview Result' : '✅ Sync Complete'}
-                            </span>
+                            <CheckCircle className="w-5 h-5 text-green-600" />
+                            <span className="font-medium text-green-800">✅ Sync Complete</span>
                         </div>
-
-                        <div className="grid grid-cols-4 gap-2 text-center mb-4">
+                        <div className="grid grid-cols-4 gap-2 text-center mb-3">
                             <div className="bg-white rounded-lg p-2">
-                                <p className="text-xl font-bold text-gray-900">{result.webinarsProcessed}</p>
-                                <p className="text-xs text-muted-foreground">Webinars</p>
+                                <p className="text-xl font-bold">{result.webinarsProcessed}</p>
+                                <p className="text-xs text-muted-foreground">Sessions</p>
                             </div>
                             <div className="bg-white rounded-lg p-2">
                                 <p className="text-xl font-bold text-green-600">{result.attendanceRecords}</p>
-                                <p className="text-xs text-muted-foreground">{result.dryRun ? 'Would save' : 'Saved'}</p>
+                                <p className="text-xs text-muted-foreground">Saved</p>
                             </div>
                             <div className="bg-white rounded-lg p-2">
                                 <p className="text-xl font-bold text-orange-500">{result.skipped}</p>
@@ -194,43 +305,9 @@ const ZoomSyncView = () => {
                                 <p className="text-xs text-muted-foreground">Errors</p>
                             </div>
                         </div>
-
-                        {result.skipped > 0 && (
-                            <p className="text-xs text-orange-600 mb-3 flex items-center gap-1">
-                                <AlertCircle className="w-3 h-3" />
-                                {result.skipped} attendees not found in audience_users — import contacts first to capture them
-                            </p>
-                        )}
-
-                        {/* Webinar breakdown */}
-                        {result.webinars && result.webinars.length > 0 && (
-                            <div className="space-y-1 max-h-48 overflow-y-auto">
-                                <p className="text-xs font-medium text-muted-foreground mb-1">Webinar breakdown:</p>
-                                {result.webinars.map((w, i) => (
-                                    <div key={i} className="flex items-center justify-between bg-white rounded px-2 py-1">
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-xs font-medium truncate">{w.sessionName}</p>
-                                            <p className="text-xs text-muted-foreground">{w.sessionDate}</p>
-                                        </div>
-                                        <div className="flex items-center gap-2 ml-2 flex-shrink-0">
-                                            <span className="text-xs text-muted-foreground">
-                                                <Users className="w-3 h-3 inline mr-1" />
-                                                {w.participants}
-                                            </span>
-                                            <Badge variant="secondary" className="text-xs">
-                                                {result.dryRun ? `${w.wouldSync ?? 0} would save` : `${w.synced ?? 0} saved`}
-                                            </Badge>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-
-                        {!result.dryRun && (
-                            <p className="text-xs text-green-700 mt-3 font-medium">
-                                🧠 MiteshAI will now see attendance consistency for all members
-                            </p>
-                        )}
+                        <p className="text-xs text-green-700 font-medium">
+                            🧠 MiteshAI will now see full attendance journey for all members
+                        </p>
                     </CardContent>
                 </Card>
             )}
@@ -244,18 +321,13 @@ const ZoomSyncView = () => {
                             <div>
                                 <p className="text-sm font-medium text-red-700">Sync Failed</p>
                                 <p className="text-xs text-red-600 mt-1">{error}</p>
-                                {error.includes('ZOOM_') && (
-                                    <p className="text-xs text-red-500 mt-2">
-                                        → Add ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET to Supabase Secrets
-                                    </p>
-                                )}
                             </div>
                         </div>
                     </CardContent>
                 </Card>
             )}
 
-            {/* Instructions */}
+            {/* Setup Instructions */}
             <Card className="bg-muted/30">
                 <CardContent className="pt-4">
                     <p className="text-xs font-medium mb-2">Setup required (one-time):</p>
@@ -269,12 +341,12 @@ const ZoomSyncView = () => {
                             Add zoom-sync Edge Function in Supabase with the code from GitHub
                         </p>
                         <p className="text-xs text-muted-foreground">
-                            <span className="font-medium text-foreground">3. Run SQL migration:</span>{' '}
-                            supabase/migrations/20260603_zoom_attendance.sql in SQL Editor
+                            <span className="font-medium text-foreground">3. List first:</span>{' '}
+                            Click "List All Sessions" to verify all sessions are detected correctly
                         </p>
                         <p className="text-xs text-muted-foreground">
-                            <span className="font-medium text-foreground">4. Preview first:</span>{' '}
-                            Click "Preview" to see what will be synced before saving
+                            <span className="font-medium text-foreground">4. Sync All:</span>{' '}
+                            Click "Sync All Sessions" — auto-batches all sessions, shows live progress
                         </p>
                     </div>
                 </CardContent>

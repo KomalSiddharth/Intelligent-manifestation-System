@@ -228,24 +228,61 @@ async function fetchWebinarParticipants(
 function detectSessionType(sessionName: string, fallback: string): string {
   const name = sessionName.toLowerCase();
 
-  if (name.includes("daily magic practice") || name.includes("dmp"))
+  // Daily Magic Practice
+  if (name.includes("daily magic") || name.includes("dmp"))
     return "DMP";
+
+  // Chakra
   if (name.includes("chakra"))
     return "CHAKRA";
+
+  // Platinum programs
   if (name.includes("platinum"))
     return "PLATINUM";
-  if (name.includes("ai manifestation") || name.includes("manifestation method"))
+
+  // Relationship Mastery
+  if (name.includes("relationship mastery") || name.includes("relationship"))
+    return "RELATIONSHIP_MASTERY";
+
+  // Wealth Mastery
+  if (name.includes("wealth mastery") || name.includes("wealth"))
+    return "WEALTH_MASTERY";
+
+  // Mind Mastery
+  if (name.includes("mind mastery"))
+    return "MIND_MASTERY";
+
+  // AI / Manifestation
+  if (name.includes("ai manifestation") || name.includes("manifestation method") || name.includes("manifestation"))
     return "AI_MANIFESTATION";
+
+  // Brad Yates collaboration
   if (name.includes("brad yates"))
     return "BRAD_YATES";
-  if (name.includes("support") || name.includes("coaching"))
+
+  // Support / Coaching calls
+  if (name.includes("support call") || name.includes("coaching call"))
     return "SUPPORT";
+
+  // Masterclass
   if (name.includes("masterclass") || name.includes("master class"))
     return "MASTERCLASS";
+
+  // Workshop
   if (name.includes("workshop"))
     return "WORKSHOP";
-  if (name.includes("q&a") || name.includes("q & a"))
+
+  // Q&A
+  if (name.includes("q&a") || name.includes("q & a") || name.includes("q and a"))
     return "QNA";
+
+  // Healing
+  if (name.includes("healing"))
+    return "HEALING";
+
+  // Meditation
+  if (name.includes("meditation"))
+    return "MEDITATION";
 
   // Fallback to manually provided label
   return fallback;
@@ -264,11 +301,13 @@ serve(async (req) => {
   const {
     fromDate,
     toDate,
-    sessionType  = "DMP",
-    zoomUserId   = "me",
-    dryRun       = false,
-    maxSessions  = 5,      // process max N sessions per call to avoid timeout
-    sessionFilter = "",    // optional: only sync sessions whose name contains this string
+    sessionType   = "DMP",
+    zoomUserId    = "me",
+    dryRun        = false,
+    maxSessions   = 10,
+    sessionFilter = "",
+    listOnly      = false,   // just list all session names, no participant fetch
+    offset        = 0,       // skip first N sessions (for pagination)
   } = body;
 
   // Default: last 6 months (Zoom Dashboard API hard limit)
@@ -296,15 +335,30 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // ── listOnly mode: just return all session names, no participant fetch ──
+    if (listOnly) {
+      const allSessions = webinars.map((w: any) => ({
+        id:          String(w.id ?? w.uuid),
+        name:        w.topic ?? w.subject ?? "Unknown",
+        date:        (w.start_time ?? "").split("T")[0],
+        type:        w._type,
+        participants: w.participants_count ?? w.participants ?? 0,
+        detectedLabel: detectSessionType(w.topic ?? w.subject ?? "", sessionType),
+      }));
+      return new Response(JSON.stringify({
+        success: true, total: allSessions.length, sessions: allSessions
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     // Apply optional name filter
     let toProcess = sessionFilter
       ? webinars.filter((w: any) =>
           (w.topic ?? w.subject ?? "").toLowerCase().includes(sessionFilter.toLowerCase()))
       : webinars;
 
-    // Limit sessions per call to prevent timeout
+    // Apply offset + limit for pagination (process batches without re-fetching from beginning)
     const totalFound = toProcess.length;
-    toProcess = toProcess.slice(0, maxSessions);
+    toProcess = toProcess.slice(offset, offset + maxSessions);
     console.log(`🔢 [ZOOM-SYNC] Processing ${toProcess.length}/${totalFound} sessions (maxSessions=${maxSessions})`);
 
     let totalAttendance = 0;
