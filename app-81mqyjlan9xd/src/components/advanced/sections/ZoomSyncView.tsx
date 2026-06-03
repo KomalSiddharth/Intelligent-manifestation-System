@@ -52,6 +52,8 @@ const ZoomSyncView = () => {
     const [result, setResult] = useState<SyncResult | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [syncProgress, setSyncProgress] = useState<{ done: number; total: number; records: number } | null>(null);
+    const [syncingSession, setSyncingSession] = useState<string | null>(null);  // ID of session being synced
+    const [syncedSessions, setSyncedSessions] = useState<Set<string>>(new Set()); // IDs already synced
 
     const [fromDate, setFromDate] = useState(() => {
         const d = new Date();
@@ -76,6 +78,36 @@ const ZoomSyncView = () => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Request failed');
         return data;
+    };
+
+    // ── Sync ONE specific session by ID ───────────────────────
+    const syncOneSession = async (session: SessionInfo) => {
+        setSyncingSession(session.id);
+        try {
+            let pageToken = "";
+            let totalSaved = 0;
+            do {
+                const data = await callSync({
+                    dryRun:          false,
+                    sessionId:       session.id,
+                    sessionZoomType: session.type,
+                    sessionName:     session.name,
+                    sessionDate:     session.date,
+                    detectedLabel:   session.detectedLabel,
+                    pageToken,
+                });
+                totalSaved += data.attendanceRecords ?? 0;
+                pageToken   = data.nextPageToken ?? "";
+                if (pageToken) await new Promise(r => setTimeout(r, 150));
+            } while (pageToken);
+
+            setSyncedSessions(prev => new Set([...prev, session.id]));
+            toast.success(`✅ "${session.name}" — ${totalSaved} records saved`);
+        } catch (e: any) {
+            toast.error(`❌ "${session.name}" failed: ${e.message}`);
+        } finally {
+            setSyncingSession(null);
+        }
     };
 
     // ── List all sessions without fetching participants ────────
@@ -296,14 +328,24 @@ const ZoomSyncView = () => {
                                     </div>
                                     <div className="space-y-1 ml-2">
                                         {sessions.map((s, i) => (
-                                            <div key={i} className="flex items-center justify-between bg-muted/30 rounded px-2 py-1">
+                                            <div key={i} className="flex items-center justify-between bg-muted/30 rounded px-2 py-1.5 gap-2">
                                                 <div className="flex-1 min-w-0">
                                                     <p className="text-xs font-medium truncate">{s.name}</p>
-                                                    <p className="text-xs text-muted-foreground">{s.date}</p>
+                                                    <p className="text-xs text-muted-foreground">{s.date} · <Users className="w-3 h-3 inline" /> {s.participants}</p>
                                                 </div>
-                                                <span className="text-xs text-muted-foreground ml-2 flex-shrink-0">
-                                                    <Users className="w-3 h-3 inline mr-1" />{s.participants}
-                                                </span>
+                                                <button
+                                                    onClick={() => syncOneSession(s)}
+                                                    disabled={!!syncingSession}
+                                                    className={`flex-shrink-0 text-xs px-2 py-1 rounded font-medium transition-all ${
+                                                        syncedSessions.has(s.id)
+                                                            ? 'bg-green-100 text-green-700 cursor-default'
+                                                            : syncingSession === s.id
+                                                            ? 'bg-blue-100 text-blue-700 animate-pulse'
+                                                            : 'bg-blue-600 text-white hover:bg-blue-700'
+                                                    }`}
+                                                >
+                                                    {syncedSessions.has(s.id) ? '✅ Done' : syncingSession === s.id ? 'Syncing...' : '⚡ Sync'}
+                                                </button>
                                             </div>
                                         ))}
                                     </div>
