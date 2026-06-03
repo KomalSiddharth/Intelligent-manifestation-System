@@ -54,29 +54,108 @@ async function getZoomToken(): Promise<string> {
   return data.access_token;
 }
 
-// ── Fetch all past webinars via Dashboard/Metrics API ────────
-// NOTE: /users/{id}/webinars does NOT support type=past.
-// The correct endpoint for past webinars is /metrics/webinars
+// ── Fetch past sessions from Dashboard API ────────────────────
+// Zoom Dashboard API max range = 1 month per request, last 6 months only
+// Tries both /metrics/webinars and /metrics/meetings
 async function fetchPastWebinars(
   token: string,
-  _zoomUserId: string,   // unused — metrics API is account-wide
+  _zoomUserId: string,
   fromDate: string,
   toDate: string
 ): Promise<any[]> {
-  const webinars: any[] = [];
-
-  // Zoom metrics API max date range = 1 month per request → chunk by month
+  const sessions: any[] = [];
   const chunks = getMonthChunks(fromDate, toDate);
-  console.log(`📅 [ZOOM] Fetching across ${chunks.length} month chunks`);
+  console.log(`📅 [ZOOM] ${chunks.length} month chunks to fetch`);
 
   for (const { from, to } of chunks) {
-    let nextPageToken = "";
+    // Try both webinars and meetings — DMP might be either type
+    for (const endpoint of ["webinars", "meetings"]) {
+      let nextPageToken = "";
+      let pageCount = 0;
+
+      do {
+        const url = new URL(`https://api.zoom.us/v2/metrics/${endpoint}`);
+        url.searchParams.set("type", "past");
+        url.searchParams.set("from", from);
+        url.searchParams.set("to", to);
+        url.searchParams.set("page_size", "300");
+        if (nextPageToken) url.searchParams.set("next_page_token", nextPageToken);
+
+        const res = await fetch(url.toString(), {
+          headers: { "Authorization": `Bearer ${token}` },
+        });
+
+        if (!res.ok) {
+          const body = await res.text();
+          // 400 code=300 = date out of 6-month range — skip silently
+          if (res.status === 400 && body.includes("300")) break;
+          console.warn(`⚠️ [ZOOM] metrics/${endpoint} ${from}→${to}: ${res.status}`);
+          break;
+        }
+
+        const data = await res.json();
+        const items = data[endpoint] ?? [];
+        // Tag each item with its type so we know which participant endpoint to call
+        items.forEach((item: any) => { item._type = endpoint === "webinars" ? "webinar" : "meeting"; });
+        sessions.push(...items);
+        nextPageToken = data.next_page_token ?? "";
+        pageCount++;
+      } while (nextPageToken && pageCount < 20);
+    }
+
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  console.log(`📅 [ZOOM] Total sessions found: ${sessions.length} (webinars+meetings combined)`);
+  if (sessions.length > 0) {
+    console.log(`📋 [ZOOM] Sample:`, JSON.stringify(sessions[0]).slice(0, 250));
+  }
+  return sessions;
+}
+
+// ── Split date range into 1-month chunks ─────────────────────
+function getMonthChunks(fromDate: string, toDate: string): { from: string; to: string }[] {
+  const chunks: { from: string; to: string }[] = [];
+  let cur = new Date(fromDate + "T00:00:00Z");
+  const end = new Date(toDate + "T00:00:00Z");
+
+  while (cur < end) {
+    const chunkStart = cur.toISOString().split("T")[0];
+    const chunkEnd = new Date(cur);
+    chunkEnd.setMonth(chunkEnd.getMonth() + 1);
+    if (chunkEnd > end) chunkEnd.setTime(end.getTime());
+    const chunkEndStr = chunkEnd.toISOString().split("T")[0];
+    if (chunkStart !== chunkEndStr) {
+      chunks.push({ from: chunkStart, to: chunkEndStr });
+    }
+    cur = new Date(chunkEnd);
+    cur.setDate(cur.getDate() + 1);
+  }
+  return chunks;
+}
+
+// ── Fetch participants via Reports API ────────────────────────
+// Works for both meetings and webinars
+async function fetchWebinarParticipants(
+  token: string,
+  sessionId: string,
+  sessionType: "webinar" | "meeting" = "webinar"
+): Promise<any[]> {
+  const participants: any[] = [];
+  let nextPageToken = "";
+
+  // Try both report endpoints — webinar first, then meeting as fallback
+  const endpoints =
+    sessionType === "webinar"
+      ? [`report/webinars/${sessionId}/participants`, `report/meetings/${sessionId}/participants`]
+      : [`report/meetings/${sessionId}/participants`, `report/webinars/${sessionId}/participants`];
+
+  for (const endpoint of endpoints) {
+    participants.length = 0; // reset between attempts
+    nextPageToken = "";
 
     do {
-      const url = new URL("https://api.zoom.us/v2/metrics/webinars");
-      url.searchParams.set("type", "past");
-      url.searchParams.set("from", from);
-      url.searchParams.set("to", to);
+      const url = new URL(`https://api.zoom.us/v2/${endpoint}`);
       url.searchParams.set("page_size", "300");
       if (nextPageToken) url.searchParams.set("next_page_token", nextPageToken);
 
@@ -85,71 +164,18 @@ async function fetchPastWebinars(
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        console.error(`❌ [ZOOM] metrics/webinars ${from}→${to}: ${res.status} ${errText}`);
+        if (res.status === 404 || res.status === 400) break; // try fallback
+        console.warn(`⚠️ [ZOOM] ${endpoint}: ${res.status}`);
         break;
       }
 
       const data = await res.json();
-      webinars.push(...(data.webinars ?? []));
+      participants.push(...(data.participants ?? []));
       nextPageToken = data.next_page_token ?? "";
     } while (nextPageToken);
 
-    // Polite pause between month chunks
-    await new Promise(r => setTimeout(r, 200));
+    if (participants.length > 0) break; // got data, no need to try fallback
   }
-
-  console.log(`📅 [ZOOM] Total past webinars found: ${webinars.length}`);
-  return webinars;
-}
-
-// ── Split a date range into 1-month chunks (Zoom API limit) ──
-function getMonthChunks(fromDate: string, toDate: string): { from: string; to: string }[] {
-  const chunks: { from: string; to: string }[] = [];
-  let cur = new Date(fromDate);
-  const end = new Date(toDate);
-
-  while (cur < end) {
-    const chunkStart = cur.toISOString().split("T")[0];
-    const chunkEnd = new Date(cur);
-    chunkEnd.setMonth(chunkEnd.getMonth() + 1);
-    if (chunkEnd > end) chunkEnd.setTime(end.getTime());
-    chunks.push({ from: chunkStart, to: chunkEnd.toISOString().split("T")[0] });
-    cur = new Date(chunkEnd);
-    cur.setDate(cur.getDate() + 1);
-  }
-  return chunks;
-}
-
-// ── Fetch participants for one webinar (Reports API) ──────────
-async function fetchWebinarParticipants(
-  token: string,
-  webinarId: string
-): Promise<any[]> {
-  const participants: any[] = [];
-  let nextPageToken = "";
-
-  do {
-    const url = new URL(`https://api.zoom.us/v2/report/webinars/${webinarId}/participants`);
-    url.searchParams.set("page_size", "300");
-    if (nextPageToken) url.searchParams.set("next_page_token", nextPageToken);
-
-    const res = await fetch(url.toString(), {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-
-    if (!res.ok) {
-      // 400/404 = webinar not eligible for Reports API (too old or wrong type)
-      if (res.status !== 404 && res.status !== 400) {
-        console.warn(`⚠️ [ZOOM] Participants ${webinarId}: ${res.status}`);
-      }
-      break;
-    }
-
-    const data = await res.json();
-    participants.push(...(data.participants ?? []));
-    nextPageToken = data.next_page_token ?? "";
-  } while (nextPageToken);
 
   return participants;
 }
@@ -172,12 +198,12 @@ serve(async (req) => {
     dryRun      = false,
   } = body;
 
-  // Default: last 12 months
-  const now     = new Date();
-  const ago12m  = new Date(now);
-  ago12m.setFullYear(ago12m.getFullYear() - 1);
+  // Default: last 6 months (Zoom Dashboard API hard limit)
+  const now    = new Date();
+  const ago6m  = new Date(now);
+  ago6m.setMonth(ago6m.getMonth() - 6);
 
-  const from = fromDate ?? ago12m.toISOString().split("T")[0];
+  const from = fromDate ?? ago6m.toISOString().split("T")[0];
   const to   = toDate   ?? now.toISOString().split("T")[0];
 
   console.log(`🔄 [ZOOM-SYNC] from=${from} to=${to} sessionType=${sessionType} dryRun=${dryRun}`);
@@ -215,8 +241,8 @@ serve(async (req) => {
 
       console.log(`🎯 [ZOOM-SYNC] "${sessionName}" — ${sessionDate} (ID: ${webinarId})`);
 
-      // Fetch participants
-      const participants = await fetchWebinarParticipants(token, webinarId);
+      // Fetch participants (pass session type for correct endpoint)
+      const participants = await fetchWebinarParticipants(token, webinarId, webinar._type ?? "webinar");
       console.log(`   👥 ${participants.length} participants`);
 
       if (participants.length === 0) {

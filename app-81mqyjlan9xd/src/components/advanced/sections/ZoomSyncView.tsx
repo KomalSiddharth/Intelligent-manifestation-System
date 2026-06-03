@@ -25,7 +25,7 @@ const ZoomSyncView = () => {
     const [error, setError] = useState<string | null>(null);
     const [fromDate, setFromDate] = useState(() => {
         const d = new Date();
-        d.setFullYear(d.getFullYear() - 1);
+        d.setMonth(d.getMonth() - 6); // Zoom API max = 6 months
         return d.toISOString().split('T')[0];
     });
     const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0]);
