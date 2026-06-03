@@ -366,39 +366,34 @@ serve(async (req) => {
         continue;
       }
 
-      // Batch upsert into member_attendance
+      // ── DELETE existing records for this session, then INSERT fresh ──
+      // This approach needs NO unique constraints — always works cleanly
       let synced = 0;
+
+      // Step A: Delete existing records for this webinar (idempotent re-runs)
+      const deleteResult = await supabase
+        .from("member_attendance")
+        .delete()
+        .eq("session_name",  sessionName)
+        .eq("session_date",  sessionDate)
+        .eq("session_type",  sessionType);
+
+      if (deleteResult.error) {
+        console.warn(`⚠️ [ZOOM-SYNC] Could not clear old records: ${deleteResult.error.message}`);
+      } else {
+        console.log(`   🗑️  Cleared old records for "${sessionName}" ${sessionDate}`);
+      }
+
+      // Step B: Insert fresh rows in batches of 200
       for (let i = 0; i < rows.length; i += 200) {
         const chunk = rows.slice(i, i + 200);
-
-        // Try with zoom_webinar_id conflict key (requires migration to be run)
-        let { data, error } = await supabase
+        const { data, error } = await supabase
           .from("member_attendance")
-          .upsert(chunk, { onConflict: "audience_user_id,zoom_webinar_id" })
+          .insert(chunk)
           .select("id");
 
-        // Fallback: unique index on zoom_webinar_id may not exist yet
-        if (error && error.message.includes("constraint")) {
-          console.warn(`⚠️ [ZOOM-SYNC] Upsert conflict issue: ${error.message} — trying upsert with session key fallback`);
-          // Try upsert with session_name+date+type key (works even without zoom index)
-          const fallbackChunk = chunk.map(({ zoom_webinar_id: _, ...rest }) => rest);
-          const fallback = await supabase
-            .from("member_attendance")
-            .upsert(fallbackChunk, {
-              onConflict: "audience_user_id,session_date,session_type,session_name",
-              ignoreDuplicates: true
-            })
-            .select("id");
-          data  = fallback.data;
-          error = fallback.error;
-          if (error) {
-            // Last resort: just skip duplicates with insert + ignoreDuplicates
-            console.warn(`⚠️ [ZOOM-SYNC] Fallback also failed: ${error.message}`);
-          }
-        }
-
         if (error) {
-          console.error(`❌ [ZOOM-SYNC] Upsert chunk ${i} error:`, error.message);
+          console.error(`❌ [ZOOM-SYNC] Insert chunk ${i} error:`, error.message);
           totalErrors += chunk.length;
         } else {
           synced += data?.length ?? chunk.length;
