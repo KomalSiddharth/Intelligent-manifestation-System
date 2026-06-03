@@ -377,8 +377,8 @@ serve(async (req) => {
           .upsert(chunk, { onConflict: "audience_user_id,zoom_webinar_id" })
           .select("id");
 
-        // Fallback: zoom_webinar_id column may not exist yet (migration not run)
-        if (error && (error.message.includes("zoom_webinar_id") || error.message.includes("column"))) {
+        // Fallback: unique constraint may not exist yet (migration not run)
+        if (error && (error.message.includes("constraint") || error.message.includes("zoom_webinar_id") || error.message.includes("column"))) {
           console.warn(`⚠️ [ZOOM-SYNC] zoom_webinar_id column missing — run SQL migration! Falling back to insert.`);
           // Strip zoom_webinar_id from rows and use basic insert
           const fallbackChunk = chunk.map(({ zoom_webinar_id: _, ...rest }) => rest);
