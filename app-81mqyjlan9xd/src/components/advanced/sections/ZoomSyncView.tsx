@@ -96,7 +96,7 @@ const ZoomSyncView = () => {
         }
     };
 
-    // ── Sync ALL sessions in auto-batches of 10 ───────────────
+    // ── Sync ALL sessions using direct session ID mode ────────
     const syncAll = async () => {
         setLoading(true);
         setResult(null);
@@ -104,38 +104,42 @@ const ZoomSyncView = () => {
         setSyncProgress(null);
 
         try {
-            // First get total count
+            // Step 1: Fetch full session list ONCE (fast — no participant fetching)
+            toast.info('Fetching session list from Zoom...');
             const listData = await callSync({ fromDate, toDate, listOnly: true, sessionType: fallbackLabel });
-            const total = listData.total ?? 0;
+            const allSessions = (listData.sessions ?? []).filter((s: any) => !s.skip && s.detectedLabel !== 'SKIP');
+            const total = allSessions.length;
+
             if (total === 0) { toast.info('No sessions found'); setLoading(false); return; }
+            toast.info(`Found ${total} sessions — syncing one by one...`);
 
             let totalRecords = 0;
-            let totalErrors  = 0;
             let totalSkipped = 0;
-            let failedSessions: number[] = [];
+            let failedCount  = 0;
 
-            // Process ONE session at a time to avoid 504 timeout
-            for (let offset = 0; offset < total; offset += 1) {
-                setSyncProgress({ done: offset, total, records: totalRecords });
+            // Step 2: Process each session by ID directly (no re-fetching session list!)
+            for (let i = 0; i < allSessions.length; i++) {
+                const session = allSessions[i];
+                setSyncProgress({ done: i, total, records: totalRecords });
+
                 try {
                     const data = await callSync({
-                        fromDate, toDate,
-                        sessionType: fallbackLabel,
-                        dryRun: false,
-                        maxSessions: 1,
-                        offset,
+                        dryRun:         false,
+                        sessionId:      session.id,
+                        sessionZoomType: session.type,
+                        sessionName:    session.name,
+                        sessionDate:    session.date,
+                        detectedLabel:  session.detectedLabel,
+                        sessionType:    fallbackLabel,
                     });
                     totalRecords += data.attendanceRecords ?? 0;
-                    totalErrors  += data.errors ?? 0;
                     totalSkipped += data.skipped ?? 0;
                 } catch (err: any) {
-                    // If one session fails (504), log and continue with next
-                    console.warn(`Session ${offset} failed: ${err.message}`);
-                    failedSessions.push(offset);
+                    console.warn(`Session "${session.name}" failed: ${err.message}`);
+                    failedCount++;
                 }
 
-                // Small pause between calls
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 200));
             }
 
             setSyncProgress({ done: total, total, records: totalRecords });

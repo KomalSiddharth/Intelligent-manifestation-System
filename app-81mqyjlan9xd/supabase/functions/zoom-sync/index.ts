@@ -352,8 +352,14 @@ serve(async (req) => {
     dryRun        = false,
     maxSessions   = 10,
     sessionFilter = "",
-    listOnly      = false,   // just list all session names, no participant fetch
-    offset        = 0,       // skip first N sessions (for pagination)
+    listOnly      = false,
+    offset        = 0,
+    // ── Direct session mode — skip fetchPastWebinars entirely ──
+    sessionId     = null,   // Zoom meeting/webinar ID
+    sessionZoomType = "meeting", // "meeting" or "webinar"
+    sessionName   = null,
+    sessionDate   = null,
+    detectedLabel = null,
   } = body;
 
   // Default: last 6 months (Zoom Dashboard API hard limit)
@@ -369,6 +375,78 @@ serve(async (req) => {
   try {
     // ── Step 1: Zoom auth ──────────────────────────────────────
     const token = await getZoomToken();
+
+    // ── DIRECT SESSION MODE — process one specific session by ID ──
+    // This skips the expensive "fetch all sessions" step
+    if (sessionId) {
+      const sName    = sessionName ?? "Zoom Session";
+      const sDate    = sessionDate ?? new Date().toISOString().split("T")[0];
+      const sType    = detectedLabel ?? detectSessionType(sName, sessionType);
+      const sZoomType = sessionZoomType === "webinar" ? "webinar" : "meeting";
+
+      console.log(`🎯 [ZOOM-SYNC] Direct mode: "${sName}" — ${sDate} (ID: ${sessionId})`);
+
+      const participants = await fetchWebinarParticipants(token, sessionId, sZoomType);
+      console.log(`   👥 ${participants.length} participants`);
+
+      if (participants.length === 0) {
+        return new Response(JSON.stringify({ success: true, attendanceRecords: 0, skipped: 0 }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      // Deduplicate by email
+      const byEmail = new Map<string, any>();
+      for (const p of participants) {
+        const email = (p.user_email ?? "").trim().toLowerCase();
+        if (!email) continue;
+        const existing = byEmail.get(email);
+        if (!existing || (p.duration ?? 0) > (existing.duration ?? 0)) byEmail.set(email, p);
+      }
+
+      const emails = [...byEmail.keys()];
+      const emailToId = new Map<string, string>();
+      for (let i = 0; i < emails.length; i += 500) {
+        const chunk = emails.slice(i, i + 500);
+        const { data } = await supabase.from("audience_users").select("id, email").in("email", chunk);
+        (data ?? []).forEach((u: any) => emailToId.set(u.email.toLowerCase(), u.id));
+      }
+
+      const skipped = emails.length - emailToId.size;
+      const rows = [...byEmail.values()]
+        .filter(p => emailToId.has((p.user_email ?? "").trim().toLowerCase()))
+        .map(p => ({
+          audience_user_id:    emailToId.get(p.user_email.trim().toLowerCase())!,
+          session_type:        sType,
+          session_name:        sName,
+          session_date:        sDate,
+          attended:            true,
+          watch_duration_mins: Math.round((p.duration ?? 0) / 60),
+          source:              "zoom_api",
+          zoom_webinar_id:     sessionId,
+        }));
+
+      if (!dryRun) {
+        // Delete old records for this session
+        await supabase.from("member_attendance").delete().eq("zoom_webinar_id", sessionId);
+
+        // Insert fresh
+        let synced = 0;
+        for (let i = 0; i < rows.length; i += 200) {
+          const { data, error } = await supabase.from("member_attendance").insert(rows.slice(i, i + 200)).select("id");
+          if (error) { console.error(`❌ Insert error: ${error.message}`); }
+          else { synced += data?.length ?? rows.slice(i, i + 200).length; }
+        }
+        console.log(`   ✅ Synced ${synced}/${rows.length} records`);
+        return new Response(JSON.stringify({ success: true, attendanceRecords: synced, skipped }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true, dryRun: true, wouldSync: rows.length, skipped }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
 
     // ── Step 2: Get past webinars ──────────────────────────────
     const webinars = await fetchPastWebinars(token, zoomUserId, from, to);
