@@ -104,14 +104,21 @@ const ZoomSyncView = () => {
         setSyncProgress(null);
 
         try {
-            // Step 1: Fetch full session list ONCE (fast — no participant fetching)
-            toast.info('Fetching session list from Zoom...');
-            const listData = await callSync({ fromDate, toDate, listOnly: true, sessionType: fallbackLabel });
-            const allSessions = (listData.sessions ?? []).filter((s: any) => !s.skip && s.detectedLabel !== 'SKIP');
-            const total = allSessions.length;
+            // Step 1: Use already-loaded session list OR fetch once
+            let allSessions = (sessionList ?? []).filter(s => s.detectedLabel !== 'SKIP');
 
+            if (allSessions.length === 0) {
+                toast.info('Fetching session list from Zoom...');
+                const listData = await callSync({ fromDate, toDate, listOnly: true, sessionType: fallbackLabel });
+                allSessions = (listData.sessions ?? []).filter((s: any) => !s.skip && s.detectedLabel !== 'SKIP');
+                setSessionList(listData.sessions ?? []);
+            } else {
+                toast.info(`Using cached list of ${allSessions.length} sessions`);
+            }
+
+            const total = allSessions.length;
             if (total === 0) { toast.info('No sessions found'); setLoading(false); return; }
-            toast.info(`Found ${total} sessions — syncing one by one...`);
+            toast.info(`Syncing ${total} sessions one by one...`);
 
             let totalRecords = 0;
             let totalSkipped = 0;
