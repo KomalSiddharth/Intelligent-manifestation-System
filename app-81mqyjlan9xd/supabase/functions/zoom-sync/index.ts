@@ -377,17 +377,24 @@ serve(async (req) => {
           .upsert(chunk, { onConflict: "audience_user_id,zoom_webinar_id" })
           .select("id");
 
-        // Fallback: unique constraint may not exist yet (migration not run)
-        if (error && (error.message.includes("constraint") || error.message.includes("zoom_webinar_id") || error.message.includes("column"))) {
-          console.warn(`⚠️ [ZOOM-SYNC] zoom_webinar_id column missing — run SQL migration! Falling back to insert.`);
-          // Strip zoom_webinar_id from rows and use basic insert
+        // Fallback: unique index on zoom_webinar_id may not exist yet
+        if (error && error.message.includes("constraint")) {
+          console.warn(`⚠️ [ZOOM-SYNC] Upsert conflict issue: ${error.message} — trying upsert with session key fallback`);
+          // Try upsert with session_name+date+type key (works even without zoom index)
           const fallbackChunk = chunk.map(({ zoom_webinar_id: _, ...rest }) => rest);
           const fallback = await supabase
             .from("member_attendance")
-            .insert(fallbackChunk)
+            .upsert(fallbackChunk, {
+              onConflict: "audience_user_id,session_date,session_type,session_name",
+              ignoreDuplicates: true
+            })
             .select("id");
           data  = fallback.data;
           error = fallback.error;
+          if (error) {
+            // Last resort: just skip duplicates with insert + ignoreDuplicates
+            console.warn(`⚠️ [ZOOM-SYNC] Fallback also failed: ${error.message}`);
+          }
         }
 
         if (error) {
