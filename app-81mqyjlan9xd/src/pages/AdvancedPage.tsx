@@ -5,6 +5,7 @@ import ActionsView from '@/components/advanced/sections/ActionsView';
 import AlertsView from '@/components/advanced/sections/AlertsView';
 import CacheStatsView from '@/components/advanced/sections/CacheStatsView';
 import KajabiImportView from '@/components/advanced/sections/KajabiImportView';
+import ZoomSyncView from '@/components/advanced/sections/ZoomSyncView';
 
 const AdvancedPage = () => {
   const [activeSection, setActiveSection] = useState('actions');
@@ -21,10 +22,12 @@ const AdvancedPage = () => {
         {activeSection === 'alerts' && <AlertsView />}
         {activeSection === 'cache-stats' && <CacheStatsView />}
         {activeSection === 'kajabi-import' && <KajabiImportView />}
+        {activeSection === 'zoom-sync' && <ZoomSyncView />}
         {activeSection !== 'actions' &&
           activeSection !== 'alerts' &&
           activeSection !== 'cache-stats' &&
-          activeSection !== 'kajabi-import' && (
+          activeSection !== 'kajabi-import' &&
+          activeSection !== 'zoom-sync' && (
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
               Section under development
             </div>

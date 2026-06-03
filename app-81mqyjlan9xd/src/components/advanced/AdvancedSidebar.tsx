@@ -3,6 +3,7 @@ import {
     MessageSquare,
     BarChart3,
     Upload,
+    Video,
 } from 'lucide-react';
 import {
     Select,
@@ -133,6 +134,17 @@ const AdvancedSidebar = ({
                         >
                             <Upload className="w-4 h-4 mr-2" />
                             Kajabi Import
+                        </button>
+                        <button
+                            onClick={() => onSectionChange('zoom-sync')}
+                            className={`flex items-center w-full px-4 py-2 text-sm font-medium transition-colors rounded-md ${
+                                activeSection === 'zoom-sync'
+                                    ? 'bg-muted text-foreground'
+                                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                            }`}
+                        >
+                            <Video className="w-4 h-4 mr-2" />
+                            Zoom Attendance
                         </button>
                     </div>
                 </div>
