@@ -237,9 +237,11 @@ serve(async (req) => {
   const {
     fromDate,
     toDate,
-    sessionType = "DMP",
-    zoomUserId  = "me",
-    dryRun      = false,
+    sessionType  = "DMP",
+    zoomUserId   = "me",
+    dryRun       = false,
+    maxSessions  = 5,      // process max N sessions per call to avoid timeout
+    sessionFilter = "",    // optional: only sync sessions whose name contains this string
   } = body;
 
   // Default: last 6 months (Zoom Dashboard API hard limit)
@@ -258,25 +260,33 @@ serve(async (req) => {
 
     // ── Step 2: Get past webinars ──────────────────────────────
     const webinars = await fetchPastWebinars(token, zoomUserId, from, to);
-    console.log(`📋 [ZOOM-SYNC] ${webinars.length} webinars in range`);
-    if (webinars.length > 0) {
-      console.log(`📋 [ZOOM-SYNC] Sample webinar:`, JSON.stringify(webinars[0]).slice(0, 300));
-    }
+    console.log(`📋 [ZOOM-SYNC] ${webinars.length} total sessions found`);
 
     if (webinars.length === 0) {
       return new Response(JSON.stringify({
-        success: true, message: "No webinars found in date range",
+        success: true, message: "No sessions found in date range",
         webinarsProcessed: 0, attendanceRecords: 0, dateRange: { from, to }
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // Apply optional name filter
+    let toProcess = sessionFilter
+      ? webinars.filter((w: any) =>
+          (w.topic ?? w.subject ?? "").toLowerCase().includes(sessionFilter.toLowerCase()))
+      : webinars;
+
+    // Limit sessions per call to prevent timeout
+    const totalFound = toProcess.length;
+    toProcess = toProcess.slice(0, maxSessions);
+    console.log(`🔢 [ZOOM-SYNC] Processing ${toProcess.length}/${totalFound} sessions (maxSessions=${maxSessions})`);
+
     let totalAttendance = 0;
     let totalErrors     = 0;
-    let totalSkipped    = 0;   // emails not in audience_users
+    let totalSkipped    = 0;
     const webinarLog: any[] = [];
 
-    // ── Step 3: Process each webinar ──────────────────────────
-    for (const webinar of webinars) {
+    // ── Step 3: Process each session ──────────────────────────
+    for (const webinar of toProcess) {
       // metrics API returns both id (numeric) and uuid (string)
       // Reports API works best with the numeric id
       const webinarId   = String(webinar.id ?? webinar.uuid);
@@ -292,6 +302,13 @@ serve(async (req) => {
       if (participants.length === 0) {
         webinarLog.push({ webinarId, sessionName, sessionDate, participants: 0, synced: 0 });
         continue;
+      }
+
+      // Debug: show sample participant to confirm email field name
+      if (participants.length > 0) {
+        const sample = participants[0];
+        console.log(`🔍 [ZOOM-SYNC] Sample participant fields: ${Object.keys(sample).join(", ")}`);
+        console.log(`🔍 [ZOOM-SYNC] Sample participant: name="${sample.name}" email="${sample.user_email}" duration=${sample.duration}`);
       }
 
       // Deduplicate — Zoom sometimes lists same person multiple times (rejoins)
@@ -353,13 +370,28 @@ serve(async (req) => {
       let synced = 0;
       for (let i = 0; i < rows.length; i += 200) {
         const chunk = rows.slice(i, i + 200);
-        const { data, error } = await supabase
+
+        // Try with zoom_webinar_id conflict key (requires migration to be run)
+        let { data, error } = await supabase
           .from("member_attendance")
           .upsert(chunk, { onConflict: "audience_user_id,zoom_webinar_id" })
           .select("id");
 
+        // Fallback: zoom_webinar_id column may not exist yet (migration not run)
+        if (error && (error.message.includes("zoom_webinar_id") || error.message.includes("column"))) {
+          console.warn(`⚠️ [ZOOM-SYNC] zoom_webinar_id column missing — run SQL migration! Falling back to insert.`);
+          // Strip zoom_webinar_id from rows and use basic insert
+          const fallbackChunk = chunk.map(({ zoom_webinar_id: _, ...rest }) => rest);
+          const fallback = await supabase
+            .from("member_attendance")
+            .insert(fallbackChunk)
+            .select("id");
+          data  = fallback.data;
+          error = fallback.error;
+        }
+
         if (error) {
-          console.error(`❌ [ZOOM-SYNC] Upsert error:`, error.message);
+          console.error(`❌ [ZOOM-SYNC] Upsert chunk ${i} error:`, error.message);
           totalErrors += chunk.length;
         } else {
           synced += data?.length ?? chunk.length;
@@ -387,15 +419,21 @@ serve(async (req) => {
       } catch (_) {}
     }
 
+    const remaining = totalFound - toProcess.length;
     const summary = {
       success:           true,
       dryRun,
-      webinarsProcessed: webinars.length,
-      attendanceRecords: totalAttendance,
-      skipped:           totalSkipped,
-      errors:            totalErrors,
-      dateRange:         { from, to },
-      webinars:          webinarLog,
+      webinarsProcessed: toProcess.length,
+      totalFound,
+      remaining,           // how many sessions still need to be synced
+      attendanceRecords:   totalAttendance,
+      skipped:             totalSkipped,
+      errors:              totalErrors,
+      dateRange:           { from, to },
+      webinars:            webinarLog,
+      note: remaining > 0
+        ? `${remaining} more sessions remaining — run sync again to continue`
+        : "All sessions in range synced",
     };
 
     console.log("✅ [ZOOM-SYNC] Complete:", {
