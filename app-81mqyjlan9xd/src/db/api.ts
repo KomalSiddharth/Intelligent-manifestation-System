@@ -983,6 +983,7 @@ export const updateAudienceUserTags = async (id: string, tags: string[]): Promis
 
 // Conversations API (Sessions)
 export const getSessions = async (userId: string, profileId?: string): Promise<Conversation[]> => {
+  // Primary lookup by user_id
   let query = supabase
     .from('conversations')
     .select('*')
@@ -998,6 +999,37 @@ export const getSessions = async (userId: string, profileId?: string): Promise<C
     console.error("Error fetching sessions:", error);
     return [];
   }
+
+  // If no sessions found by user_id, try finding via audience_users
+  // (handles case where localStorage was cleared and new user_id was generated)
+  if (!data || data.length === 0) {
+    const email = localStorage.getItem('chat_user_email');
+    if (email) {
+      const { data: auData } = await supabase
+        .from('audience_users')
+        .select('id, user_id')
+        .eq('email', email.toLowerCase())
+        .maybeSingle();
+
+      if (auData) {
+        // Try all possible IDs linked to this email
+        const altIds = [auData.id, auData.user_id].filter(Boolean).filter(id => id !== userId);
+        if (altIds.length > 0) {
+          let fallbackQuery = supabase
+            .from('conversations')
+            .select('*')
+            .in('user_id', altIds);
+          if (profileId) fallbackQuery = fallbackQuery.eq('profile_id', profileId);
+          const { data: fallback } = await fallbackQuery.order('last_message_at', { ascending: false });
+          if (fallback && fallback.length > 0) {
+            console.log(`📋 [SESSIONS] Found ${fallback.length} sessions via email fallback`);
+            return fallback;
+          }
+        }
+      }
+    }
+  }
+
   return data || [];
 };
 
