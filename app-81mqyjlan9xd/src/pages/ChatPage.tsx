@@ -652,8 +652,12 @@ const ChatPage = () => {
             }
 
             // ⚡ PERF: Fire-and-forget assistant save — user can send next message immediately
-            if (aiResponse) {
-                saveMessage(sessionId, 'assistant', aiResponse)
+            // Strip __SOURCES__ before saving so history shows clean text
+            const cleanResponse = aiResponse.includes('__SOURCES__:')
+                ? aiResponse.split('__SOURCES__:')[0].trim()
+                : aiResponse;
+            if (cleanResponse) {
+                saveMessage(sessionId, 'assistant', cleanResponse)
                     .then((savedAssistantMsg) => {
                         if (savedAssistantMsg) {
                             setMessages(prev => {
@@ -813,7 +817,10 @@ const ChatPage = () => {
             }
 
             if (currentSessionId) {
-                await saveMessage(currentSessionId, 'assistant', aiResponse);
+                const cleanAiResp = aiResponse.includes('__SOURCES__:')
+                    ? aiResponse.split('__SOURCES__:')[0].trim()
+                    : aiResponse;
+                await saveMessage(currentSessionId, 'assistant', cleanAiResp);
             }
 
             if (voiceEnabled && aiResponse) {
