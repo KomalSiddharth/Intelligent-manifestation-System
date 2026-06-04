@@ -896,16 +896,19 @@ serve(async (req) => {
                         if (row.session_date > byType[t].lastDate) byType[t].lastDate = row.session_date;
                     }
 
-                    // Get total sessions available per type (global DB count for same period)
-                    const { data: globalSessions } = await supabaseClient
-                        .from("member_attendance")
-                        .select("session_type, zoom_webinar_id")
-                        .gte("session_date", cutoff90);
+                    // Get total unique sessions per type using DB aggregation (fast — no full table scan)
+                    const typesNeeded = Object.keys(byType);
+                    const { data: totalsData } = await supabaseClient
+                        .rpc("count_sessions_by_type", {
+                            p_cutoff: cutoff90,
+                            p_types: typesNeeded,
+                        })
+                        .catch(() => ({ data: null }));
 
-                    const totalByType: Record<string, Set<string>> = {};
-                    for (const row of (globalSessions ?? [])) {
-                        if (!totalByType[row.session_type]) totalByType[row.session_type] = new Set();
-                        if (row.zoom_webinar_id) totalByType[row.session_type].add(row.zoom_webinar_id);
+                    // Fallback: use member's own count as denominator if RPC unavailable
+                    const totalByType: Record<string, number> = {};
+                    for (const row of (totalsData ?? [])) {
+                        totalByType[row.session_type] = parseInt(row.total_sessions);
                     }
 
                     // Format each program
@@ -919,7 +922,7 @@ serve(async (req) => {
 
                     for (const type of sortedTypes) {
                         const { count, totalMins, lastDate } = byType[type];
-                        const total = totalByType[type]?.size ?? count;
+                        const total = totalByType[type] ?? count;
                         const pct = Math.round((count / total) * 100);
                         const daysSince = Math.floor((Date.now() - new Date(lastDate).getTime()) / 86400000);
                         const status = pct >= 75 ? "🟢 consistent" : pct >= 40 ? "🟡 moderate" : "🔴 low";
