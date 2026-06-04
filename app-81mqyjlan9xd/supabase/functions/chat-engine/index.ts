@@ -847,8 +847,23 @@ serve(async (req) => {
 
         async function getMemberBrief(userId: string): Promise<string> {
             if (!userId || userId === 'anonymous') return "";
+
+            // ── Cache member brief in Redis for 15 min (saves 2-3 DB queries per message) ──
+            const briefCacheKey = `brief:${userId}:${activeProfileId ?? "global"}`;
+            if (redisUrl && redisToken) {
+                try {
+                    const cached = await fetch(`${redisUrl}/get/${encodeURIComponent(briefCacheKey)}`,
+                        { headers: { Authorization: `Bearer ${redisToken}` } }
+                    ).then(r => r.json());
+                    if (cached.result) {
+                        console.log(`⚡ [MEMBER BRIEF] Cache hit for ${userId}`);
+                        return cached.result;
+                    }
+                } catch (_) {}
+            }
+
             try {
-                console.log(`🔍 [MEMBER BRIEF] Looking up userId: ${userId}`);
+                console.log(`🔍 [MEMBER BRIEF] DB lookup for userId: ${userId}`);
 
                 // Step 1: resolve audience_users.id from the auth user_id
                 const { data: au, error: auErr } = await supabaseClient
@@ -979,7 +994,17 @@ serve(async (req) => {
                 const coursePart = courseLines.length > 0 ? `COURSE PROGRESS:\n${courseLines.join("\n")}\n` : "";
                 const attendancePart = attendanceLines.join("\n");
                 const brief = `\nMEMBER BRIEF:\n${coursePart}${attendancePart}`;
-                console.log(`✅ [MEMBER BRIEF] Injecting:`, brief.slice(0, 300));
+                console.log(`✅ [MEMBER BRIEF] Built for ${au.name ?? au.email}:`, brief.slice(0, 200));
+
+                // Cache for 15 minutes (fire-and-forget)
+                if (redisUrl && redisToken && brief) {
+                    fetch(`${redisUrl}/pipeline`, {
+                        method: "POST",
+                        headers: { Authorization: `Bearer ${redisToken}`, "Content-Type": "application/json" },
+                        body: JSON.stringify([["SET", briefCacheKey, brief, "EX", 900]]) // 15 min
+                    }).catch(() => {});
+                }
+
                 return brief;
             } catch (e: any) {
                 console.warn("⚠️ [MEMBER BRIEF] Failed to fetch:", e.message);
