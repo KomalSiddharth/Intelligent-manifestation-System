@@ -823,6 +823,28 @@ serve(async (req) => {
         }
 
         // D.2 Build Profile Prompt (Now with Persona Vibe + Member Brief)
+        // Map profile name keywords → relevant session types for filtered brief
+        function getRelevantSessionTypes(profileName: string): string[] | null {
+            const n = (profileName || "").toLowerCase();
+            if (n.includes("dmp") || n.includes("daily magic"))
+                return ["DMP"];
+            if (n.includes("wealth"))
+                return ["WEALTH_MASTERY"];
+            if (n.includes("platinum"))
+                return ["PLATINUM"];
+            if (n.includes("nlp"))
+                return ["NLP"];
+            if (n.includes("chakra"))
+                return ["CHAKRA"];
+            if (n.includes("hooponopono") || n.includes("oponopono"))
+                return ["HOOPONOPONO"];
+            if (n.includes("relationship"))
+                return ["RELATIONSHIP_MASTERY"];
+            if (n.includes("loa") || n.includes("law of attraction"))
+                return ["ADVANCE_LOA"];
+            return null; // null = show all session types (main MiteshAI)
+        }
+
         async function getMemberBrief(userId: string): Promise<string> {
             if (!userId || userId === 'anonymous') return "";
             try {
@@ -857,12 +879,18 @@ serve(async (req) => {
                         .eq("has_access", true)
                         .order("updated_at", { ascending: false })
                         .limit(10),
-                    supabaseClient
-                        .from("member_attendance")
-                        .select("session_type, session_name, session_date, watch_duration_mins")
-                        .eq("audience_user_id", audienceId)
-                        .gte("session_date", cutoff90)
-                        .order("session_date", { ascending: false }),
+                    (() => {
+                        // Filter attendance to relevant session types for this persona
+                        const relevantTypes = getRelevantSessionTypes(dynamicProfile?.name ?? "");
+                        let q = supabaseClient
+                            .from("member_attendance")
+                            .select("session_type, session_name, session_date, watch_duration_mins")
+                            .eq("audience_user_id", audienceId)
+                            .gte("session_date", cutoff90)
+                            .order("session_date", { ascending: false });
+                        if (relevantTypes) q = q.in("session_type", relevantTypes);
+                        return q;
+                    })(),
                 ]);
 
                 console.log(`📚 [MEMBER BRIEF] courses: ${courses?.length ?? 0}, attendance rows: ${allAttendance?.length ?? 0}`);
