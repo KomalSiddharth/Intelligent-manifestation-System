@@ -74,21 +74,20 @@ serve(async (req) => {
         }
 
         try {
-            // 1. Embed the question
-            const embRes = await openai.embeddings.create({
-                model: "text-embedding-3-small", input: question
-            });
-            const embedding = embRes.data[0].embedding;
+            // Load all KB chunks directly (skip vector search — avoids RPC issues)
+            // Works well for small KBs (support bot has ~50 chunks from 2 PDFs)
+            const { data: allChunks, error: chunkErr } = await supabase
+                .from("knowledge_chunks")
+                .select("content, source_id")
+                .eq("profile_id", profileId)
+                .limit(100);
 
-            // 2. Vector search
-            const { data: chunks } = await supabase.rpc("match_knowledge", {
-                query_embedding: embedding,
-                match_threshold: 0.15,
-                match_count: 6,
-                p_profile_id: profileId,
-            });
+            if (chunkErr) {
+                errors.push(`${question.slice(0,40)}: DB error - ${chunkErr.message}`);
+                continue;
+            }
 
-            const context = (chunks ?? []).map((c: any) => {
+            const context = (allChunks ?? []).slice(0, 8).map((c: any) => {
                 const src = srcMap.get(c.source_id);
                 const url = src?.source_url ? ` (Link: ${src.source_url})` : "";
                 return `[SOURCE: ${src?.title ?? "Knowledge"}${url}]\n${c.content}`;
