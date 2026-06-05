@@ -25,7 +25,6 @@ serve(async (req) => {
     const redisUrl    = Deno.env.get("UPSTASH_REDIS_REST_URL")!;
     const redisToken  = Deno.env.get("UPSTASH_REDIS_REST_TOKEN")!;
     const openaiKey   = Deno.env.get("OPENAI_API_KEY")!;
-    const cerebrasKey = Deno.env.get("CEREBRAS_API_KEY") ?? Deno.env.get("CEREBRAS_API_KEYS")?.split(",")[0] ?? "";
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_KEY") ?? "";
 
@@ -42,6 +41,7 @@ serve(async (req) => {
         });
     }
 
+    // Always use OpenAI for pre-caching (one-time job, reliability > speed)
     const openai   = new OpenAI({ apiKey: openaiKey });
     const supabase = createClient(supabaseUrl, serviceKey);
     const cap      = questions.slice(0, 25);
@@ -89,15 +89,10 @@ serve(async (req) => {
                 return `[SOURCE: ${src?.title ?? "Knowledge"}${url}]\n${c.content}`;
             }).join("\n\n---\n\n") || "No specific knowledge found.";
 
-            // 3. Generate answer via Cerebras or OpenAI
+            // 3. Generate answer — always GPT-4o-mini (reliable for batch job)
             let answer = "";
-            const modelClient = cerebrasKey
-                ? new OpenAI({ apiKey: cerebrasKey, baseURL: "https://api.cerebras.ai/v1" })
-                : openai;
-            const model = cerebrasKey ? "llama-3.3-70b" : "gpt-4o-mini";
-
-            const completion = await modelClient.chat.completions.create({
-                model,
+            const completion = await openai.chat.completions.create({
+                model: "gpt-4o-mini",
                 max_tokens: 400,
                 messages: [
                     {
