@@ -2253,8 +2253,8 @@ PERSONALIZATION:
                         }
                     }
 
-                    // Send source attribution metadata at the end
-                    if (sourceChunks.length > 0) {
+                    // Send source attribution — skip for support bot (sources not needed there)
+                    if (sourceChunks.length > 0 && !useFastSupportPath) {
                         const sourcesMetadata = `__SOURCES__:${JSON.stringify(sourceChunks)}`;
                         controller.enqueue(encoder.encode(`data: ${JSON.stringify(sourcesMetadata)}\n\n`));
                     }
