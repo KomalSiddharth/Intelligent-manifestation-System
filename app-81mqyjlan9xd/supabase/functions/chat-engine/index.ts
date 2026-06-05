@@ -125,13 +125,13 @@ async function getKbVersion(
     try {
         const { data } = await supabaseClient
             .from('knowledge_sources')
-            .select('updated_at')
+            .select('created_at')
             .eq('profile_id', profileId)
-            .order('updated_at', { ascending: false })
+            .order('created_at', { ascending: false })
             .limit(1)
             .single();
-        const version = data?.updated_at
-            ? new Date(data.updated_at).getTime().toString(16)
+        const version = data?.created_at
+            ? new Date(data.created_at).getTime().toString(16)
             : '0';
         // 3. Cache it for 1 h
         if (redisUrl && redisToken) {
@@ -865,19 +865,38 @@ serve(async (req) => {
             try {
                 console.log(`🔍 [MEMBER BRIEF] DB lookup for userId: ${userId}`);
 
-                // Step 1: resolve audience_users.id from the auth user_id
-                const { data: au, error: auErr } = await supabaseClient
+                // Step 1: resolve audience_users — try user_id first, then id directly
+                // Some users have chatUserId = audience_users.id (not auth user_id)
+                let auRow: any = null;
+
+                const { data: byUserId } = await supabaseClient
                     .from("audience_users")
-                    .select("id")
+                    .select("id, name, email")
                     .eq("user_id", userId)
                     .maybeSingle();
 
-                if (auErr) console.error(`❌ [MEMBER BRIEF] audience_users lookup error:`, auErr.message);
-                console.log(`👤 [MEMBER BRIEF] audience_user found: ${au?.id ?? "NOT FOUND"}`);
+                if (byUserId?.id) {
+                    auRow = byUserId;
+                    console.log(`👤 [MEMBER BRIEF] Found by user_id: ${auRow.id}`);
+                } else {
+                    // chatUserId might BE the audience_users.id directly
+                    const { data: byId } = await supabaseClient
+                        .from("audience_users")
+                        .select("id, name, email")
+                        .eq("id", userId)
+                        .maybeSingle();
+                    if (byId?.id) {
+                        auRow = byId;
+                        console.log(`👤 [MEMBER BRIEF] Found by id fallback: ${auRow.id}`);
+                    }
+                }
 
-                if (!au?.id) return "";  // user not in audience (no Kajabi data yet)
+                if (!auRow?.id) {
+                    console.log(`👤 [MEMBER BRIEF] NOT FOUND for userId: ${userId}`);
+                    return "";
+                }
 
-                const audienceId = au.id;
+                const audienceId = auRow.id;
 
                 // Step 2: fetch course progress + ALL zoom attendance (last 90 days)
                 const now = new Date();
@@ -994,7 +1013,7 @@ serve(async (req) => {
                 const coursePart = courseLines.length > 0 ? `COURSE PROGRESS:\n${courseLines.join("\n")}\n` : "";
                 const attendancePart = attendanceLines.join("\n");
                 const brief = `\nMEMBER BRIEF:\n${coursePart}${attendancePart}`;
-                console.log(`✅ [MEMBER BRIEF] Built for ${au.name ?? au.email}:`, brief.slice(0, 200));
+                console.log(`✅ [MEMBER BRIEF] Built for ${auRow.name ?? auRow.email}:`, brief.slice(0, 200));
 
                 // Cache for 15 minutes (fire-and-forget)
                 if (redisUrl && redisToken && brief) {
