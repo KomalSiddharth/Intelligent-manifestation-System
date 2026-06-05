@@ -2292,16 +2292,21 @@ PERSONALIZATION:
                     // this will throw — safe to swallow.
                     try { controller.close(); } catch (_) {}
 
-                    // ⚡ RESPONSE CACHE WRITE — store response for 24h for support bots
+                    // ⚡ RESPONSE CACHE WRITE — support bot
                     if (useFastSupportPath && fullResponse && !fullResponse.startsWith('Error:') && redisUrl && redisToken && activeProfileId) {
-                        // Bug #2 fix: use normalizeCacheKey() so reads and writes always use the same key
-                        const cacheKey = `resp:${activeProfileId}:${normalizeCacheKey(query)}`;
+                        const cacheKey  = `resp:${activeProfileId}:${normalizeCacheKey(query)}`;
+                        // Also save to PERMANENT cache (no TTL) — grows with every real question asked
+                        const permKey   = `perm:resp:${activeProfileId}:${normalizeCacheKey(query)}`;
+                        const payload   = JSON.stringify({ text: fullResponse, sources: sourceChunks });
                         fetch(`${redisUrl}/pipeline`, {
                             method: 'POST',
                             headers: { Authorization: `Bearer ${redisToken}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify([['SET', cacheKey, JSON.stringify({ text: fullResponse, sources: sourceChunks }), 'EX', 86400]])
+                            body: JSON.stringify([
+                                ['SET', cacheKey, payload, 'EX', 86400],  // 24h standard cache
+                                ['SET', permKey,  payload],                // permanent — no TTL
+                            ])
                         }).catch(e => console.warn("⚠️ [RESP-CACHE] Write error:", e));
-                        console.log(`⚡ [RESP-CACHE] Stored response for "${query.slice(0, 40)}"`);
+                        console.log(`⚡ [RESP+PERM CACHE] Stored: "${query.slice(0, 40)}"`);
                     }
 
                     // ── L1 COACHING CACHE WRITE (30 min per-user) ──────────────────────────
