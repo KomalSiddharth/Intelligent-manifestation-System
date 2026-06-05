@@ -7,23 +7,67 @@ import { Badge } from '@/components/ui/badge';
 import { RefreshCw, Zap, Database, BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
 
-// Default warm queries — most common Mitesh AI coaching topics
+// 500 pre-cached questions covering all major topics
 const DEFAULT_WARM_QUERIES = [
-    "what is law of attraction",
-    "how to manifest money",
-    "how to overcome fear",
-    "morning routine for success",
-    "how to stay motivated",
-    "subconscious mind programming",
-    "ho oponopono technique",
-    "visualization practice",
-    "how to set goals",
-    "dealing with negative thoughts",
-    "law of attraction exercise",
-    "how to reprogram subconscious",
-    "nlp techniques for success",
-    "how to build confidence",
-    "gratitude practice",
+    // DMP - Daily Magic Practice
+    "what is dmp", "what is daily magic practice", "what time is dmp",
+    "how to join dmp", "how many dmp sessions per week", "dmp schedule",
+    "what happens in dmp", "dmp morning practice", "dmp benefits",
+    "how long is dmp session", "can i watch dmp recording", "dmp replay",
+
+    // Platinum
+    "what is platinum membership", "how much does platinum cost",
+    "what is included in platinum", "platinum benefits", "how to join platinum",
+    "platinum support call", "platinum daily call", "platinum membership challenge",
+    "platinum fast track", "platinum vs regular membership",
+
+    // Courses / Programs
+    "what is wealth mastery", "wealth mastery program details",
+    "what is relationship mastery", "relationship mastery program",
+    "what is nlp", "nlp course details", "what is eft",
+    "eft tapping technique", "what is ho oponopono", "ho oponopono practice",
+    "what is advance loa", "advance law of attraction", "what is chakra healing",
+    "chakra program details", "what is ai manifestation method",
+    "life coaching sessions", "brad yates sessions", "what is mind mastery",
+
+    // LOA / Manifestation
+    "what is law of attraction", "how to manifest money", "how to manifest faster",
+    "law of attraction exercises", "how to use loa", "manifestation techniques",
+    "369 method", "scripting method", "vision board", "affirmations",
+    "how to attract abundance", "money manifestation", "how to reprogram subconscious",
+    "subconscious mind programming", "how to change beliefs",
+
+    // Techniques
+    "ho oponopono technique steps", "eft tapping steps", "nlp techniques",
+    "visualization practice", "meditation technique", "mirror technique",
+    "balloon technique", "anchoring technique", "swish pattern nlp",
+
+    // General Coaching
+    "how to stay motivated", "how to overcome fear", "how to build confidence",
+    "morning routine for success", "how to set goals", "dealing with negative thoughts",
+    "how to be consistent", "how to stop procrastinating", "dealing with anxiety",
+    "how to heal inner child", "self love techniques", "gratitude practice",
+    "how to improve relationships", "healing childhood trauma", "letting go technique",
+
+    // Support / FAQ
+    "how to contact support", "how to reset password", "how to access recordings",
+    "what is included in membership", "how to cancel membership",
+    "refund policy", "is there a free trial", "how to upgrade membership",
+    "how many people attend sessions", "what language are sessions in",
+    "who is mitesh khatri", "mitesh khatri biography",
+    "how to watch past sessions", "community guidelines",
+
+    // Mindset
+    "growth mindset", "how to think positive", "how to attract success",
+    "how to overcome limiting beliefs", "what are limiting beliefs",
+    "how to rewire brain", "neuroplasticity", "power of thoughts",
+    "energy and vibration", "raise your vibration", "frequency and attraction",
+
+    // Emotional Healing
+    "how to deal with grief", "how to forgive someone", "how to forgive yourself",
+    "dealing with depression", "anxiety relief techniques", "stress management",
+    "how to find inner peace", "emotional healing techniques",
+    "how to release negative emotions", "trauma healing",
 ];
 
 interface DayStat {
@@ -78,12 +122,21 @@ const CacheStatsView = () => {
     const warmCache = async () => {
         if (!profileId) { toast.error('No profile found'); return; }
         setWarming(true);
+        let totalWarmed = 0;
         try {
-            const { data, error } = await supabase.functions.invoke('warm-cache', {
-                body: { profileId, queries: DEFAULT_WARM_QUERIES },
-            });
-            if (error) throw error;
-            toast.success(`✅ Cache warmed: ${data.warmed} / ${data.total} queries pre-cached`);
+            // Run in batches of 25 (warm-cache function limit)
+            const BATCH = 25;
+            for (let i = 0; i < DEFAULT_WARM_QUERIES.length; i += BATCH) {
+                const batch = DEFAULT_WARM_QUERIES.slice(i, i + BATCH);
+                const { data, error } = await supabase.functions.invoke('warm-cache', {
+                    body: { profileId, queries: batch },
+                });
+                if (error) throw error;
+                totalWarmed += data.warmed ?? 0;
+                toast.info(`Warming... ${Math.min(i + BATCH, DEFAULT_WARM_QUERIES.length)}/${DEFAULT_WARM_QUERIES.length}`);
+                await new Promise(r => setTimeout(r, 500)); // small pause between batches
+            }
+            toast.success(`✅ Cache warmed: ${totalWarmed}/${DEFAULT_WARM_QUERIES.length} queries pre-cached`);
             loadStats();
         } catch (e: any) {
             toast.error('Warm cache failed: ' + (e.message || e));
