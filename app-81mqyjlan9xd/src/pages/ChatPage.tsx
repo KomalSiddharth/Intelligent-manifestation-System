@@ -1411,6 +1411,7 @@ const ChatPage = () => {
                                         voiceEnabled={voiceEnabled}
                                         onToggleVoice={toggleVoice}
                                         className="scale-90"
+                                        hideSpeaker={isSupportProfile}
                                     />
                                     <Button
                                         onClick={handleSendMessage}

@@ -9,13 +9,14 @@ import { voiceService } from '@/services/voiceService';
 interface VoiceControlsProps {
     onVoiceInput?: (transcript: string) => void;
     onVoiceResponse?: (text: string) => void;
-    onAutoSend?: (transcript: string) => void; // Callback to trigger send with text
-    voiceEnabled: boolean; // Managed by parent
-    onToggleVoice: () => void; // Managed by parent
+    onAutoSend?: (transcript: string) => void;
+    voiceEnabled: boolean;
+    onToggleVoice: () => void;
     className?: string;
+    hideSpeaker?: boolean; // hide the speaker/volume toggle button
 }
 
-const VoiceControls = ({ onVoiceInput, onAutoSend, voiceEnabled, onToggleVoice, className }: VoiceControlsProps) => {
+const VoiceControls = ({ onVoiceInput, onAutoSend, voiceEnabled, onToggleVoice, className, hideSpeaker = false }: VoiceControlsProps) => {
     const transcriptRef = useRef(""); // Track transcript for atomic access in onEnd
 
     const { isListening, toggleListening, isSupported: inputSupported } = useVoiceInput({
@@ -72,20 +73,22 @@ const VoiceControls = ({ onVoiceInput, onAutoSend, voiceEnabled, onToggleVoice, 
                 </Button>
             )}
 
-            {/* Voice Output (Speaker) */}
-            <Button
-                variant={voiceEnabled ? "default" : "ghost"}
-                size="icon"
-                onClick={onToggleVoice}
-                className="rounded-full"
-                title={voiceEnabled ? "Disable voice responses" : "Enable voice responses"}
-            >
-                {voiceEnabled ? (
-                    <Volume2 className="h-4 w-4" />
-                ) : (
-                    <VolumeX className="h-4 w-4" />
-                )}
-            </Button>
+            {/* Voice Output (Speaker) — hidden when hideSpeaker=true */}
+            {!hideSpeaker && (
+                <Button
+                    variant={voiceEnabled ? "default" : "ghost"}
+                    size="icon"
+                    onClick={onToggleVoice}
+                    className="rounded-full"
+                    title={voiceEnabled ? "Disable voice responses" : "Enable voice responses"}
+                >
+                    {voiceEnabled ? (
+                        <Volume2 className="h-4 w-4" />
+                    ) : (
+                        <VolumeX className="h-4 w-4" />
+                    )}
+                </Button>
+            )}
         </div>
     );
 };
