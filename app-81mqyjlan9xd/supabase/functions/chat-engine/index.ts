@@ -1128,7 +1128,9 @@ serve(async (req) => {
         //   `|| (!!activeProfileId && !isMiteshAiProfile)`
         // was treating every custom coaching persona as a support bot, which caused it to
         // search only FAQ chunks, skip graph/sentiment, and cap responses at 400 tokens.
-        const useFastSupportPath = isSupportStyleProfile(dynamicProfile?.name);
+        // Also allow force fast_mode via feature_flags for any profile
+        const featureFlagsEarly = dynamicProfile?.feature_flags || {};
+        const useFastSupportPath = isSupportStyleProfile(dynamicProfile?.name) || featureFlagsEarly['fast_mode'] === true;
 
         // ⚡ FAST COACHING PATH — skips 4 pre-LLM calls that add ~2.1s before first token:
         //   ❌ removed: sentiment analysis (~500ms), query expansion (~400ms),
@@ -1450,7 +1452,7 @@ Rule:
 
                     let merged: any[] = [];
 
-                    if (totalKbChunks && totalKbChunks <= 200) {
+                    if (totalKbChunks && totalKbChunks <= 150) {
                         console.log(`📚 [FAST-SUPPORT] Small KB (${totalKbChunks} chunks) — loading ALL for 100% recall`);
 
                         // Fetch all sources for title/url mapping
