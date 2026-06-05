@@ -41,19 +41,24 @@ serve(async (req) => {
         });
     }
 
-    // Always use OpenAI for pre-caching (one-time job, reliability > speed)
     const openai   = new OpenAI({ apiKey: openaiKey });
     const supabase = createClient(supabaseUrl, serviceKey);
     const cap      = questions.slice(0, 25);
     let cached = 0, skipped = 0;
     const errors: string[] = [];
 
-    // Fetch KB sources for URL mapping
-    const { data: sources } = await supabase
-        .from("knowledge_sources")
-        .select("id, title, source_url")
-        .eq("profile_id", profileId);
-    const srcMap = new Map((sources ?? []).map((s: any) => [s.id, s]));
+    // Fetch KB sources (safe — won't crash if fails)
+    let srcMap = new Map<string, any>();
+    try {
+        const { data: sources } = await supabase
+            .from("knowledge_sources")
+            .select("id, title, source_url")
+            .eq("profile_id", profileId);
+        srcMap = new Map((sources ?? []).map((s: any) => [s.id, s]));
+        console.log(`📚 Loaded ${srcMap.size} knowledge sources`);
+    } catch (e: any) {
+        console.warn(`⚠️ Could not load sources: ${e.message}`);
+    }
 
     for (const question of cap) {
         const permKey = `perm:resp:${profileId}:${normalizeCacheKey(question)}`;
@@ -123,7 +128,9 @@ KNOWLEDGE:\n${context}`
             await new Promise(r => setTimeout(r, 500));
 
         } catch (e: any) {
-            errors.push(`${question}: ${e.message}`);
+            const msg = e?.message ?? e?.toString() ?? "unknown error";
+            console.error(`❌ Failed: "${question}" → ${msg}`);
+            errors.push(`${question.slice(0, 40)}: ${msg}`);
         }
     }
 
