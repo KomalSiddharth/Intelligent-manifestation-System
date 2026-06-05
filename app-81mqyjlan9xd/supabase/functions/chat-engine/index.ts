@@ -1474,7 +1474,7 @@ Rule:
 
                     let merged: any[] = [];
 
-                    if (totalKbChunks && totalKbChunks <= 150) {
+                    if (totalKbChunks && totalKbChunks <= 30) {
                         console.log(`📚 [FAST-SUPPORT] Small KB (${totalKbChunks} chunks) — loading ALL for 100% recall`);
 
                         // Fetch all sources for title/url mapping
@@ -1491,7 +1491,9 @@ Rule:
                             .eq("profile_id", activeProfileId!)
                             .order("chunk_index", { ascending: true });
 
-                        merged = (allChunks || []).map((c: any) => {
+                        // Hard limit: max 12 chunks regardless of KB size
+                        // Prevents 49k+ token system prompts that cause timeouts
+                        merged = (allChunks || []).slice(0, 12).map((c: any) => {
                             const src = sourceMap.get(c.source_id) as any;
                             return {
                                 ...c,
