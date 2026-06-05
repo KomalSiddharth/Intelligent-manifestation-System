@@ -27,9 +27,10 @@ serve(async (req) => {
     const redisUrl   = Deno.env.get("UPSTASH_REDIS_REST_URL");
     const redisToken = Deno.env.get("UPSTASH_REDIS_REST_TOKEN");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const serviceKey  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_KEY");
+    // Use ANON key to call chat-engine (it's a public endpoint)
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
 
-    if (!redisUrl || !redisToken || !supabaseUrl || !serviceKey) {
+    if (!redisUrl || !redisToken || !supabaseUrl || !anonKey) {
         return new Response(JSON.stringify({ error: "Missing env config" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -62,7 +63,7 @@ serve(async (req) => {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    "Authorization": `Bearer ${serviceKey}`,
+                    "Authorization": `Bearer ${anonKey}`,
                 },
                 body: JSON.stringify({
                     query: question,
