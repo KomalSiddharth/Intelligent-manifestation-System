@@ -3,9 +3,10 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Menu, MessageCircle, Phone, ArrowRight, X, MoreHorizontal, Sparkles, AlertTriangle, Send } from 'lucide-react';
+import { Menu, MessageCircle, Phone, ArrowRight, X, MoreHorizontal, Sparkles, AlertTriangle, Send, History, Plus } from 'lucide-react';
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { cn, toDisplayText, isValidUuid } from '@/lib/utils';
-import { createSession, saveMessage, getMindProfiles } from '@/db/api';
+import { createSession, saveMessage, getMindProfiles, getSessions, getMessages } from '@/db/api';
 import { Message } from '@/types/types';
 import IdentityGate from '@/components/chat/IdentityGate';
 import VoiceControls from '@/components/chat/VoiceControls';
@@ -35,6 +36,8 @@ const WidgetPage = () => {
     const isSendingRef = useRef(false);
     const [userFullDetails, setUserFullDetails] = useState<any>(null);
     const [isDisclaimerVisible, setIsDisclaimerVisible] = useState(true);
+    const [sessions, setSessions] = useState<any[]>([]);
+    const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
     /** Resolved DB profile id — never use invalid URL params like "test-id". */
     const activeProfileId = isValidUuid(selectedProfile?.id)
@@ -79,21 +82,54 @@ const WidgetPage = () => {
                     window.history.replaceState(null, '', `/widget/${profile.id}${qs}`);
                 }
 
-                const purposeText = toDisplayText(profile?.purpose, 100);
-                if (purposeText) {
-                    setMessages([{
-                        role: 'assistant',
-                        content: `Hello! I am ${profile?.name || 'your assistant'}. ${purposeText}... How can I assist you?`,
-                    }]);
-                } else {
-                    setMessages([{ role: 'assistant', content: 'Hi! How can I help you today?' }]);
-                }
+                const welcomeText =
+                    profile?.experience_settings?.initialMessage ||
+                    profile?.response_settings?.initialMessage ||
+                    `Welcome! 🌟 I'm ${profile?.name || 'your AI Coach'}. How can I help you today?`;
+                setMessages([{ role: 'assistant', content: welcomeText }]);
             } catch (error) {
                 console.error('Failed to load widget profile:', error);
             }
         };
         loadProfile();
     }, [profileId]);
+
+    const loadSessions = async (userId: string) => {
+        try {
+            const dbSessions = await getSessions(userId);
+            setSessions(dbSessions);
+        } catch (e) {
+            console.error('Failed to load sessions', e);
+        }
+    };
+
+    const handleLoadConversation = async (session: any) => {
+        setIsHistoryOpen(false);
+        setCurrentSessionId(session.id);
+        setView('chat');
+        try {
+            const dbMessages = await getMessages(session.id);
+            const mapped = (dbMessages || []).map((msg: any) => ({
+                role: msg.role as 'user' | 'assistant',
+                content: msg.content,
+            }));
+            setMessages(mapped);
+            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+        } catch (e) {
+            console.error('Failed to load conversation', e);
+        }
+    };
+
+    const handleNewConversation = () => {
+        const welcomeText =
+            selectedProfile?.experience_settings?.initialMessage ||
+            selectedProfile?.response_settings?.initialMessage ||
+            `Welcome! 🌟 I'm ${selectedProfile?.name || 'your AI Coach'}. How can I help you today?`;
+        setMessages([{ role: 'assistant', content: welcomeText }]);
+        setCurrentSessionId(null);
+        setIsHistoryOpen(false);
+        setView('chat');
+    };
 
     useEffect(() => {
         if (view === 'chat') {
@@ -121,6 +157,7 @@ const WidgetPage = () => {
                 const newSession = await createSession(chatUserId, title, activeProfileId);
                 sessionId = newSession.id;
                 setCurrentSessionId(sessionId);
+                setSessions(prev => [newSession, ...prev]);
             }
 
             setMessages(prev => [...prev, { role: 'user', content: text }]);
@@ -307,14 +344,67 @@ const WidgetPage = () => {
                 {/* Chat View */}
                 {view === 'chat' && (
                     <>
-                        <header className="h-16 border-b flex items-center justify-between px-4 bg-background z-10 flex-shrink-0">
-                            <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('landing')}>
+                        <header className="h-16 border-b flex items-center justify-between px-4 bg-background z-10 flex-shrink-0 relative">
+                            {/* History Button — left */}
+                            <Sheet open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
+                                <SheetTrigger asChild>
+                                    <Button variant="ghost" size="icon">
+                                        <History className="w-5 h-5 text-muted-foreground" />
+                                    </Button>
+                                </SheetTrigger>
+                                <SheetContent side="left" className="w-[280px] p-0 flex flex-col h-full">
+                                    <div className="p-4 border-b flex items-center justify-between">
+                                        <span className="font-bold">Chat History</span>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 text-orange-500"
+                                            onClick={handleNewConversation}
+                                            title="New Chat"
+                                        >
+                                            <Plus className="w-4 h-4" />
+                                        </Button>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-2">
+                                        {sessions.length === 0 ? (
+                                            <p className="text-sm text-muted-foreground text-center py-8">No saved chats yet.</p>
+                                        ) : (
+                                            <div className="space-y-1">
+                                                {sessions.map((session) => (
+                                                    <div
+                                                        key={session.id}
+                                                        className={cn(
+                                                            "flex items-center gap-3 px-3 py-3 hover:bg-muted/50 rounded-lg cursor-pointer transition-all",
+                                                            currentSessionId === session.id && "bg-muted font-medium"
+                                                        )}
+                                                        onClick={() => handleLoadConversation(session)}
+                                                    >
+                                                        <MessageCircle className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                                                        <div className="flex-1 overflow-hidden">
+                                                            <div className="truncate text-sm">{session.title || "Untitled Chat"}</div>
+                                                            <div className="text-[10px] text-muted-foreground">
+                                                                {new Date(session.last_message_at || session.created_at).toLocaleDateString()}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </SheetContent>
+                            </Sheet>
+
+                            {/* Centered Title */}
+                            <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
                                 <Avatar className="w-8 h-8">
                                     <AvatarImage src={selectedProfile?.avatar_url} />
                                     <AvatarFallback>{selectedProfile?.name?.substring(0, 2).toUpperCase() || "AI"}</AvatarFallback>
                                 </Avatar>
-                                <span className="font-semibold text-lg hover:underline">{selectedProfile?.name || "Assistant"}</span>
+                                <span className="font-semibold">{selectedProfile?.name || "Assistant"}</span>
                             </div>
+
+                            {/* Right spacer */}
+                            <div className="w-10" />
                         </header>
 
                         <div className="flex-1 relative w-full bg-background">
@@ -407,7 +497,9 @@ const WidgetPage = () => {
         <IdentityGate
             onVerified={(user) => {
                 setUserFullDetails(user);
-                setChatUserId(user.user_id || user.id);
+                const uid = user.user_id || user.id;
+                setChatUserId(uid);
+                loadSessions(uid);
             }}
             profileId={activeProfileId}
             requireIdentityGate={selectedProfile?.experience_settings?.requireIdentityGate ?? true}
