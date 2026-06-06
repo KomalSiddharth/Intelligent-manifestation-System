@@ -188,13 +188,14 @@ async function syncOneProfile(supabase: SupabaseClient, profileId: string, supab
         const { data: existing } = await supabase
             .from('knowledge_sources')
             .select('id')
+            .eq('profile_id', profileId)  // STRICT: only check within this profile
             .or(`source_url.eq."${storagePath}",source_url.eq."${gDocUrl}"`)
             .maybeSingle();
 
         if (!existing) {
             filesToProcess.push(file);
         } else {
-            console.log(`⏩ [SYNC] Skipping ${file.name} (Already exists)`);
+            console.log(`⏩ [SYNC] Skipping ${file.name} (Already exists in profile ${profileId})`);
         }
     }
 
