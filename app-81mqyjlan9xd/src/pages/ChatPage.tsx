@@ -1239,12 +1239,28 @@ const ChatPage = () => {
                         >
                             <div className="max-w-3xl mx-auto px-4 pt-4">
                                 {messages.length === 0 && !isProcessing && (
-                                    <div className="flex flex-col items-center justify-center h-[calc(100vh-200px)] text-center text-muted-foreground">
-                                        <div className="w-16 h-16 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 font-bold text-3xl mb-4">
-                                            ⌘
-                                        </div>
-                                        <h2 className="text-xl font-semibold mb-2">Start a new conversation</h2>
-                                        <p className="text-sm">Ask me anything, or choose a suggested question below.</p>
+                                    <div className="flex flex-col items-center justify-center h-[calc(100vh-200px)] text-center text-muted-foreground px-4">
+                                        {selectedProfile?.avatar_url ? (
+                                            <img
+                                                src={selectedProfile.avatar_url}
+                                                alt={selectedProfile.name}
+                                                className="w-20 h-20 rounded-full object-cover mb-4 shadow-lg border-2 border-orange-100"
+                                            />
+                                        ) : (
+                                            <div className="w-16 h-16 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 font-bold text-3xl mb-4">
+                                                ⌘
+                                            </div>
+                                        )}
+                                        <h2 className="text-xl font-semibold mb-2 text-foreground">
+                                            {selectedProfile?.name || "Start a new conversation"}
+                                        </h2>
+                                        {selectedProfile?.description ? (
+                                            <p className="text-sm max-w-md leading-relaxed">
+                                                {selectedProfile.description}
+                                            </p>
+                                        ) : (
+                                            <p className="text-sm">Ask me anything, or choose a suggested question below.</p>
+                                        )}
                                     </div>
                                 )}
                                 {messages.map((msg, i) => (
