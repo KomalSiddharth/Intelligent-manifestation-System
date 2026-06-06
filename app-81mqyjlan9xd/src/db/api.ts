@@ -726,23 +726,32 @@ export const getTotalUserCount = async (profileId?: string): Promise<number> => 
 };
 
 export const createAudienceUser = async (user: Partial<AudienceUser>, profileId?: string): Promise<AudienceUser> => {
+  const payload = {
+    name: user.name || 'Unknown',
+    email: user.email || null,
+    tags: user.tags || [],
+    message_count: user.message_count || 0,
+    status: user.status || 'active',
+    last_active: user.last_active || null,
+    birthday: user.birthday || null,
+    profile_id: profileId,
+    user_id: user.user_id || null
+  };
+
+  // Try upsert first (works after SQL migration: UNIQUE(email, profile_id))
   const { data, error } = await supabase
     .from('audience_users')
-    .insert({
-      name: user.name || 'Unknown',
-      email: user.email || null,
-      tags: user.tags || [],
-      message_count: user.message_count || 0,
-      status: user.status || 'active',
-      last_active: user.last_active || null,
-      birthday: user.birthday || null,
-      profile_id: profileId,
-      user_id: user.user_id || null
-    })
+    .upsert(payload, { onConflict: 'email,profile_id', ignoreDuplicates: false })
     .select()
     .single();
 
-  if (error) throw error;
+  if (error) {
+    // If upsert fails (old unique constraint on email only), throw friendly error
+    if (error.code === '23505') {
+      throw new Error('This email is already in the audience list. Run the SQL migration to allow same email across multiple profiles.');
+    }
+    throw error;
+  }
   return data;
 };
 
