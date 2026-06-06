@@ -763,13 +763,12 @@ export const createAudienceUser = async (user: Partial<AudienceUser>, profileId?
 
   if (error) {
     if (error.code === '23505') {
-      // Duplicate on old email-only constraint — return existing record gracefully
-      const { data: fallback } = await supabase
-        .from('audience_users')
-        .select('*')
-        .ilike('email', normalizedEmail)
-        .maybeSingle();
-      if (fallback) return fallback as AudienceUser;
+      throw new Error(
+        `This email already exists in this audience. ` +
+        `If the SQL migration hasn't been run yet, please run:\n` +
+        `DROP INDEX IF EXISTS idx_audience_users_email_unique;\n` +
+        `CREATE UNIQUE INDEX audience_users_email_profile_unique ON audience_users(email, profile_id) WHERE profile_id IS NOT NULL;`
+      );
     }
     throw error;
   }
