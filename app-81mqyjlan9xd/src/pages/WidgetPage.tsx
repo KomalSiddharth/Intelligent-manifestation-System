@@ -87,6 +87,11 @@ const WidgetPage = () => {
                     profile?.response_settings?.initialMessage ||
                     `Welcome! 🌟 I'm ${profile?.name || 'your AI Coach'}. How can I help you today?`;
                 setMessages([{ role: 'assistant', content: welcomeText }]);
+
+                // Sync selected profile so ChatPage also opens this persona
+                if (profile?.id) {
+                    localStorage.setItem('globalSelectedProfileId', profile.id);
+                }
             } catch (error) {
                 console.error('Failed to load widget profile:', error);
             }
@@ -97,7 +102,11 @@ const WidgetPage = () => {
     const loadSessions = async (userId: string) => {
         try {
             const dbSessions = await getSessions(userId);
-            setSessions(dbSessions);
+            // Only show sessions for this persona — filter by profile_id
+            const filtered = activeProfileId
+                ? dbSessions.filter((s: any) => s.profile_id === activeProfileId)
+                : dbSessions;
+            setSessions(filtered);
         } catch (e) {
             console.error('Failed to load sessions', e);
         }

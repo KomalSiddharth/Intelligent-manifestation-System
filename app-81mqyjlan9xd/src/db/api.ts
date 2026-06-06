@@ -895,8 +895,12 @@ export const verifyAudienceAccess = async (email: string, profileId?: string): P
       .ilike('email', normalizedEmail);
 
     if (profileId && profileId !== 'undefined' && profileId !== 'null') {
-      // Allow if user belongs to this profile OR is a global user (profile_id is null)
-      query = query.or(`profile_id.eq.${profileId},profile_id.is.null`);
+      // STRICT: only allow users explicitly added to this profile
+      // No global fallback — if audience is empty, nobody gets in
+      query = query.eq('profile_id', profileId);
+    } else {
+      // No profileId provided — allow global users (profile_id is null)
+      query = query.is('profile_id', null);
     }
 
     const { data, error } = await query.maybeSingle();
@@ -907,17 +911,6 @@ export const verifyAudienceAccess = async (email: string, profileId?: string): P
     }
 
     let user = data;
-
-    // Fallback: Check without profile_id if not found
-    if (!user) {
-      console.warn("⚠️ [AUTH] No user found for email with profile filter, trying global search...");
-      const { data: fallbackData } = await supabase
-        .from('audience_users')
-        .select('*')
-        .ilike('email', normalizedEmail)
-        .maybeSingle();
-      user = fallbackData;
-    }
 
     if (!user) {
       console.warn("⚠️ [AUTH] User not in audience list:", normalizedEmail);
