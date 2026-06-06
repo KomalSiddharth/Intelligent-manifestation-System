@@ -257,26 +257,28 @@ const WidgetPage = () => {
                             {/* Profile Section */}
                             <div className="space-y-4 w-full">
                                 <div className="relative mx-auto w-24 h-24 md:w-32 md:h-32">
-                                    <Avatar className="w-full h-full border-4 border-white shadow-lg">
-                                        <AvatarImage src={selectedProfile?.avatar_url || "https://miaoda-conversation-file.s3cdn.medo.dev/user-7nqges6yla0w/conv-81mqyjlan9xc/20251206/file-81ndgdtyydq8.png"} alt={selectedProfile?.name || "Assistant"} />
-                                        <AvatarFallback>{selectedProfile?.name?.substring(0, 2).toUpperCase() || "AI"}</AvatarFallback>
-                                    </Avatar>
-                                    <div className="absolute top-0 right-0 md:-right-4">
-                                        <Button variant="ghost" size="icon" className="text-muted-foreground">
-                                            <MoreHorizontal className="w-5 h-5" />
-                                        </Button>
-                                    </div>
+                                    {selectedProfile?.avatar_url ? (
+                                        <img
+                                            src={selectedProfile.avatar_url}
+                                            alt={selectedProfile?.name || "Assistant"}
+                                            className="w-full h-full rounded-full object-cover border-4 border-white shadow-lg"
+                                        />
+                                    ) : (
+                                        <div className="w-full h-full rounded-full border-4 border-white shadow-lg bg-orange-100 flex items-center justify-center text-orange-600 font-bold text-3xl">
+                                            {selectedProfile?.name?.substring(0, 2).toUpperCase() || "AI"}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="space-y-2">
                                     <div className="flex items-center justify-center gap-2">
                                         <h1 className="text-2xl font-bold">{selectedProfile?.name || "Assistant"}</h1>
-                                        <img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Instagram_logo_2016.svg" alt="Instagram" className="w-5 h-5" />
                                     </div>
-                                    <p className="text-muted-foreground max-w-lg mx-auto">
-                                        {selectedProfile?.headline || toDisplayText(selectedProfile?.purpose, 150) || "Transformational Leadership Coach & Law of Attraction Expert"}
-                                    </p>
-                                    <p className="text-sm text-muted-foreground">+1 (888) 392-1561</p>
+                                    {(selectedProfile?.description || selectedProfile?.headline) && (
+                                        <p className="text-muted-foreground max-w-lg mx-auto text-sm leading-relaxed">
+                                            {selectedProfile?.description || selectedProfile?.headline}
+                                        </p>
+                                    )}
                                 </div>
 
                                 <div className="flex items-center justify-center gap-4 pt-2">
