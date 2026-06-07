@@ -175,7 +175,7 @@ const ChatPage = () => {
         }
     }, [isSpeaking, isProcessing, isCallOpen]);
 
-    const loadSessions = async (userId: string) => {
+    const loadSessions = async (userId: string, profileId?: string) => {
         try {
             // Only load if user is verified (has email in localStorage)
             const storedEmail = localStorage.getItem('chat_user_email');
@@ -184,10 +184,16 @@ const ChatPage = () => {
                 return;
             }
 
-            console.log("📋 Loading sessions for user:", userId);
+            console.log("📋 Loading sessions for user:", userId, "profile filter:", profileId);
             const dbSessions = await getSessions(userId);
-            console.log("✅ Sessions loaded:", dbSessions.length, dbSessions);
-            setSessions(dbSessions);
+            // IMPORTANT: only show conversation history that belongs to the persona currently
+            // open in this chat — otherwise switching personas mixes unrelated chat history.
+            const targetProfileId = profileId || selectedProfile?.id;
+            const filtered = targetProfileId
+                ? dbSessions.filter((s: any) => s.profile_id === targetProfileId)
+                : dbSessions;
+            console.log("✅ Sessions loaded:", dbSessions.length, "→ filtered to:", filtered.length);
+            setSessions(filtered);
         } catch (e) {
             console.error("❌ Failed to load sessions", e);
         }
@@ -873,14 +879,23 @@ const ChatPage = () => {
             const dbProfiles = await getMindProfiles();
             setProfiles(dbProfiles);
             if (dbProfiles.length > 0) {
-                // Prefer the persona the user last selected in Mind page (stored by MindPage in
-                // localStorage as 'globalSelectedProfileId'). Fall back to is_primary, then first.
-                const savedProfileId = localStorage.getItem('globalSelectedProfileId');
+                // "Talk to MiteshAI" should ALWAYS open the primary MiteshAI persona,
+                // regardless of whichever clone was last selected elsewhere (Mind page,
+                // widget, etc). That flow passes { forcePrimary: true } via navigation state.
+                const forcePrimary = !!location.state?.forcePrimary;
+
+                // Otherwise: prefer the persona the user last selected in Mind page (stored by
+                // MindPage in localStorage as 'globalSelectedProfileId'). Fall back to is_primary, then first.
+                const savedProfileId = forcePrimary ? null : localStorage.getItem('globalSelectedProfileId');
                 const primary =
                     (savedProfileId && dbProfiles.find(p => p.id === savedProfileId)) ||
                     dbProfiles.find(p => p.is_primary) ||
                     dbProfiles[0];
                 setSelectedProfile(primary);
+                if (forcePrimary && primary?.id) {
+                    // Keep localStorage in sync so refreshes also stay on MiteshAI
+                    localStorage.setItem('globalSelectedProfileId', primary.id);
+                }
                 // Use saved initial message; if DB value is null (settings never saved), fall back
                 // to a persona-specific greeting derived from the profile name so the chat never
                 // opens to a blank screen.
@@ -897,14 +912,15 @@ const ChatPage = () => {
 
             // Don't load session history for support/FAQ bots — they don't show history UI
             if (userId) {
-                const savedProfileId = localStorage.getItem('globalSelectedProfileId');
+                const forcePrimary = !!location.state?.forcePrimary;
+                const savedProfileId = forcePrimary ? null : localStorage.getItem('globalSelectedProfileId');
                 const chosenProfile =
                     (savedProfileId && dbProfiles.find((p: any) => p.id === savedProfileId)) ||
                     dbProfiles.find((p: any) => p.is_primary) ||
                     dbProfiles[0];
                 const chosenName = (chosenProfile?.name || '').toLowerCase();
                 const isSupport = ['support', 'imk', 'faq', 'helpdesk'].some(k => chosenName.includes(k));
-                if (!isSupport) loadSessions(userId);
+                if (!isSupport) loadSessions(userId, chosenProfile?.id);
             }
         };
         init();
@@ -1064,7 +1080,7 @@ const ChatPage = () => {
                 activeSessionIdRef.current = location.state.sessionId;
                 window.history.replaceState({}, document.title, location.pathname);
             }
-            if (!isSupportProfile) loadSessions(stableId);
+            if (!isSupportProfile) loadSessions(stableId, selectedProfile?.id);
         }
     }, [location.state, chatUserId, userFullDetails, isSupportProfile]);
 

@@ -82,14 +82,14 @@ const TalkToDelphiPage = () => {
                     <div className="flex items-center justify-center gap-4 pt-2">
                         <Button
                             className="bg-orange-500 hover:bg-orange-600 text-white rounded-full px-8 gap-2"
-                            onClick={() => navigate('/chat')}
+                            onClick={() => navigate('/chat', { state: { forcePrimary: true } })}
                         >
                             <MessageCircle className="w-4 h-4" />
                             Chat
                         </Button>
                         <Button
                             className="bg-orange-500 hover:bg-orange-600 text-white rounded-full px-8 gap-2"
-                            onClick={() => navigate('/chat', { state: { autoStartCall: true } })}
+                            onClick={() => navigate('/chat', { state: { autoStartCall: true, forcePrimary: true } })}
                         >
                             <Phone className="w-4 h-4" />
                             Call
@@ -139,7 +139,7 @@ const TalkToDelphiPage = () => {
                         onChange={(e) => setMessage(e.target.value)}
                         onKeyDown={(e) => {
                             if (e.key === 'Enter' && message.trim()) {
-                                navigate('/chat', { state: { initialMessage: message } });
+                                navigate('/chat', { state: { initialMessage: message, forcePrimary: true } });
                             }
                         }}
                         placeholder="Ask MiteshAI a question"
@@ -149,7 +149,7 @@ const TalkToDelphiPage = () => {
                         size="icon"
                         onClick={() => {
                             if (message.trim()) {
-                                navigate('/chat', { state: { initialMessage: message } });
+                                navigate('/chat', { state: { initialMessage: message, forcePrimary: true } });
                             }
                         }}
                         className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full h-8 w-8 bg-muted text-muted-foreground hover:bg-orange-500 hover:text-white transition-colors"
