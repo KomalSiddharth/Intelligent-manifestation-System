@@ -19,6 +19,7 @@ const ProfileView = ({ profileId, initialData, onDelete }: ProfileViewProps) => 
     const [previewUrl, setPreviewUrl] = useState(initialData?.avatar_url || "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?ixlib=rb-1.2.1&auto=format&fit=facearea&facepad=2&w=256&h=256&q=80");
     const [name, setName] = useState(initialData?.name || "");
     const [isLoading, setIsLoading] = useState(false);
+    const [imageUrlInput, setImageUrlInput] = useState("");
 
     useEffect(() => {
         loadProfile();
@@ -66,9 +67,33 @@ const ProfileView = ({ profileId, initialData, onDelete }: ProfileViewProps) => 
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (file) {
+            // NOTE: This creates a TEMPORARY blob preview only — it will NOT persist
+            // after refresh because the file isn't uploaded to permanent storage.
+            // Use the "Image URL" field below to save a permanent link instead.
             const url = URL.createObjectURL(file);
             setPreviewUrl(url);
+            toast({
+                title: "Preview only",
+                description: "This is a local preview. Paste a hosted Image URL below and click 'Use this URL' to save it permanently — otherwise it will disappear on refresh.",
+            });
         }
+    };
+
+    const handleUseImageUrl = () => {
+        const url = imageUrlInput.trim();
+        if (!url) {
+            toast({ title: "Enter a URL", description: "Please paste an image URL first.", variant: "destructive" });
+            return;
+        }
+        try {
+            // basic validation
+            new URL(url);
+        } catch {
+            toast({ title: "Invalid URL", description: "Please paste a valid image URL (starting with http/https).", variant: "destructive" });
+            return;
+        }
+        setPreviewUrl(url);
+        toast({ title: "Image URL set", description: "Click 'Save Changes' to permanently store this photo." });
     };
 
     return (
@@ -108,6 +133,26 @@ const ProfileView = ({ profileId, initialData, onDelete }: ProfileViewProps) => 
                     <Button variant="outline" className="rounded-full" onClick={handleImageClick}>
                         Upload new image
                     </Button>
+                </div>
+
+                <div className="space-y-2 max-w-xl">
+                    <Label>Image URL (recommended — saves permanently)</Label>
+                    <p className="text-sm text-muted-foreground">
+                        Local uploads only preview temporarily and disappear on refresh. Paste a hosted image link
+                        (e.g. from Google Drive "share" link, Imgur, your website, etc.) and click "Use this URL" — this
+                        gets saved permanently in the database.
+                    </p>
+                    <div className="flex items-center gap-2">
+                        <Input
+                            value={imageUrlInput}
+                            onChange={(e) => setImageUrlInput(e.target.value)}
+                            placeholder="https://example.com/photo.jpg"
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleUseImageUrl(); }}
+                        />
+                        <Button variant="outline" className="rounded-full whitespace-nowrap" onClick={handleUseImageUrl}>
+                            Use this URL
+                        </Button>
+                    </div>
                 </div>
 
                 <div className="space-y-4">
