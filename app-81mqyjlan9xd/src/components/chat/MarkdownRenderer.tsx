@@ -98,7 +98,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
             .replace(/([.!?])\s*([•\-*])\s/g, '$1\n\n$2 ')
             // Clean up bold headings that got merged
             .replace(/([.!?])\s+(\*\*[^*]+\*\*)/g, '$1\n\n$2')
-            .replace(/^(##+)\s*([^#\n\s].+?)([A-Z][a-z]{3,}\b|\bHello\b|\bNamaste\b)/gm, '$1 $2\n\n$3')
+            .replace(/^(##+)\s*([^#\n\s].+?)(?<=[a-z])([A-Z][a-z]{3,}\b|\bHello\b|\bNamaste\b)/gm, '$1 $2\n\n$3')
             .replace(/^(##+)([^\s#])/gm, '$1 $2');
 
         const rawLines = processedText.split('\n');

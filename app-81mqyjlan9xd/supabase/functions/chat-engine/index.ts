@@ -869,11 +869,17 @@ serve(async (req) => {
                 // Some users have chatUserId = audience_users.id (not auth user_id)
                 let auRow: any = null;
 
-                const { data: byUserId } = await supabaseClient
+                // NOTE: duplicate audience_users rows can share the same user_id
+                // (known data issue) — .maybeSingle() would throw PGRST116 on
+                // multiple rows, silently killing the whole member brief. Use
+                // .limit(1) ordered by most-recently-active instead.
+                const { data: byUserIdRows } = await supabaseClient
                     .from("audience_users")
                     .select("id, name, email")
                     .eq("user_id", userId)
-                    .maybeSingle();
+                    .order("last_active", { ascending: false })
+                    .limit(1);
+                const byUserId = byUserIdRows?.[0] ?? null;
 
                 if (byUserId?.id) {
                     auRow = byUserId;
@@ -960,12 +966,15 @@ serve(async (req) => {
 
                     // Get total unique sessions per type using DB aggregation (fast — no full table scan)
                     const typesNeeded = Object.keys(byType);
-                    const { data: totalsData } = await supabaseClient
-                        .rpc("count_sessions_by_type", {
+                    // NOTE: supabaseClient.rpc(...) returns a PostgREST builder (thenable,
+                    // not a real Promise) — it has no .catch(). Wrap in Promise.resolve()
+                    // so a failed RPC doesn't throw a TypeError that aborts the whole brief.
+                    const { data: totalsData } = await Promise.resolve(
+                        supabaseClient.rpc("count_sessions_by_type", {
                             p_cutoff: cutoff90,
                             p_types: typesNeeded,
                         })
-                        .catch(() => ({ data: null }));
+                    ).catch(() => ({ data: null }));
 
                     // Fallback: use member's own count as denominator if RPC unavailable
                     const totalByType: Record<string, number> = {};
@@ -984,7 +993,8 @@ serve(async (req) => {
 
                     for (const type of sortedTypes) {
                         const { count, totalMins, lastDate } = byType[type];
-                        const total = totalByType[type] ?? count;
+                        // Clamp so a stale/short RPC total can't produce 0 or <count (Infinity%/>100%)
+                        const total = Math.max(totalByType[type] ?? count, count);
                         const pct = Math.round((count / total) * 100);
                         const daysSince = Math.floor((Date.now() - new Date(lastDate).getTime()) / 86400000);
                         const status = pct >= 75 ? "🟢 consistent" : pct >= 40 ? "🟡 moderate" : "🔴 low";
@@ -1946,7 +1956,9 @@ Rule:
             // Smaller prompt = faster Cerebras prefill (faster first token) + lower cost on every msg.
             customInstructions = [
                 "You ARE Mitesh Khatri — a warm, world-class Transformational & Law of Attraction coach. Never break character; never invent facts about Mitesh's products.",
-                "COACHING FLOW: Briefly acknowledge the user's feeling/state first, give the quick WHY, then actionable steps. For 'I'm stuck' / 'what next?', run a mini breakthrough session.",
+                "COACHING FLOW: In THIS SINGLE reply, do ALL of: briefly acknowledge the user's feeling/state (1 sentence), give the quick WHY, AND give the actionable steps/recommendation. NEVER end your reply after only the feeling-check-in — that alone is an incomplete, broken response. For 'I'm stuck' / 'what next?', run the full mini breakthrough session in this same reply.",
+                "DIRECT REQUESTS FIRST: If the user asks a direct, specific question (e.g., 'which lesson/course should I take', 'share the link', attendance/progress/schedule questions), answer that question FIRST and fully — with the specific recommendation and link — in this reply. Skip or minimize the feeling-check-in for these; do not substitute a check-in question for the actual answer.",
+                "ATTENDANCE/PROGRESS DATA: If USER CONTEXT (MEMBER BRIEF) below contains attendance, session, or course-progress data, you ALREADY have it — present those exact numbers/names directly ('Maine dekha ki tumne...' / 'I can see you attended...'). NEVER say you lack the capability to check this, and NEVER tell the user to log into 'miteshkatri.com', a 'member portal', 'My Courses page', or any dashboard to find it themselves — that information does not exist for them to find. If MEMBER BRIEF has no attendance/progress data for this user, say honestly that you don't have their session data on file yet — still do not invent a portal to redirect them to.",
                 "80/20 KNOWLEDGE: Base ~80% of your answer on the KNOWLEDGE provided below (Mitesh's actual lessons); use ~20% general wisdom only to bridge gaps. Reference the specific lesson/technique by name.",
                 "LINKS: If a URL exists in the KNOWLEDGE, you MUST share it as a markdown link, e.g. [Lesson Name](url). NEVER invent or guess URLs or use placeholders — if none is present, say '(link unavailable)'.",
                 "NAMED TECHNIQUES: ONLY reference named techniques, rituals, frameworks, or tools that are EXPLICITLY present in the KNOWLEDGE provided below — quote them by their real name from the source material. NEVER invent, rename, or guess a technique name (e.g. do NOT make up things like 'The Mirror Technique', 'Gratitude Burst', 'Daily Thermostat Statement' unless that exact name appears in the knowledge). If no specific named technique exists in the knowledge for this topic, give grounded general guidance WITHOUT inventing a fancy name for it — say something like 'one approach that aligns with what's taught here is...' instead of presenting it as an official named method.",
@@ -2018,6 +2030,10 @@ LANGUAGE: ${LANGUAGE_INSTRUCTION}
 
 RULES (NON-NEGOTIABLE):
 ${customInstructions}
+${dynamicProfile?.instructions && dynamicProfile.instructions.length > 0 ? `
+--- STYLE REMINDER (do not forget, applies to THIS reply too) ---
+${dynamicProfile.instructions[0]}
+---` : ''}
 
 USER CONTEXT: ${userProfileParams || 'New user — no saved facts yet.'}
 ${coachingKbSection}

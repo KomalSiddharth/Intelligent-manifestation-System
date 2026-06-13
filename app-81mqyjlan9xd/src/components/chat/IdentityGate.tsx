@@ -66,6 +66,16 @@ export default function IdentityGate({ onVerified, profileId, requireIdentityGat
             return;
         }
 
+        // Wait for the parent page to resolve which profile this chat belongs to.
+        // On first mount profileId is still undefined, which verifyAudienceAccess
+        // treats as a "global" (profile_id IS NULL) check. Since audiences here
+        // are per-profile, that lookup misses and wipes the stored email before
+        // the real per-profile check (once profileId resolves) ever runs —
+        // logging out returning users on every reload. Stay loading until then.
+        if (profileId === undefined) {
+            return;
+        }
+
         const storedEmail = localStorage.getItem('chat_user_email');
         if (storedEmail) {
             handleFastVerify(storedEmail);
