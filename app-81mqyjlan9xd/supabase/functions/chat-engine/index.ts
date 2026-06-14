@@ -751,7 +751,9 @@ serve(async (req) => {
             }
         }
 
-        // B. Get Latest Facts (Session Scoped) & Psych Profile (Long Term)
+        // B. Get Latest Facts (Cross-Session) & Psych Profile (Long Term)
+        // NOTE: facts are scoped to user+profile but persist ACROSS sessions — a new chat
+        // thread should still know the user's name, vibe, goals, etc. from earlier threads.
         async function getLatestFacts(userId: string, currentSessionId?: string, profileId?: string) {
             let query = supabaseClient
                 .from("user_facts")
@@ -767,12 +769,7 @@ serve(async (req) => {
             const latest: Record<string, string> = {};
             if (data) {
                 data.forEach((row: any) => {
-                    const isGlobal = !row.session_id;
-                    const isCurrentSession = currentSessionId && row.session_id === currentSessionId;
-
-                    if (isGlobal || isCurrentSession) {
-                        latest[row.type] = row.fact;
-                    }
+                    latest[row.type] = row.fact;
                 });
             }
             return latest;
@@ -845,6 +842,27 @@ serve(async (req) => {
             return null; // null = show all session types (main MiteshAI)
         }
 
+        // Recent Zoom Cloud Recording links (last 60 days), filtered to this
+        // persona's relevant programs (or all, for the main MiteshAI).
+        async function getRecentRecordings(sessionTypes: string[] | null): Promise<any[]> {
+            const now = new Date();
+            const d60 = new Date(now); d60.setDate(d60.getDate() - 60);
+            const cutoff60 = d60.toISOString().split("T")[0];
+
+            let q = supabaseClient
+                .from("session_recordings")
+                .select("session_type, session_name, session_date, recording_url, password")
+                .gte("session_date", cutoff60)
+                .order("session_date", { ascending: false })
+                .limit(15);
+            if (sessionTypes) q = q.in("session_type", sessionTypes);
+
+            // NOTE: same .rpc()-style thenable gotcha as the totals query below —
+            // wrap in Promise.resolve() so a failed query can't throw a TypeError.
+            const { data } = await Promise.resolve(q).catch(() => ({ data: null }));
+            return data ?? [];
+        }
+
         async function getMemberBrief(userId: string): Promise<string> {
             if (!userId || userId === 'anonymous') return "";
 
@@ -911,7 +929,10 @@ serve(async (req) => {
                 const cutoff90 = d90.toISOString().split("T")[0];
                 const cutoff30 = d30.toISOString().split("T")[0];
 
-                const [{ data: courses }, { data: allAttendance }] = await Promise.all([
+                // Filter attendance + recordings to relevant session types for this persona
+                const relevantTypes = getRelevantSessionTypes(dynamicProfile?.name ?? "");
+
+                const [{ data: courses }, { data: allAttendance }, recordings] = await Promise.all([
                     supabaseClient
                         .from("member_course_progress")
                         .select("course_name, completion_pct, has_access, last_lesson_title, days_since_activity, purchased_at, started_at, completed_at")
@@ -920,8 +941,6 @@ serve(async (req) => {
                         .order("updated_at", { ascending: false })
                         .limit(10),
                     (() => {
-                        // Filter attendance to relevant session types for this persona
-                        const relevantTypes = getRelevantSessionTypes(dynamicProfile?.name ?? "");
                         let q = supabaseClient
                             .from("member_attendance")
                             .select("session_type, session_name, session_date, watch_duration_mins")
@@ -931,6 +950,7 @@ serve(async (req) => {
                         if (relevantTypes) q = q.in("session_type", relevantTypes);
                         return q;
                     })(),
+                    getRecentRecordings(relevantTypes),
                 ]);
 
                 console.log(`📚 [MEMBER BRIEF] courses: ${courses?.length ?? 0}, attendance rows: ${allAttendance?.length ?? 0}`);
@@ -1017,12 +1037,20 @@ serve(async (req) => {
                     attendanceLines.push("ZOOM: No live sessions attended in last 90 days");
                 }
 
-                const hasContent = (courses?.length ?? 0) > 0 || attendance.length > 0;
+                // Step 5: Recent Zoom Cloud Recording links
+                const recordingLines = (recordings ?? []).map((r: any) => {
+                    const pwNote = r.password ? ` (passcode: ${r.password})` : "";
+                    const label = (r.session_type ?? "OTHER").replace(/_/g, " ");
+                    return `🎥 [${label}] ${r.session_name} (${r.session_date}): ${r.recording_url}${pwNote}`;
+                });
+
+                const hasContent = (courses?.length ?? 0) > 0 || attendance.length > 0 || recordingLines.length > 0;
                 if (!hasContent) return "";
 
                 const coursePart = courseLines.length > 0 ? `COURSE PROGRESS:\n${courseLines.join("\n")}\n` : "";
-                const attendancePart = attendanceLines.join("\n");
-                const brief = `\nMEMBER BRIEF:\n${coursePart}${attendancePart}`;
+                const attendancePart = attendanceLines.length > 0 ? `${attendanceLines.join("\n")}\n` : "";
+                const recordingsPart = recordingLines.length > 0 ? `RECENT RECORDINGS:\n${recordingLines.join("\n")}` : "";
+                const brief = `\nMEMBER BRIEF:\n${coursePart}${attendancePart}${recordingsPart}`.trimEnd();
                 console.log(`✅ [MEMBER BRIEF] Built for ${auRow.name ?? auRow.email}:`, brief.slice(0, 200));
 
                 // Cache for 15 minutes (fire-and-forget)
@@ -1127,8 +1155,6 @@ serve(async (req) => {
         // ==================== CORE LOGIC ====================
 
         const dynamicProfile = await getMindProfileSettings(activeProfileId);
-        const profileName = (dynamicProfile?.name || "").toLowerCase();
-        const isMiteshAiProfile = profileName.includes("miteshai") || profileName.includes("mitesh ai");
 
         // useFastSupportPath = true ONLY for actual customer-support / FAQ bots
         // (profile name contains "support", "imk", "faq", "helpdesk").
@@ -1585,23 +1611,23 @@ Rule:
                             }),
                         ];
 
-                        // Also search global KB for MiteshAI profile (course index)
-                        if (!activeProfileId || activeProfileId === 'anonymous' || isMiteshAiProfile) {
-                            vectorSearchTasks.push(
-                                supabaseClient.rpc("match_knowledge", {
-                                    query_embedding: queryEmbedding,
-                                    match_threshold: 0.10,
-                                    match_count: 6,
-                                    p_profile_id: null,
-                                })
-                            );
-                        }
+                        // Also search the course/lesson link index (knowledge_chunks with
+                        // profile_id IS NULL — exclusively the ~250 "ACCESS LINK" lesson
+                        // chunks). Run for EVERY persona so any coach can share real lesson
+                        // links, not just MiteshAI.
+                        vectorSearchTasks.push(
+                            supabaseClient.rpc("match_knowledge", {
+                                query_embedding: queryEmbedding,
+                                match_threshold: 0.10,
+                                match_count: 6,
+                                p_profile_id: null,
+                            })
+                        );
 
                         const vectorSearchResults = await Promise.all(vectorSearchTasks);
-                        const fastChunks = dedupeChunks([
-                            ...(vectorSearchResults[0]?.data || []),
-                            ...(vectorSearchResults[1]?.data || []),
-                        ]).slice(0, 6);
+                        const fastChunks = dedupeChunks(
+                            vectorSearchResults.flatMap((r) => r?.data || [])
+                        ).slice(0, 8);
 
                         if (fastChunks.length > 0) {
                             knowledgeContext = fastChunks.map(formatKnowledgeChunk).join("\n\n---\n\n");
@@ -1643,17 +1669,16 @@ Rule:
                 const userChunks = vectorResults.data;
                 graphContext = graphResults;
 
-                // --- SEARCH 2: GLOBAL KNOWLEDGE (Course Index / Links) ---
-                let globalChunks: any[] = [];
-                if (!activeProfileId || activeProfileId === 'anonymous' || isMiteshAiProfile) {
-                    const { data } = await supabaseClient.rpc("match_knowledge", {
-                        query_embedding: queryEmbedding,
-                        match_threshold: 0.10,
-                        match_count: 15,
-                        p_profile_id: null
-                    });
-                    globalChunks = data || [];
-                }
+                // --- SEARCH 2: COURSE/LESSON LINK INDEX (knowledge_chunks with profile_id
+                // IS NULL — exclusively the ~250 "ACCESS LINK" lesson chunks). Run for
+                // EVERY persona so any coach can share real lesson links, not just MiteshAI.
+                const { data: globalData } = await supabaseClient.rpc("match_knowledge", {
+                    query_embedding: queryEmbedding,
+                    match_threshold: 0.10,
+                    match_count: 15,
+                    p_profile_id: null
+                });
+                const globalChunks: any[] = globalData || [];
 
                 const initialChunks = [
                     ...(userChunks || []),
@@ -1743,6 +1768,7 @@ Rule:
             "**NO FAKE PORTALS**: There is NO 'Member Portal', NO 'My Attendance page', NO 'community dashboard' for attendance. You have all attendance data already. Never suggest the member go check somewhere else for their attendance.",
             "**CONSISTENCY COACHING**: When attendance data shows low consistency (🔴), gently call it out with specific numbers and offer a concrete action. When it shows consistent attendance (🟢), celebrate and push for even higher goals.",
             "**ATTENDANCE-FIRST RESPONSE**: If a member asks about their sessions, consistency, or progress — lead with their actual data from MEMBER BRIEF before giving any advice.",
+            "**RECORDING LINKS RULE**: If a member asks for the recording of a live session/class (or one they missed), check MEMBER BRIEF's RECENT RECORDINGS section. If a matching session is listed, share its link directly along with the passcode if one is given (e.g., 'Yeh raha tumhara recording link: [link] (passcode: ...)'). If RECENT RECORDINGS has nothing matching, say honestly that the recording isn't uploaded/available yet — NEVER invent or guess a recording link or URL.",
             "Speak with whatever motivation he would have in such a situation.",
             "Drive the conversation forward, challenging the user when necessary.",
             "Never make anything up about Mitesh (the company/product).",
@@ -1959,6 +1985,7 @@ Rule:
                 "COACHING FLOW: In THIS SINGLE reply, do ALL of: briefly acknowledge the user's feeling/state (1 sentence), give the quick WHY, AND give the actionable steps/recommendation. NEVER end your reply after only the feeling-check-in — that alone is an incomplete, broken response. For 'I'm stuck' / 'what next?', run the full mini breakthrough session in this same reply.",
                 "DIRECT REQUESTS FIRST: If the user asks a direct, specific question (e.g., 'which lesson/course should I take', 'share the link', attendance/progress/schedule questions), answer that question FIRST and fully — with the specific recommendation and link — in this reply. Skip or minimize the feeling-check-in for these; do not substitute a check-in question for the actual answer.",
                 "ATTENDANCE/PROGRESS DATA: If USER CONTEXT (MEMBER BRIEF) below contains attendance, session, or course-progress data, you ALREADY have it — present those exact numbers/names directly ('Maine dekha ki tumne...' / 'I can see you attended...'). NEVER say you lack the capability to check this, and NEVER tell the user to log into 'miteshkatri.com', a 'member portal', 'My Courses page', or any dashboard to find it themselves — that information does not exist for them to find. If MEMBER BRIEF has no attendance/progress data for this user, say honestly that you don't have their session data on file yet — still do not invent a portal to redirect them to.",
+                "RECORDING LINKS: If the user asks for a session/class recording they missed, check MEMBER BRIEF's RECENT RECORDINGS list. If a matching session is there, share its link directly with the passcode (if any). If nothing matches, say honestly the recording isn't uploaded yet — NEVER invent a recording link.",
                 "80/20 KNOWLEDGE: Base ~80% of your answer on the KNOWLEDGE provided below (Mitesh's actual lessons); use ~20% general wisdom only to bridge gaps. Reference the specific lesson/technique by name.",
                 "LINKS: If a URL exists in the KNOWLEDGE, you MUST share it as a markdown link, e.g. [Lesson Name](url). NEVER invent or guess URLs or use placeholders — if none is present, say '(link unavailable)'.",
                 "NAMED TECHNIQUES: ONLY reference named techniques, rituals, frameworks, or tools that are EXPLICITLY present in the KNOWLEDGE provided below — quote them by their real name from the source material. NEVER invent, rename, or guess a technique name (e.g. do NOT make up things like 'The Mirror Technique', 'Gratitude Burst', 'Daily Thermostat Statement' unless that exact name appears in the knowledge). If no specific named technique exists in the knowledge for this topic, give grounded general guidance WITHOUT inventing a fancy name for it — say something like 'one approach that aligns with what's taught here is...' instead of presenting it as an official named method.",
