@@ -54,4 +54,6 @@ yarn.lock
 !.env.template
 *_utf8.txt
 miteshbot/youtube_cookies.txt
-miteshbot/instagram_cookies.txt 
+miteshbot/instagram_cookies.txt
+# Track DB migrations (override *.sql rule above)
+!app-81mqyjlan9xd/supabase/migrations/*.sql 
