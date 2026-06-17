@@ -508,6 +508,14 @@ serve(async (req) => {
         return new Response('ok', { headers: corsHeaders });
     }
 
+    // 0.1 WARMUP PING — keeps Deno runtime alive via pg_cron (no DB/LLM calls)
+    const url = new URL(req.url);
+    if (url.searchParams.get('action') === 'warmup') {
+        return new Response(JSON.stringify({ status: 'warm', ts: Date.now() }), {
+            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+    }
+
     const requestBody = await req.json();
 
     // Setup Supabase Client for potential migration (needs service role key)
