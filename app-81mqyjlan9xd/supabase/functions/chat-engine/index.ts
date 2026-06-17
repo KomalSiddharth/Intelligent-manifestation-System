@@ -1626,8 +1626,8 @@ Rule:
                         vectorSearchTasks.push(
                             supabaseClient.rpc("match_knowledge", {
                                 query_embedding: queryEmbedding,
-                                match_threshold: 0.10,
-                                match_count: 6,
+                                match_threshold: 0.05,
+                                match_count: 8,
                                 p_profile_id: null,
                             })
                         );
@@ -1682,7 +1682,7 @@ Rule:
                 // EVERY persona so any coach can share real lesson links, not just MiteshAI.
                 const { data: globalData } = await supabaseClient.rpc("match_knowledge", {
                     query_embedding: queryEmbedding,
-                    match_threshold: 0.10,
+                    match_threshold: 0.05,
                     match_count: 15,
                     p_profile_id: null
                 });
@@ -2667,10 +2667,19 @@ Keep each array to max 3 items. Omit empty arrays.`
         });
 
     } catch (error: any) {
-        console.error(`❌ [CHAT] Global Error:`, error);
-        return new Response(JSON.stringify({ error: error.message, stack: error.stack }), {
+        // Structured log — visible in Supabase Dashboard → Functions → chat-engine → Logs
+        console.error(`❌ [CHAT] Unhandled error:`, JSON.stringify({
+            ts: new Date().toISOString(),
+            userId: requestBody?.userId || 'unknown',
+            profileId: requestBody?.profileId || 'unknown',
+            query: (requestBody?.query || '').slice(0, 100),
+            errorType: error?.constructor?.name || 'Error',
+            message: error?.message,
+        }));
+        // Never expose stack trace or internal details to client
+        return new Response(JSON.stringify({ error: "Something went wrong. Please try again." }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
-            status: 400,
+            status: 500,
         });
     }
 });
