@@ -2596,6 +2596,46 @@ Return format:
                                 }
                             }
 
+                            // D. Write conversation summary (fixes dead read — conversation_summaries
+                            // was always fetched but never written anywhere in the codebase).
+                            if (chatUserId !== 'anonymous' && sessionId) {
+                                try {
+                                    const summaryResp = await openai.chat.completions.create({
+                                        model: "gpt-4o-mini",
+                                        messages: [
+                                            {
+                                                role: "system",
+                                                content: `Summarize this single coaching conversation exchange in 2-3 sentences. Extract key insights and any action items the user committed to.
+Return JSON only:
+{
+  "summary": "2-3 sentence narrative of what was discussed and any breakthrough/outcome",
+  "key_insights": ["insight the user expressed or realised", "..."],
+  "action_items": ["specific thing user committed to do", "..."]
+}
+Keep each array to max 3 items. Omit empty arrays.`
+                                            },
+                                            { role: "user", content: `User said: "${query}"\nCoach replied: "${fullResponse.slice(0, 800)}"` }
+                                        ],
+                                        response_format: { type: "json_object" },
+                                        max_tokens: 300,
+                                    });
+
+                                    const sd = JSON.parse(summaryResp.choices[0].message.content || "{}");
+                                    if (sd.summary) {
+                                        await supabaseClient.from("conversation_summaries").insert({
+                                            user_id: chatUserId,
+                                            session_id: sessionId,
+                                            summary: sd.summary,
+                                            key_insights: sd.key_insights || [],
+                                            action_items: sd.action_items || [],
+                                        });
+                                        console.log("📝 [SUMMARY] Conversation summary saved");
+                                    }
+                                } catch (e) {
+                                    console.warn("⚠️ [SUMMARY] Failed to write summary:", e);
+                                }
+                            }
+
                         } catch (err) {
                             console.error("Bg Error:", err);
                         }
