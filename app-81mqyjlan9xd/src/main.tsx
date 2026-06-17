@@ -4,11 +4,14 @@ import "./index.css";
 import 'reactflow/dist/style.css';
 import App from "./App.tsx";
 import { AppWrapper } from "./components/common/PageMeta.tsx";
+import { PasswordGate } from "./components/common/PasswordGate.tsx";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <AppWrapper>
-      <App />
+      <PasswordGate>
+        <App />
+      </PasswordGate>
     </AppWrapper>
   </StrictMode>
 );
