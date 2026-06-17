@@ -10,6 +10,7 @@ const TalkToDelphiPage = lazy(() => import('@/pages/TalkToDelphiPage'));
 const ChatPage = lazy(() => import('@/pages/ChatPage'));
 const CallbackPage = lazy(() => import('@/pages/CallbackPage'));
 const WidgetPage = lazy(() => import('@/pages/WidgetPage'));
+const TeamAccessPage = lazy(() => import('@/pages/TeamAccessPage'));
 
 export interface RouteConfig {
   name: string;
@@ -77,6 +78,12 @@ const routes: RouteConfig[] = [
     name: 'Callback',
     path: '/callback',
     element: <CallbackPage />,
+    visible: false,
+  },
+  {
+    name: 'Team Access',
+    path: '/team-access',
+    element: <TeamAccessPage />,
     visible: false,
   },
 ];
