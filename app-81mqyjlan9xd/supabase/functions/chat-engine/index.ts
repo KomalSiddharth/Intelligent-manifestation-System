@@ -1087,7 +1087,7 @@ serve(async (req) => {
             if (!hasFacts && !memberBrief) return "";
 
             const parts: string[] = [];
-            const keyOrder = ["name", "age", "location", "goal", "emotional_state", "personality_vibe", "preference", "habit"];
+            const keyOrder = ["name", "age", "location", "big_goal", "goal_short_term", "goal_long_term", "current_revenue", "major_win", "current_struggle", "key_commitment", "life_context", "core_desire", "limiting_beliefs", "emotional_state", "personality_vibe", "preference", "habit", "goal"];
 
             for (const key of keyOrder) {
                 if (facts[key]) {
@@ -2482,28 +2482,53 @@ PERSONALIZATION:
                                 messages: [
                                     {
                                         role: "system",
-                                        content: `Analyze this chat for User: ${chatUserId}.
-                                        EXTRACT:
-                                        1. New Facts (Name, Age, Location, etc.)
-                                        2. Deep Psychology (Core Desires, Limiting Beliefs, New Goals)
-                                        
-                                        **MANDATORY RULES**:
-                                        - If user says "My goal is [X]", you MUST return "goals": { "short_term": "[X]" }.
-                                        - If user implies a fear/struggle, extract as 'limiting_belief'.
-                                        - **Return JSON ONLY**.
+                                        content: `You are a memory extractor for a coaching AI. Analyze this single conversation turn and extract any persistent facts about the user worth remembering across future sessions.
 
-                                        Return JSON: 
-                                        { 
-                                            "facts": { 
-                                                "key": "value",
-                                                "personality_vibe": "Describe user's current energy, tone, and traits (e.g., 'Analytic but fearful', 'Highly motivated and spiritual')"
-                                            }, 
-                                            "psych_update": { 
-                                                "core_desire": "string | null", 
-                                                "limiting_beliefs": ["string"], 
-                                                "goals": { "short_term": "string", "long_term": "string" } 
-                                            } 
-                                        }`
+EXTRACT only what is actually said or clearly implied — never guess or infer beyond what's stated.
+
+FACT CATEGORIES to look for:
+- name: User's name (if shared)
+- age: User's age
+- location: City or country
+- big_goal: Their main ambition with EXACT specifics (e.g. "earn 4 crore this year", "launch product by March", "lose 10kg in 3 months")
+- current_revenue: Any specific income/earnings/revenue number they mention (e.g. "making 2 lakh/month", "business turnover 50 lakh")
+- major_win: A recent achievement or breakthrough they shared (e.g. "closed first big client", "finally meditated 30 days straight")
+- current_struggle: What they are finding difficult RIGHT NOW (e.g. "can't stay consistent", "business partner conflict")
+- key_commitment: Something they explicitly committed to do from this conversation
+- emotional_state: Their emotional tone in THIS session (e.g. "excited but anxious", "stuck and frustrated", "hopeful and open")
+- personality_vibe: Their STABLE long-term personality trait (e.g. "analytical but fearful of failure", "highly motivated but easily distracted")
+- life_context: Important life/business context (e.g. "runs a clothing export business", "recently got married", "has 3 employees")
+- core_desire: The deep WHY behind their goals (e.g. "wants financial freedom to travel", "wants to make parents proud")
+- limiting_beliefs: Specific fears or self-limiting patterns they express (e.g. "feels undeserving of success", "believes money requires struggle")
+- goal_short_term: A concrete near-term goal (1-3 months)
+- goal_long_term: A big picture goal (1+ year)
+
+RULES:
+- Use EXACT numbers and words when user says them ("4 crore", not "several crore")
+- Omit any field for which there is no clear evidence in this conversation
+- Return JSON ONLY — no explanation
+
+Return format:
+{
+  "facts": {
+    "name": "...",
+    "big_goal": "...",
+    "current_revenue": "...",
+    "major_win": "...",
+    "current_struggle": "...",
+    "key_commitment": "...",
+    "emotional_state": "...",
+    "personality_vibe": "...",
+    "life_context": "...",
+    "age": "...",
+    "location": "..."
+  },
+  "psych_update": {
+    "core_desire": "...",
+    "limiting_beliefs": ["..."],
+    "goals": { "short_term": "...", "long_term": "..." }
+  }
+}`
                                     },
                                     { role: "user", content: `User said: "${query}"\nAssistant replied: "${fullResponse}"` }
                                 ],
@@ -2523,14 +2548,33 @@ PERSONALIZATION:
                                             p_fact_type: key,
                                             p_fact_value: String(value)
                                         });
-
-                                        if (factError) {
-                                            console.error("❌ [RPC] update_user_fact failed:", factError);
-                                        }
+                                        if (factError) console.error("❌ [RPC] update_user_fact failed:", factError);
                                     }
                                 }
                             } else if (chatUserId === 'anonymous' && analysisData.facts) {
                                 console.warn("⚠️ [SECURITY] Blocked anonymous write to user_facts");
+                            }
+
+                            // B. Save psych_update fields — previously extracted but never persisted (bug fix)
+                            if (analysisData.psych_update && chatUserId !== 'anonymous') {
+                                const pu = analysisData.psych_update;
+                                const psychFacts: Record<string, string> = {};
+                                if (pu.core_desire) psychFacts["core_desire"] = pu.core_desire;
+                                if (pu.limiting_beliefs?.length) psychFacts["limiting_beliefs"] = Array.isArray(pu.limiting_beliefs) ? pu.limiting_beliefs.join("; ") : String(pu.limiting_beliefs);
+                                if (pu.goals?.short_term) psychFacts["goal_short_term"] = pu.goals.short_term;
+                                if (pu.goals?.long_term) psychFacts["goal_long_term"] = pu.goals.long_term;
+
+                                for (const [key, value] of Object.entries(psychFacts)) {
+                                    if (value) {
+                                        await supabaseClient.rpc('update_user_fact', {
+                                            p_user_id: chatUserId,
+                                            p_session_id: sessionId || null,
+                                            p_profile_id: activeProfileId || null,
+                                            p_fact_type: key,
+                                            p_fact_value: value
+                                        }).catch((e: any) => console.error("❌ [RPC] psych_update save failed:", e));
+                                    }
+                                }
                             }
 
                             // C. Record Emotional History (New Feature)
