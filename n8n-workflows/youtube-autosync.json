@@ -1,0 +1,170 @@
+{
+  "name": "YouTube Auto-Sync to Knowledge Base",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "trigger-1",
+      "name": "Every 2 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "youtube_api_key",
+              "value": "PASTE_YOUR_YOUTUBE_API_KEY_HERE",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "uploads_playlist_id",
+              "value": "PASTE_UPLOADS_PLAYLIST_ID_HERE",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "supabase_url",
+              "value": "https://axfxldgynmlwdsidklun.supabase.co",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "supabase_anon_key",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4ZnhsZGd5bm1sd2RzaWRrbHVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0Njc5MjMsImV4cCI6MjA4MjA0MzkyM30.niXl1b-LTaSr1o1vraImxa-hOa7OeVK4Czi8vR_CV64",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "omni_sync_url",
+              "value": "http://omni-sync-worker:5001/process_media",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "omni_sync_secret",
+              "value": "PASTE_OMNI_SYNC_SECRET_HERE",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "config-1",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.supabase_url }}/rest/v1/knowledge_sources?select=source_url&source_type=eq.youtube&order=created_at.desc&limit=200",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $json.supabase_anon_key }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $json.supabase_anon_key }}" }
+          ]
+        }
+      },
+      "id": "check-existing-1",
+      "name": "Check Existing in Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.googleapis.com/youtube/v3/playlistItems",
+        "options": {},
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "part", "value": "snippet,contentDetails" },
+            { "name": "playlistId", "value": "={{ $('Config').item.json.uploads_playlist_id }}" },
+            { "name": "maxResults", "value": "15" },
+            { "name": "key", "value": "={{ $('Config').item.json.youtube_api_key }}" }
+          ]
+        }
+      },
+      "id": "get-videos-1",
+      "name": "Get Recent Videos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const videoData = $('Get Recent Videos').first().json;\nconst videoItems = videoData.items || [];\nconst existingRows = $('Check Existing in Supabase').all().map(i => i.json.source_url);\n\nconst newVideos = videoItems\n  .map(item => ({\n    videoId: item.contentDetails.videoId,\n    url: `https://www.youtube.com/watch?v=${item.contentDetails.videoId}`,\n    title: item.snippet.title,\n    publishedAt: item.contentDetails.videoPublishedAt\n  }))\n  .filter(v => !existingRows.includes(v.url));\n\nreturn newVideos.map(v => ({ json: v }));"
+      },
+      "id": "filter-new-1",
+      "name": "Filter New Videos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-1",
+      "name": "Process One At A Time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1100, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.omni_sync_url }}",
+        "options": {
+          "timeout": 300000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Sync-Secret", "value": "={{ $('Config').first().json.omni_sync_secret }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"url\": $json.url, \"source\": \"youtube\" } }}"
+      },
+      "id": "process-video-1",
+      "name": "Send to Omni-Sync-Worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 0]
+    }
+  ],
+  "connections": {
+    "Every 2 Hours": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config": { "main": [[{ "node": "Check Existing in Supabase", "type": "main", "index": 0 }]] },
+    "Check Existing in Supabase": { "main": [[{ "node": "Get Recent Videos", "type": "main", "index": 0 }]] },
+    "Get Recent Videos": { "main": [[{ "node": "Filter New Videos", "type": "main", "index": 0 }]] },
+    "Filter New Videos": { "main": [[{ "node": "Process One At A Time", "type": "main", "index": 0 }]] },
+    "Process One At A Time": { "main": [[], [{ "node": "Send to Omni-Sync-Worker", "type": "main", "index": 0 }]] },
+    "Send to Omni-Sync-Worker": { "main": [[{ "node": "Process One At A Time", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
