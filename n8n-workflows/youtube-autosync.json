@@ -51,13 +51,13 @@
             {
               "id": "a5",
               "name": "omni_sync_url",
-              "value": "http://omni-sync-worker:5001/process_media",
+              "value": "http://76.13.58.123:5001/process_media",
               "type": "string"
             },
             {
               "id": "a6",
               "name": "omni_sync_secret",
-              "value": "PASTE_OMNI_SYNC_SECRET_HERE",
+              "value": "43bd09935e8683abd17b0dac27725d1733952956c3a41b07",
               "type": "string"
             }
           ]
