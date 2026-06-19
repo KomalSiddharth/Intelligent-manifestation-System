@@ -4,7 +4,6 @@ import mammoth from 'mammoth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import {
     Youtube,
     Globe,
@@ -79,7 +78,6 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
 
     // Socials state
     const [socialUrl, setSocialUrl] = useState('');
-    const [autoSync, setAutoSync] = useState(false);
     const [integrationId, setIntegrationId] = useState<string | null>(null);
 
     // Access Group state
@@ -93,7 +91,7 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                 const gd = integrations.find(i => i.platform === 'google_drive');
                 if (gd) {
                     setIntegrationId(gd.id);
-                    setAutoSync(gd.metadata?.auto_sync || false);
+                    setDriveFolderUrl(gd.metadata?.drive_folder_url || '');
                 }
             } catch (err) {
                 console.error("Error checking integration:", err);
@@ -102,18 +100,18 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
         if (profileId) checkIntegration();
     }, [profileId]);
 
-    const handleAutoSyncToggle = async (checked: boolean) => {
-        setAutoSync(checked);
-        if (integrationId) {
-            try {
-                const { saveIntegration } = await import('@/db/api');
-                await saveIntegration({
-                    id: integrationId,
-                    metadata: { auto_sync: checked }
-                });
-            } catch (err) {
-                console.error("Failed to save sync preference:", err);
-            }
+    // Persists the folder scope so the every-30-min cron sync (which has no
+    // UI state to read from) knows to sync only this folder, not the whole Drive.
+    const saveFolderUrl = async (value: string) => {
+        if (!integrationId) return;
+        try {
+            const { saveIntegration } = await import('@/db/api');
+            await saveIntegration({
+                id: integrationId,
+                metadata: { drive_folder_url: value.trim() || null }
+            });
+        } catch (err) {
+            console.error("Failed to save folder scope:", err);
         }
     };
 
@@ -438,10 +436,11 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                             placeholder="https://drive.google.com/drive/folders/..."
                             value={driveFolderUrl}
                             onChange={(e) => setDriveFolderUrl(e.target.value)}
+                            onBlur={(e) => saveFolderUrl(e.target.value)}
                             className="bg-white/50"
                         />
                         <p className="text-[10px] text-muted-foreground mt-1">
-                            Use this to sync only a specific folder instead of your entire drive.
+                            Saved automatically — the every-30-min auto-sync will only scan this folder, not your whole drive.
                         </p>
                     </div>
                 )}
@@ -472,6 +471,7 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                             onClick={async () => {
                                 try {
                                     setLoading(true);
+                                    await saveFolderUrl(driveFolderUrl);
                                     const { supabase } = await import('@/db/supabase');
                                     const { data, error } = await supabase.functions.invoke('sync-drive', {
                                         body: {
@@ -514,16 +514,14 @@ const AddContentDialog = ({ onClose, onUpload, profileId }: AddContentDialogProp
                 </div>
             </div>
 
-            <div className="space-y-4">
-                <h4 className="text-sm font-medium">Automatic Syncing</h4>
-                <div className="flex items-center justify-between p-4 border rounded-lg">
-                    <div className="space-y-0.5">
-                        <Label>Real-time updates</Label>
-                        <p className="text-xs text-muted-foreground">Automatically add new files as you save them to Drive.</p>
-                    </div>
-                    <Switch checked={autoSync} onCheckedChange={handleAutoSyncToggle} disabled={!integrationId} />
+            {integrationId && (
+                <div className="space-y-2">
+                    <h4 className="text-sm font-medium">Automatic Syncing</h4>
+                    <p className="text-xs text-muted-foreground">
+                        Runs every 30 minutes in the background — no action needed. New or updated files in the folder above are picked up automatically.
+                    </p>
                 </div>
-            </div>
+            )}
         </div>
     );
 

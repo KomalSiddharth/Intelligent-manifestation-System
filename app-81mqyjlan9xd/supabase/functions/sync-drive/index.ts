@@ -331,7 +331,7 @@ serve(async (req) => {
             console.log("🚀 [GLOBAL SYNC] Fetching all active Google Drive integrations...");
             const { data: integrations } = await supabase
                 .from('user_integrations')
-                .select('profile_id')
+                .select('profile_id, metadata')
                 .eq('platform', 'google_drive')
                 .eq('is_active', true);
 
@@ -343,7 +343,9 @@ serve(async (req) => {
             let totalProcessed = 0;
             for (const item of integrations) {
                 try {
-                    const count = await syncOneProfile(supabase, item.profile_id, supabaseUrl, serviceKey);
+                    // Each profile syncs only its saved folder (metadata.drive_folder_url) if one
+                    // was configured — without it, this would scan the user's entire Drive root.
+                    const count = await syncOneProfile(supabase, item.profile_id, supabaseUrl, serviceKey, item.metadata?.drive_folder_url);
                     totalProcessed += count;
                 } catch (e) {
                     console.error(`❌ Failed sync for ${item.profile_id}:`, e.message);
