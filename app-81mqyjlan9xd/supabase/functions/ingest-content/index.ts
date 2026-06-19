@@ -794,9 +794,26 @@ serve(async (req) => {
         console.log(`💡 [REQUEST] Action: ${action || type}, URL: ${url || 'N/A'}, User: ${userId}`);
 
         if (!userId && action !== 'get_read_url') {
-            // get_read_url might be public? if not, throw. 
+            // get_read_url might be public? if not, throw.
             // valid actions need user.
             throw new Error("Unauthorized: Missing User ID");
+        }
+
+        // Lightweight entrypoint for callers that already have transcript text in hand
+        // (e.g. omni-sync-worker after yt-dlp + Whisper) — reuses the same chunking +
+        // embedding pipeline as every other ingestion path instead of writing to
+        // knowledge_sources/knowledge_chunks directly with a different shape.
+        if (action === 'ingest_text') {
+            if (!content || !title) {
+                throw new Error("title and content are required for ingest_text");
+            }
+            const result = await performIngestion(
+                title, content, type || 'media', url, userId, profileId,
+                supabaseAdmin, openai
+            );
+            return new Response(JSON.stringify(result), {
+                headers: { ...corsHeaders, "Content-Type": "application/json" }
+            });
         }
 
         // Ensure Storage Bucket exists with correct limits

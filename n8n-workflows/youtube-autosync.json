@@ -59,6 +59,18 @@
               "name": "omni_sync_secret",
               "value": "43bd09935e8683abd17b0dac27725d1733952956c3a41b07",
               "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "profile_id",
+              "value": "1cb7dee0-815f-4278-b93e-062bdf486389",
+              "type": "string"
+            },
+            {
+              "id": "a8",
+              "name": "user_id",
+              "value": "07ff4845-8f64-4af8-87ab-f951987979e0",
+              "type": "string"
             }
           ]
         }
@@ -146,7 +158,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { \"url\": $json.url, \"source\": \"youtube\" } }}"
+        "jsonBody": "={{ { \"url\": $json.url, \"source\": \"youtube\", \"profileId\": $('Config').first().json.profile_id, \"userId\": $('Config').first().json.user_id } }}"
       },
       "id": "process-video-1",
       "name": "Send to Omni-Sync-Worker",

@@ -6,7 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
-RUN pip install --no-cache-dir flask openai supabase yt-dlp python-dotenv
+RUN pip install --no-cache-dir flask openai supabase yt-dlp python-dotenv requests
 
 COPY omni_sync.py .
 

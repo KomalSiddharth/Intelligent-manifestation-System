@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import os
 import subprocess
 import uuid
+import requests
 from openai import OpenAI
 from supabase import create_client
 
@@ -25,9 +26,13 @@ def process_media():
     data = request.json
     url = data.get('url')
     source = data.get('source', 'unknown')
+    profile_id = data.get('profileId')
+    user_id = data.get('userId')
 
     if not url:
         return jsonify({'error': 'URL is required'}), 400
+    if not profile_id or not user_id:
+        return jsonify({'error': 'profileId and userId are required'}), 400
 
     print(f"📥 [OMNI-SYNC] Starting download for {source}: {url}")
 
@@ -78,31 +83,34 @@ def process_media():
         # Cleanup audio file
         os.remove(audio_file)
 
-        # 3. Create Embeddings for Supabase
-        print("🧠 [OMNI-SYNC] Creating embeddings...")
-        response = openai_client.embeddings.create(
-            input=text_content,
-            model="text-embedding-3-small"
+        # 3. Hand off to ingest-content's shared chunking + embedding pipeline —
+        # this is the same code path Drive/file uploads use, so it writes
+        # knowledge_sources + knowledge_chunks in the shape RAG search expects.
+        print("💾 [OMNI-SYNC] Sending transcript to ingest-content for chunking + embedding...")
+        ingest_resp = requests.post(
+            f"{supabase_url}/functions/v1/ingest-content",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {supabase_key}"
+            },
+            json={
+                "action": "ingest_text",
+                "title": f"Auto-Sync: {source.capitalize()} Video",
+                "content": text_content,
+                "url": url,
+                "type": source,
+                "userId": user_id,
+                "profileId": profile_id
+            },
+            timeout=120
         )
-        embedding = response.data[0].embedding
 
-        # 4. Save to Supabase knowledge_sources
-        print("💾 [OMNI-SYNC] Saving to Knowledge Base...")
-        item_data = {
-            "title": f"Auto-Sync: {source.capitalize()} Video",
-            "type": "text",
-            "source_type": source,
-            "source_url": url,
-            "content": text_content,
-            "embedding": embedding,
-            "status": "processed",
-            "word_count": len(text_content.split())
-        }
+        if not ingest_resp.ok:
+            raise Exception(f"ingest-content failed: {ingest_resp.status_code} {ingest_resp.text}")
 
-        supabase.table("knowledge_sources").insert(item_data).execute()
-
-        print(f"✅ [OMNI-SYNC] Processing complete for {url}!")
-        return jsonify({'status': 'success', 'source': source, 'words': len(text_content.split())})
+        ingest_result = ingest_resp.json()
+        print(f"✅ [OMNI-SYNC] Processing complete for {url}! Chunks: {ingest_result.get('chunks')}")
+        return jsonify({'status': 'success', 'source': source, 'words': len(text_content.split()), 'chunks': ingest_result.get('chunks')})
 
     except Exception as e:
         print(f"❌ [OMNI-SYNC] Error: {str(e)}")
