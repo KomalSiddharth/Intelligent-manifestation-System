@@ -558,6 +558,13 @@ const ChatPage = () => {
             const reader = response.body?.getReader();
             const decoder = new TextDecoder();
             let aiResponse = '';
+            // Network reads can split mid-line or mid-multibyte-character — buffer
+            // across read() calls and only process complete lines (terminated by \n).
+            // Without this, a line split across two reads gets parsed as two broken
+            // fragments: garbled stray quotes from the failed JSON.parse fallback,
+            // and silently dropped text from the second half (which no longer starts
+            // with "data: " so it was being treated as an SSE separator and discarded).
+            let sseBuffer = '';
 
             // ALWAYS add placeholder message
             setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
@@ -583,8 +590,10 @@ const ChatPage = () => {
                         console.log("✅ Stream complete. Final aiResponse length:", aiResponse.length);
                         break;
                     }
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
+                    sseBuffer += decoder.decode(value, { stream: true });
+                    const lines = sseBuffer.split('\n');
+                    // Last element may be an incomplete line — keep it buffered for the next read()
+                    sseBuffer = lines.pop() || '';
 
                     for (const line of lines) {
                         if (!line) continue;
@@ -782,12 +791,16 @@ const ChatPage = () => {
             const reader = response.body?.getReader();
             const decoder = new TextDecoder();
             let aiResponse = '';
+            // Buffer across read() calls — see comment on the main streaming loop above
+            // for why processing each raw chunk as standalone "lines" corrupts output.
+            let sseBuffer = '';
 
             while (true) {
                 const { done, value } = await reader!.read();
                 if (done) break;
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n');
+                sseBuffer += decoder.decode(value, { stream: true });
+                const lines = sseBuffer.split('\n');
+                sseBuffer = lines.pop() || '';
 
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
@@ -799,8 +812,6 @@ const ChatPage = () => {
                                 aiResponse += data.choices[0].delta.content;
                             }
                         } catch (e) { }
-                    } else if (line.trim() !== '') {
-                        aiResponse += line;
                     }
 
                     setMessages(prev => {

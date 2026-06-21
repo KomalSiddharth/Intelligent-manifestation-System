@@ -197,14 +197,20 @@ const WidgetPage = () => {
             const reader = response.body?.getReader();
             const decoder = new TextDecoder();
             let aiResponse = '';
+            // Buffer across read() calls — a network read can split mid-line or
+            // mid-multibyte-character. Without buffering, a split line gets parsed
+            // as two broken fragments (stray quotes from a failed JSON.parse, and
+            // silently dropped text from the half that no longer starts with "data: ").
+            let sseBuffer = '';
 
             setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
             while (true) {
                 const { done, value } = await reader!.read();
                 if (done) break;
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n');
+                sseBuffer += decoder.decode(value, { stream: true });
+                const lines = sseBuffer.split('\n');
+                sseBuffer = lines.pop() || '';
 
                 for (const line of lines) {
                     if (!line) continue;
