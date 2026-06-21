@@ -1323,7 +1323,7 @@ const ChatPage = () => {
                                                     <InteractiveMindMap data={msg.mindMap} />
                                                 ) : (
                                                     <>
-                                                        <MarkdownRenderer content={msg.content} />
+                                                        <MarkdownRenderer content={msg.content?.split('__SOURCES__:')[0] ?? msg.content} />
                                                         {msg.is_verified && (
                                                             <div className="mt-4 pt-2 border-t border-green-500/20 flex items-center justify-end">
                                                                 <div className="flex items-center gap-1.5 bg-green-500/10 dark:bg-green-500/20 px-2.5 py-1 rounded-full border border-green-500/20">
@@ -1348,7 +1348,7 @@ const ChatPage = () => {
                                                     variant="ghost"
                                                     size="icon"
                                                     className="h-6 w-6 text-muted-foreground/50 hover:text-orange-500 hover:bg-orange-500/5 transition-all"
-                                                    onClick={() => handleCopy(msg.content, i)}
+                                                    onClick={() => handleCopy(msg.content?.split('__SOURCES__:')[0] ?? msg.content, i)}
                                                 >
                                                     {copiedId === i ? (
                                                         <Check className="w-3.5 h-3.5 text-green-500" />
@@ -1379,7 +1379,7 @@ const ChatPage = () => {
                                                                 setPlayingMessageId(null);
                                                             } else {
                                                                 setPlayingMessageId(msgId);
-                                                                speak(msg.content, selectedProfile?.id, true)
+                                                                speak(msg.content?.split('__SOURCES__:')[0] ?? msg.content, selectedProfile?.id, true)
                                                                     .then(() => setPlayingMessageId(null))
                                                                     .catch(() => setPlayingMessageId(null));
                                                             }

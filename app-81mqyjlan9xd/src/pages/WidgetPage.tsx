@@ -441,7 +441,7 @@ const WidgetPage = () => {
                                                         : "glass text-foreground rounded-tl-none border-white/40"
                                                 )}>
                                                     {msg.role === 'assistant' ? (
-                                                        <MarkdownRenderer content={msg.content} />
+                                                        <MarkdownRenderer content={msg.content?.split('__SOURCES__:')[0] ?? msg.content} />
                                                     ) : (
                                                         msg.content
                                                     )}
