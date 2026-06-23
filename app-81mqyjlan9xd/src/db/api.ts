@@ -1022,42 +1022,47 @@ export const getSessions = async (userId: string, profileId?: string): Promise<C
     return [];
   }
 
-  // If no sessions found by user_id, try finding via audience_users
-  // (handles case where localStorage was cleared and new user_id was generated)
-  if (!data || data.length === 0) {
-    const email = localStorage.getItem('chat_user_email');
-    if (email) {
-      // Users can be in multiple personas' audience lists (one row per
-      // profile_id), so this must be scoped to the current profile too —
-      // otherwise .maybeSingle() errors out on the multi-row match and the
-      // whole fallback silently does nothing.
-      let auQuery = supabase
-        .from('audience_users')
-        .select('id, user_id')
-        .eq('email', email.toLowerCase());
-      auQuery = profileId ? auQuery.eq('profile_id', profileId) : auQuery.is('profile_id', null);
-      const { data: auData } = await auQuery.maybeSingle();
+  // ALSO look for sessions saved under an older/alternate ID for this same
+  // person — e.g. conversations made before audience_users.user_id got
+  // linked to their Supabase Auth account are saved under that pre-link
+  // audience_users.id, not the current userId. This must run (and MERGE
+  // with the primary results) even when the primary query already found
+  // something — otherwise a single recent session matching the current ID
+  // makes the function return early and silently drops older orphaned ones.
+  let sessions = data || [];
+  const email = localStorage.getItem('chat_user_email');
+  if (email) {
+    // Users can be in multiple personas' audience lists (one row per
+    // profile_id), so this must be scoped to the current profile too —
+    // otherwise .maybeSingle() errors out on the multi-row match and the
+    // whole fallback silently does nothing.
+    let auQuery = supabase
+      .from('audience_users')
+      .select('id, user_id')
+      .eq('email', email.toLowerCase());
+    auQuery = profileId ? auQuery.eq('profile_id', profileId) : auQuery.is('profile_id', null);
+    const { data: auData } = await auQuery.maybeSingle();
 
-      if (auData) {
-        // Try all possible IDs linked to this email
-        const altIds = [auData.id, auData.user_id].filter(Boolean).filter(id => id !== userId);
-        if (altIds.length > 0) {
-          let fallbackQuery = supabase
-            .from('conversations')
-            .select('*')
-            .in('user_id', altIds);
-          if (profileId) fallbackQuery = fallbackQuery.eq('profile_id', profileId);
-          const { data: fallback } = await fallbackQuery.order('last_message_at', { ascending: false });
-          if (fallback && fallback.length > 0) {
-            console.log(`📋 [SESSIONS] Found ${fallback.length} sessions via email fallback`);
-            return fallback;
-          }
+    if (auData) {
+      // Try all possible IDs linked to this email
+      const altIds = [auData.id, auData.user_id].filter(Boolean).filter(id => id !== userId);
+      if (altIds.length > 0) {
+        let fallbackQuery = supabase
+          .from('conversations')
+          .select('*')
+          .in('user_id', altIds);
+        if (profileId) fallbackQuery = fallbackQuery.eq('profile_id', profileId);
+        const { data: fallback } = await fallbackQuery.order('last_message_at', { ascending: false });
+        if (fallback && fallback.length > 0) {
+          console.log(`📋 [SESSIONS] Found ${fallback.length} additional sessions via email fallback`);
+          const existingIds = new Set(sessions.map((s: any) => s.id));
+          sessions = [...sessions, ...fallback.filter((s: any) => !existingIds.has(s.id))]
+            .sort((a: any, b: any) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
         }
       }
     }
   }
-
-  return data || [];
+  return sessions;
 };
 
 export const getAllConversations = async (profileId?: string): Promise<Conversation[]> => {
