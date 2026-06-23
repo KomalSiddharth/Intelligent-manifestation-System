@@ -2043,8 +2043,15 @@ Rule:
         }
 
         // Build the knowledge section string used by coaching prompts (end of prompt = L4 win)
+        // For non-main personas, the scope-discipline reminder is repeated immediately
+        // around the KB block itself — not just earlier in the rules list — because
+        // models weigh instructions near the tempting content more reliably than ones
+        // stated once, far earlier in a long prompt (testing showed the earlier-only
+        // version still leaked Chakra/Wealth Mastery content from this same KB pool).
+        const scopeGuardBefore = isMainPersona ? "" : `\n\n⚠️ BEFORE READING THE KNOWLEDGE BELOW: You are the ${dynamicProfile?.name} coach. Some chunks below may belong to a DIFFERENT Mitesh program (Chakra, Wealth Mastery, NLP, DMP, Advance LOA, etc.) — they're in this shared pool but are NOT automatically yours to teach. Only use a chunk if it genuinely matches ${dynamicProfile?.name}'s own subject. Skip and redirect for anything else, even if it's the best-matching chunk you have.`;
+        const scopeGuardAfter = isMainPersona ? "" : `\n\n⚠️ AFTER READING: Re-check — does the user's actual question belong to ${dynamicProfile?.name}'s program? If not, do not use the chunk above even though it appeared in your context. Redirect warmly to the right coach instead.`;
         const coachingKbSection = (knowledgeContext && knowledgeContext !== "No specific knowledge.")
-            ? `\n\nKNOWLEDGE — BASE 80% OF YOUR ANSWER ON THIS (INCLUDE ALL LINKS):\n${knowledgeContext}\n\n(If the user's question isn't perfectly matched, use the closest concept and frame it as: "While I don't have a lesson on exactly [Subject], this lesson on [Concept] will help…" AND PROVIDE THE LINK.)`
+            ? `\n\nKNOWLEDGE — BASE 80% OF YOUR ANSWER ON THIS (INCLUDE ALL LINKS):${scopeGuardBefore}\n${knowledgeContext}\n\n(If the user's question isn't perfectly matched, use the closest concept and frame it as: "While I don't have a lesson on exactly [Subject], this lesson on [Concept] will help…" AND PROVIDE THE LINK.)${scopeGuardAfter}`
             : "";
 
         const systemPrompt = useFastSupportPath ? `
