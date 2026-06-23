@@ -200,7 +200,7 @@ const ZoomSyncView = () => {
                 webinarsProcessed: total,
                 attendanceRecords: totalRecords,
                 skipped: totalSkipped,
-                errors: totalErrors,
+                errors: failedCount,
                 dateRange: { from: fromDate, to: toDate },
                 webinars: [],
             });
