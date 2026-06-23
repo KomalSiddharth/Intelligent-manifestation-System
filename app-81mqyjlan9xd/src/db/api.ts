@@ -1027,11 +1027,16 @@ export const getSessions = async (userId: string, profileId?: string): Promise<C
   if (!data || data.length === 0) {
     const email = localStorage.getItem('chat_user_email');
     if (email) {
-      const { data: auData } = await supabase
+      // Users can be in multiple personas' audience lists (one row per
+      // profile_id), so this must be scoped to the current profile too —
+      // otherwise .maybeSingle() errors out on the multi-row match and the
+      // whole fallback silently does nothing.
+      let auQuery = supabase
         .from('audience_users')
         .select('id, user_id')
-        .eq('email', email.toLowerCase())
-        .maybeSingle();
+        .eq('email', email.toLowerCase());
+      auQuery = profileId ? auQuery.eq('profile_id', profileId) : auQuery.is('profile_id', null);
+      const { data: auData } = await auQuery.maybeSingle();
 
       if (auData) {
         // Try all possible IDs linked to this email
