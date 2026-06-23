@@ -2305,7 +2305,11 @@ PERSONALIZATION:
                         {
                             temperature: useFastSupportPath ? 0.15 : 0.4,
                             stream: true,
-                            max_tokens: useFastSupportPath ? 400 : undefined,
+                            max_tokens: useFastSupportPath ? 400 : 2000,
+                            // Guards against repetition loops (e.g. the same word repeated
+                            // 100+ times mid-response) seen in production testing.
+                            frequency_penalty: 0.3,
+                            presence_penalty: 0.3,
                         }
                     );
                     selectedModel = usedModel;

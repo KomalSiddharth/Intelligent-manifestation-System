@@ -603,9 +603,13 @@ export async function executeWithFallback(
     decision: RoutingDecision,
     messages: Array<{ role: string; content: string }>,
     openai: OpenAI,
-    options: { temperature?: number; stream?: boolean } = {}
+    options: { temperature?: number; stream?: boolean; max_tokens?: number; frequency_penalty?: number; presence_penalty?: number } = {}
 ): Promise<{ stream: any; usedModel: string; usedProvider: ModelProvider }> {
-    const { temperature = 0.4, stream = true } = options;
+    // frequency/presence penalty discourage the model from repeating the same
+    // token over and over — without them a runaway repetition loop (seen in
+    // production: the same word repeated 100+ times mid-response) has nothing
+    // pushing it back on track. max_tokens is a hard backstop in case it still happens.
+    const { temperature = 0.4, stream = true, max_tokens = 2000, frequency_penalty = 0.3, presence_penalty = 0.3 } = options;
     const modelsToTry = [
         { provider: decision.provider, model: decision.model },
         ...getFallbackModels(decision.model)
@@ -637,6 +641,11 @@ export async function executeWithFallback(
                     messages: messages as any,
                     temperature,
                     stream,
+                    max_tokens,
+                    // frequency/presence_penalty support varies by provider — only send to
+                    // OpenAI, which reliably supports it. Cerebras' OpenAI-compatible API
+                    // doesn't guarantee it, so we leave it out there to avoid a hard error.
+                    ...(provider === 'openai' ? { frequency_penalty, presence_penalty } : {}),
                 });
 
                 markProviderHealthy(provider);
@@ -716,7 +725,12 @@ export async function executeWithFallback(
                                     parts: [{ text: m.content }]
                                 }))
                             ],
-                            generationConfig: { temperature }
+                            generationConfig: {
+                                temperature,
+                                maxOutputTokens: max_tokens,
+                                frequencyPenalty: frequency_penalty,
+                                presencePenalty: presence_penalty,
+                            }
                         }),
                     }
                 );
